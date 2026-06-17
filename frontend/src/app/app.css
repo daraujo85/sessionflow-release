@@ -1,0 +1,276 @@
+:host {
+  display: block;
+}
+
+.sf-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--surface-page);
+}
+
+/* ---- Header ---- */
+.sf-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 var(--space-4);
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.sf-brand {
+  font-weight: var(--fw-bold);
+  font-size: var(--text-md);
+  color: var(--text-strong);
+}
+
+.sf-brand::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  vertical-align: middle;
+}
+
+.sf-header-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--text-body);
+  border-radius: var(--radius-md);
+}
+
+.sf-header-action:hover {
+  color: var(--text-strong);
+}
+
+/* ---- Content area ---- */
+.sf-content {
+  flex: 1;
+  padding: var(--space-4);
+  padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px) + var(--space-4));
+}
+
+/* Overlay routes take over the full viewport (no nav padding). */
+.sf-shell--overlay .sf-content {
+  padding-bottom: var(--space-4);
+}
+
+/* Login é full-bleed: sem coluna de 480px nem padding, para a própria tela
+   centralizar o card no viewport inteiro (evita o "bloco vazio" no topo). */
+.sf-shell--login {
+  max-width: none;
+}
+.sf-shell--login .sf-content {
+  padding: 0;
+}
+
+/* ---- Bottom navigation ---- */
+.sf-nav {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  width: 100%;
+  max-width: 480px;
+  padding: var(--space-1) var(--space-1) calc(var(--space-1) + env(safe-area-inset-bottom, 0px));
+  background: var(--surface-card);
+  border-top: 1px solid var(--border-default);
+}
+
+.sf-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-2) 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: var(--fw-medium);
+  border-radius: var(--radius-md);
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.sf-nav-item.is-active {
+  color: var(--color-accent);
+}
+
+.sf-nav-label {
+  line-height: 1;
+}
+
+/* ---- Floating action button ---- */
+.sf-fab {
+  position: fixed;
+  right: max(var(--space-5), calc(50vw - 240px + var(--space-5)));
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  color: var(--text-on-accent);
+  background: var(--color-accent);
+  /* Quadrado arredondado (squircle), como no mockup — não é círculo. */
+  border-radius: 19px;
+  box-shadow: 0 10px 26px -6px rgba(var(--color-accent-rgb), 0.7);
+  transition: background var(--dur-fast) var(--ease-standard);
+}
+
+.sf-fab:hover {
+  background: var(--color-accent-strong);
+}
+
+/* ---- Aviso de auto-atualização (PWA) ---- */
+.sf-update-toast {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border-radius: var(--radius-full);
+  background: var(--surface-card, #181c1b);
+  border: 1px solid var(--border-default, #283230);
+  color: var(--text-strong, #f4f5f7);
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.6);
+  animation: sf-toast-in 0.2s ease-out;
+}
+@keyframes sf-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+.sf-update-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 228, 180, 0.3);
+  border-top-color: var(--color-accent, #00e4b4);
+  animation: sf-spin 0.7s linear infinite;
+}
+@keyframes sf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sf-update-spinner {
+    animation: none;
+  }
+}
+
+/* ---- Stub placeholders (used by feature stub components) ---- */
+.sf-stub {
+  padding: var(--space-4) 0;
+}
+
+/* ============================================================
+   Responsividade (mobile-first intacto; só amplia em telas maiores)
+   ============================================================ */
+
+/* Tablet: coluna mais larga; bottom-nav segue centralizada. */
+@media (min-width: 768px) {
+  .sf-shell:not(.sf-shell--login) {
+    max-width: 760px;
+  }
+  .sf-content {
+    padding: var(--space-5);
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px) + var(--space-5));
+  }
+}
+
+/* Desktop: nav vira barra LATERAL esquerda; conteúdo usa a largura. */
+@media (min-width: 1024px) {
+  .sf-shell:not(.sf-shell--login) {
+    max-width: none;
+    margin: 0;
+    padding-left: 220px; /* espaço da sidebar fixa */
+  }
+  .sf-content {
+    /* width:100% para PREENCHER (margin:auto num flex item encolheria ao
+       conteúdo); max-width + margin auto centraliza dentro da área. */
+    width: 100%;
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: var(--space-6);
+    padding-bottom: var(--space-6);
+  }
+
+  /* Bottom-nav → sidebar vertical à esquerda. */
+  .sf-nav {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    transform: none;
+    width: 220px;
+    max-width: 220px;
+    height: 100dvh;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: var(--space-1);
+    padding: var(--space-5) var(--space-3);
+    border-top: none;
+    border-right: 1px solid var(--border-default);
+  }
+  .sf-nav::before {
+    content: "SessionFlow";
+    display: block;
+    padding: 0 var(--space-3) var(--space-4);
+    font-weight: var(--fw-bold);
+    font-size: var(--text-md);
+    color: var(--text-strong);
+  }
+  .sf-nav-item {
+    flex: none;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: var(--space-3);
+    padding: 11px var(--space-3);
+    font-size: 14px;
+    border-radius: var(--radius-md);
+  }
+  .sf-nav-item.is-active {
+    background: rgba(var(--color-accent-rgb), 0.12);
+  }
+  .sf-nav-item svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* FAB acompanha a borda direita da área de conteúdo (sidebar 220 + max 1120
+     centralizado no espaço restante). Em telas estreitas cai no canto. */
+  .sf-fab {
+    right: max(var(--space-6), calc((100% - 220px - 1120px) / 2 + var(--space-6)));
+    bottom: var(--space-6);
+  }
+}

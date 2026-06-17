@@ -1,0 +1,33 @@
+# Secrets / env
+.env
+.env.local
+*.env.local
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Angular
+node_modules/
+dist/
+.angular/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Uploads (mantém só o .gitkeep)
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Estado runtime de marcos (gerado pelos agentes por sessão)
+.sessionflow/
+
+# Caches diversos
+.DS_Store
+**/.DS_Store

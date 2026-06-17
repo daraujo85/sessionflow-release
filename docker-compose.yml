@@ -1,0 +1,100 @@
+# =============================================================================
+# SessionFlow — stack Docker dedicada.
+# Serviços de dados (mongo, rabbitmq) sobem já: `docker compose up -d`
+# App (api, frontend) sobe quando o código existir: `docker compose --profile app up -d`
+# O Worker NÃO está aqui — roda no host (precisa de tmux/Whisper/Ollama).
+# Portas publicadas só em 127.0.0.1 (acesso externo é via container de túnel Cloudflare).
+# =============================================================================
+
+name: sessionflow
+
+services:
+  mongo:
+    image: mongo:latest
+    container_name: sessionflow-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+      # consumidas pelo script de init para criar o usuário de aplicação
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sessionflow_net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: sessionflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "127.0.0.1:${RABBITMQ_HOST_PORT:-5672}:5672"      # AMQP
+      - "127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}:15672"  # management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - sessionflow_net
+
+  # --- App (sobe só com --profile app, depois que o código existir) ---
+  api:
+    profiles: ["app"]
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: sessionflow-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      UPLOADS_DIR: /data/uploads
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    volumes:
+      - ./data/uploads:/data/uploads
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sessionflow_net
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sessionflow-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-4200}:80"
+    depends_on:
+      - api
+    networks:
+      - sessionflow_net
+
+volumes:
+  mongo_data:
+  rabbitmq_data:
+
+networks:
+  sessionflow_net:
+    driver: bridge

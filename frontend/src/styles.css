@@ -1,0 +1,151 @@
+/* ============================================================
+   SessionFlow — global styles
+   Dark theme built on the Prata Digital Design System tokens.
+   Source: Prata Digital design system token files
+   plus the dark surface palette from the SessionFlow mockup.
+   ============================================================ */
+
+:root {
+  /* ---- Brand: Prata Green (mint/teal) ---- */
+  --prata-green-100: #CDFEEB;
+  --prata-green-300: #63F2CA;
+  --prata-green-500: #00E4B4; /* brand primary / accent */
+  --prata-green-600: #00A482; /* primary action */
+  --prata-green-700: #00836C;
+
+  /* ---- Ink / Navy ---- */
+  --navy-900: #1A1C32;
+  --navy-800: #1A1E39;
+  --navy-700: #374178;
+
+  /* ---- Stone (warm neutral) ---- */
+  --stone-50:  #FAFAF9;
+  --stone-100: #F5F5F4;
+  --stone-300: #D6D3D1;
+  --stone-400: #A8A29E;
+  --stone-500: #78716C;
+  --stone-900: #1C1917;
+
+  /* ---- Feedback colors (dark-theme tuned, from the mockup) ---- */
+  --positive: #34D399;
+  --warning:  #FBBF24;
+  --danger:   #F87171;
+  --info:     #4796E3;
+
+  /* ---- Typography (Prata DS) ---- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --fw-extra:    800;
+
+  --text-xs:   12px;
+  --text-sm:   14px;
+  --text-base: 16px;
+  --text-md:   18px;
+  --text-lg:   20px;
+  --text-xl:   26px;
+  --text-2xl:  32px;
+
+  /* ---- Spacing scale (4px base) ---- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---- Radii ---- */
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-2xl:  16px;
+  --radius-full: 9999px;
+
+  /* ---- Motion ---- */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast:   150ms;
+  --dur-normal: 250ms;
+
+  /* ============================================================
+     SEMANTIC ALIASES — dark theme (default)
+     ============================================================ */
+  --color-accent:        var(--prata-green-500);
+  --color-accent-strong: var(--prata-green-600);
+  --color-accent-rgb:    0, 228, 180;
+
+  /* Surfaces (dark) */
+  --surface-page:    #0E1113; /* app background */
+  --surface-card:    #181C1B; /* cards, panels, inputs */
+  --surface-raised:  #20262A;
+  --surface-inset:   #0E1113; /* terminal / code blocks */
+
+  /* Borders */
+  --border-default: #283230;
+  --border-strong:  #3A4540;
+
+  /* Text */
+  --text-strong: #F4F5F7;
+  --text-body:   #C9CDD6;
+  --text-muted:  #8A90A0;
+  --text-subtle: #6B7180;
+  --text-on-accent: #04140F;
+
+  /* Focus */
+  --focus-ring: rgba(var(--color-accent-rgb), 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--surface-page);
+  color: var(--text-body);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--fw-regular);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-strong);
+  font-weight: var(--fw-semibold);
+  margin: 0 0 var(--space-3);
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Utility: monospace / terminal text (JetBrains Mono) */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
