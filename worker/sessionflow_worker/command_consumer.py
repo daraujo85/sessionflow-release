@@ -233,19 +233,29 @@ class CommandConsumer:
         # abre uma janela nova (sem permissão extra). Env SESSIONFLOW_TERMINAL_MODE.
         mode = os.environ.get("SESSIONFLOW_TERMINAL_MODE", "tab").lower()
         if mode == "tab":
+            # activate + espera o Terminal vir à frente ANTES do Cmd+T (senão a
+            # tecla pode ir p/ outro app e a aba não nasce). Roda o attach na aba
+            # recém-criada (selected tab) e fixa o título nela, com delay p/ a aba
+            # assentar — set custom title sobrepõe e ignora escapes de título.
             ascript = [
                 "-e",
                 f'tell application "{term_app}" to activate',
                 "-e",
+                "delay 0.35",
+                "-e",
                 'tell application "System Events" to keystroke "t" using command down',
                 "-e",
-                "delay 0.25",
+                "delay 0.45",
                 "-e",
                 f'tell application "{term_app}"',
                 "-e",
-                f'set _t to do script "{attach_cmd}" in front window',
+                f'set _t to do script "{attach_cmd}" in selected tab of front window',
+                "-e",
+                "delay 0.2",
                 "-e",
                 f'set custom title of _t to "{title}"',
+                "-e",
+                f'set custom title of selected tab of front window to "{title}"',
                 "-e",
                 "end tell",
             ]
