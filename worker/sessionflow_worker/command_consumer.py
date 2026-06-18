@@ -46,6 +46,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import subprocess
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +89,7 @@ _VALID_TYPES = frozenset(
         "key",
         "audio",
         "file",
+        "open_terminal",
     }
 )
 
@@ -195,6 +198,63 @@ class CommandConsumer:
             return "Responde SIEMPRE en español."
         return None
 
+    async def _handle_open_terminal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Abre a sessão num Terminal do Mac (``tmux attach``) p/ uso lado a lado.
+
+        O worker roda no Mac, então usamos ``osascript`` p/ abrir o Terminal.app
+        (ou o app em ``SESSIONFLOW_TERMINAL_APP``) numa nova janela já anexada à
+        sessão tmux. Vários clientes podem anexar a mesma sessão (espelhada), de
+        modo que o que aparece no app e no terminal é o MESMO. Best-effort.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("open_terminal requer 'name'")
+        if not self._runtime.has_session(name):
+            raise CommandError(f"sessão tmux {name!r} não existe")
+
+        # Monta ``tmux [-L socket] attach -t <name>`` com o MESMO socket do server.
+        socket_name = getattr(self._server, "socket_name", None)
+        parts = ["tmux"]
+        if socket_name and socket_name != "default":
+            parts += ["-L", socket_name]
+        parts += ["attach", "-t", name]
+        # shlex.quote usa aspas SIMPLES p/ nomes com espaço (ex. "3 2 1 BANK"),
+        # então a string não tem aspas duplas → segura dentro do AppleScript.
+        attach_cmd = " ".join(shlex.quote(p) for p in parts)
+
+        term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
+        # Modo: "tab" (default) abre numa ABA da janela atual (lado a lado, via
+        # Cmd+T do System Events — exige permissão de Acessibilidade 1x); "window"
+        # abre uma janela nova (sem permissão extra). Env SESSIONFLOW_TERMINAL_MODE.
+        mode = os.environ.get("SESSIONFLOW_TERMINAL_MODE", "tab").lower()
+        if mode == "tab":
+            ascript = [
+                "-e",
+                f'tell application "{term_app}" to activate',
+                "-e",
+                'tell application "System Events" to keystroke "t" using command down',
+                "-e",
+                "delay 0.25",
+                "-e",
+                f'tell application "{term_app}" to do script "{attach_cmd}" in front window',
+            ]
+        else:
+            ascript = [
+                "-e",
+                f'tell application "{term_app}" to activate',
+                "-e",
+                f'tell application "{term_app}" to do script "{attach_cmd}"',
+            ]
+        try:
+            subprocess.Popen(
+                ["osascript", *ascript],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise CommandError(f"falha ao abrir o terminal: {exc}") from exc
+        return {"name": name, "note": f"terminal aberto ({term_app}, {mode})"}
+
     # -- despacho ---------------------------------------------------------
 
     async def handle(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -253,6 +313,8 @@ class CommandConsumer:
             return await self._handle_audio(payload)
         if ctype == "file":
             return await self._handle_file(payload)
+        if ctype == "open_terminal":
+            return await self._handle_open_terminal(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------

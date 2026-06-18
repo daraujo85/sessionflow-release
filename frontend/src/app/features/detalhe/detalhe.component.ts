@@ -106,6 +106,19 @@ import { ansiToHtml } from '../../shared/ansi-html';
             <button
               type="button"
               class="act act--ghost"
+              (click)="openInMac()"
+              aria-label="Abrir no terminal do Mac"
+              title="Abrir esta sessão num terminal do Mac (tmux attach, lado a lado)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2.5" y="4" width="19" height="16" rx="2" />
+                <path d="M6.5 9l3 3-3 3M13 15h4" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="act act--ghost"
               [disabled]="acting()"
               (click)="resume()"
             >
@@ -1721,6 +1734,22 @@ export class DetalheComponent implements AfterViewChecked {
           this.acting.set(false);
         },
         error: () => this.acting.set(false),
+      });
+  }
+
+  /** Abre esta sessão num Terminal do Mac (tmux attach, lado a lado). */
+  protected openInMac(): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    this.api
+      .openTerminal(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        error: () => {
+          /* best-effort — abre no Mac; falha silenciosa */
+        },
       });
   }
 

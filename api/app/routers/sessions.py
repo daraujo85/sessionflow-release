@@ -515,3 +515,23 @@ async def resume_session(request: Request, session_id: str) -> SessionCreateAcce
         settings, type="resume", payload={"name": tmux_name}
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+@router.post(
+    "/{session_id}/open-terminal",
+    response_model=SessionCreateAccepted,
+    status_code=202,
+)
+async def open_terminal(request: Request, session_id: str) -> SessionCreateAccepted:
+    """Abre a sessão num Terminal do Mac (``tmux attach``) p/ uso lado a lado.
+
+    O worker (no Mac) abre o Terminal.app já anexado à sessão tmux — vários
+    clientes podem anexar a mesma sessão (espelhada), então app e terminal
+    mostram o MESMO conteúdo.
+    """
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings, type="open_terminal", payload={"name": tmux_name}
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")

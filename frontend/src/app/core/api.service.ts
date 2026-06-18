@@ -115,6 +115,11 @@ export class ApiService {
     return this.http.post<Session>(this.url(`/sessions/${id}/resume`), {});
   }
 
+  /** Abre a sessão num Terminal do Mac (tmux attach) — uso lado a lado. */
+  openTerminal(id: string): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/open-terminal`), {});
+  }
+
   // --- Models ---
 
   /** Modelos reais para um agente; devolve o 1º item do envelope ou null. */
