@@ -229,41 +229,25 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # REUSO-ou-JANELA (confiável + sem duplicar):
-        #   1) Procura uma aba já existente cujo ``custom title`` == título desta
-        #      sessão (o worker sempre seta) → traz a janela à frente, seleciona a
-        #      aba e regrava o título. NÃO abre duplicata.
-        #   2) Se não achar → abre uma JANELA NOVA já anexada e titulada.
+        # SEMPRE abre uma JANELA NOVA já anexada (``tmux attach -t <nome>``) e
+        # titulada. Garante o CONTEÚDO CERTO: anexa pela sessão pelo NOME, então
+        # nunca mostra a sessão errada.
         #
-        # Por que não ABA (Cmd+T)? Criar aba no Terminal.app exige a tecla via
-        # System Events, que precisa de permissão de Acessibilidade pro processo
-        # do worker — quando falta, o Cmd+T vira no-op e o ``do script`` cai em
-        # janela nova MESMO ASSIM, gerando uma duplicata sem foco a cada clique.
-        # Reusar + janela titulada é determinístico e resolve a bagunça.
+        # Por que não reusar janela existente? Reusar casando pela ``custom
+        # title`` é frágil: o "Retomar" mata e recria a sessão tmux, deixando o
+        # rótulo da janela obsoleto (janela rotulada "planner" acaba anexada à
+        # meetsync). Não há como o AppleScript saber a QUAL sessão uma janela
+        # está anexada, então qualquer reuso por rótulo pode mostrar a errada.
+        # Janela nova por clique é o mal menor — e sempre correta.
+        #
+        # Por que não ABA (Cmd+T)? Criar aba exige tecla via System Events, que
+        # precisa de Acessibilidade pro processo do worker; sem isso o Cmd+T é
+        # no-op e cai em janela nova mesmo assim. Então vamos direto na janela.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
-            f"  set _done to false\n"
-            f"  repeat with w in windows\n"
-            f"    try\n"
-            f"      repeat with t in tabs of w\n"
-            f"        try\n"
-            f'          if (custom title of t) is "{title}" then\n'
-            f"            set frontmost of w to true\n"
-            f"            set selected tab of w to t\n"
-            f'            set custom title of t to "{title}"\n'
-            f"            set _done to true\n"
-            f"            exit repeat\n"
-            f"          end if\n"
-            f"        end try\n"
-            f"      end repeat\n"
-            f"    end try\n"
-            f"    if _done then exit repeat\n"
-            f"  end repeat\n"
-            f"  if not _done then\n"
-            f'    set _t to do script "{attach_cmd}"\n'
-            f'    set custom title of _t to "{title}"\n'
-            f"  end if\n"
+            f'  set _t to do script "{attach_cmd}"\n'
+            f'  set custom title of _t to "{title}"\n'
             f"end tell\n"
         )
         try:
