@@ -531,7 +531,17 @@ async def open_terminal(request: Request, session_id: str) -> SessionCreateAccep
     """
     tmux_name = await _require_tmux_name(request, session_id)
     settings = request.app.state.settings
+    # Título amigável (display name) p/ a aba do terminal — facilita achar.
+    repo = _get_repo(request)
+    doc = await repo.get_session(session_id)
+    title = (
+        (doc.get("display_name") or doc.get("tmux_name") or tmux_name)
+        if doc
+        else tmux_name
+    )
     command_id = await publish_command(
-        settings, type="open_terminal", payload={"name": tmux_name}
+        settings,
+        type="open_terminal",
+        payload={"name": tmux_name, "title": title},
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")

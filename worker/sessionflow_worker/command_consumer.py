@@ -222,6 +222,11 @@ class CommandConsumer:
         # então a string não tem aspas duplas → segura dentro do AppleScript.
         attach_cmd = " ".join(shlex.quote(p) for p in parts)
 
+        # Título amigável da aba (nome de exibição) p/ achar entre várias abas.
+        # Sanitiza: sem aspas duplas/quebras (vai embutido em string AppleScript).
+        title = str(payload.get("title") or name)
+        title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
+
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
         # Modo: "tab" (default) abre numa ABA da janela atual (lado a lado, via
         # Cmd+T do System Events — exige permissão de Acessibilidade 1x); "window"
@@ -236,14 +241,26 @@ class CommandConsumer:
                 "-e",
                 "delay 0.25",
                 "-e",
-                f'tell application "{term_app}" to do script "{attach_cmd}" in front window',
+                f'tell application "{term_app}"',
+                "-e",
+                f'set _t to do script "{attach_cmd}" in front window',
+                "-e",
+                f'set custom title of _t to "{title}"',
+                "-e",
+                "end tell",
             ]
         else:
             ascript = [
                 "-e",
-                f'tell application "{term_app}" to activate',
+                f'tell application "{term_app}"',
                 "-e",
-                f'tell application "{term_app}" to do script "{attach_cmd}"',
+                "activate",
+                "-e",
+                f'set _t to do script "{attach_cmd}"',
+                "-e",
+                f'set custom title of _t to "{title}"',
+                "-e",
+                "end tell",
             ]
         try:
             subprocess.Popen(

@@ -116,22 +116,33 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 <path d="M6.5 9l3 3-3 3M13 15h4" />
               </svg>
             </button>
-            <button
-              type="button"
-              class="act act--ghost"
-              [disabled]="acting()"
-              (click)="resume()"
-            >
-              Retomar
-            </button>
-            <button
-              type="button"
-              class="act act--danger"
-              [disabled]="acting()"
-              (click)="end()"
-            >
-              Encerrar
-            </button>
+            @if (isRunning()) {
+              <button
+                type="button"
+                class="act act--danger"
+                [disabled]="acting()"
+                (click)="end()"
+                aria-label="Parar a sessão"
+                title="Parar a sessão (mantém o registro; pode retomar depois)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <rect x="6" y="6" width="12" height="12" rx="2.5" />
+                </svg>
+              </button>
+            } @else {
+              <button
+                type="button"
+                class="act act--ghost"
+                [disabled]="acting()"
+                (click)="resume()"
+                aria-label="Retomar a sessão"
+                title="Retomar a sessão (continua de onde parou)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </button>
+            }
             <button
               type="button"
               class="act act--trash"
@@ -676,6 +687,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         align-items: center;
         gap: 8px;
         margin-top: 13px;
+        flex-wrap: wrap;
       }
       .status-pill {
         display: inline-flex;
@@ -1706,6 +1718,12 @@ export class DetalheComponent implements AfterViewChecked {
   protected statusMeta() {
     const s = this.session();
     return (s && STATUS_META[s.status]) || STATUS_META.detached;
+  }
+
+  /** Sessão ativa (rodando ou aguardando) → botão vira "Parar"; senão "Retomar". */
+  protected isRunning(): boolean {
+    const st = this.session()?.status;
+    return st === 'running' || st === 'waiting_input';
   }
 
   protected goBack(): void {
