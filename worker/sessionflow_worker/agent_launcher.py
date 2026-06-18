@@ -128,6 +128,7 @@ def build_launch_cmd(
     effort: str | None,
     yolo: bool = True,
     resume: bool = False,
+    lang_instruction: str | None = None,
 ) -> str:
     """Monta a linha de comando a ser enviada via ``tmux send-keys``.
 
@@ -178,6 +179,13 @@ def build_launch_cmd(
             parts += ["-m", model]
         if resolved_effort is not None:
             parts += ["--variant", resolved_effort]
+
+    # Idioma: força o agente a responder no idioma escolhido SEM gastar um turno
+    # nem poluir a tela (vai no system prompt). claude tem --append-system-prompt;
+    # outros CLIs variam, então aplicamos só onde há suporte conhecido.
+    if lang_instruction:
+        if agent_type is AgentType.CLAUDE:
+            parts += ["--append-system-prompt", lang_instruction]
 
     if yolo:
         parts += MAX_PERMISSION_FLAGS.get(agent_type, [])

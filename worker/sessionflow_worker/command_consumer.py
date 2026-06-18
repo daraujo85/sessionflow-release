@@ -153,6 +153,32 @@ class CommandConsumer:
     def _sessions(self):
         return self._db[self._collection]
 
+    async def _language_instruction(self) -> str | None:
+        """Instrução de idioma p/ sessões criadas pelo app.
+
+        Lê ``app_settings.language`` (default ``pt-BR``). Devolve a frase a ser
+        injetada no system prompt do agente, ou ``None`` (ex.: inglês = default
+        do CLI, sem instrução). Best-effort: falha de leitura cai no default PT.
+        """
+        lang = "pt-BR"
+        try:
+            doc = await self._db["app_settings"].find_one(
+                {"_id": "app"}, {"language": 1}
+            )
+            if doc and doc.get("language"):
+                lang = str(doc["language"])
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        key = lang.strip().lower()
+        if key in ("pt", "pt-br", "pt_br", "português", "portugues", ""):
+            return (
+                "Responda SEMPRE em português do Brasil, mesmo que arquivos, "
+                "comandos ou prompts apareçam em outro idioma."
+            )
+        if key in ("es", "es-es", "español", "espanhol"):
+            return "Responde SIEMPRE en español."
+        return None
+
     # -- despacho ---------------------------------------------------------
 
     async def handle(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -235,7 +261,12 @@ class CommandConsumer:
         # new_session valida work_dir inexistente e nome inválido (erro tipado).
         info = self._runtime.new_session(name, work_dir)
 
-        launch_cmd = build_launch_cmd(agent_type, model, effort)
+        # Idioma da sessão criada pelo app (config global): injeta no system
+        # prompt p/ o agente já responder no idioma certo (default pt-BR).
+        lang_instruction = await self._language_instruction()
+        launch_cmd = build_launch_cmd(
+            agent_type, model, effort, lang_instruction=lang_instruction
+        )
         self._send_keys(name, launch_cmd)
 
         now = _now()
