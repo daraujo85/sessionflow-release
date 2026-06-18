@@ -542,7 +542,12 @@ class CommandConsumer:
         # new_session expande ``~`` e valida o diretório (erro tipado).
         info = self._runtime.new_session(name, work_dir)
         # resume=True → continua a conversa anterior (claude --continue).
-        launch_cmd = build_launch_cmd(agent_type, model, effort, resume=True)
+        # Reinjeta o idioma (default pt-BR): sessões criadas antes desse fluxo
+        # — ou fora dele — passam a responder em português ao Retomar.
+        lang_instruction = await self._language_instruction()
+        launch_cmd = build_launch_cmd(
+            agent_type, model, effort, resume=True, lang_instruction=lang_instruction
+        )
         self._send_keys(name, launch_cmd)
 
         now = _now()
