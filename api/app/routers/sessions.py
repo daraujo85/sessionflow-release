@@ -41,6 +41,8 @@ class SessionOut(BaseModel):
     effort: str | None = None
     work_dir: str | None = None
     status: str | None = None
+    # Rótulo fino do que o agente está fazendo (derivado da tela pelo worker).
+    activity: str | None = None
     origin: str | None = None
     tmux_session_id: str | None = None
     agent_pid: int | None = None
@@ -49,6 +51,10 @@ class SessionOut(BaseModel):
     updated_at: datetime | None = None
     # Métricas reais da janela de contexto (sessões Claude); None se indisponível.
     metrics: dict[str, Any] | None = None
+    # Sessão favoritada (preferência do usuário; some das listas se desmarcada).
+    favorite: bool = False
+    # JARVIS: resumo falado da sessão (voz no celular) quando conclui/aguarda.
+    jarvis: bool = False
 
     @classmethod
     def from_doc(cls, doc: dict[str, Any]) -> SessionOut:
@@ -159,6 +165,10 @@ def _get_repo(request: Request) -> SessionsRepository:
     return SessionsRepository(db, settings.sessions_collection)
 
 
+# Prefixos de sessões INTERNAS do worker (scraping efêmero) — nunca exibidas.
+_INTERNAL_PREFIXES = ("sfusage-", "sfmodel-", "sftest-")
+
+
 @router.get("", response_model=SessionListOut)
 async def list_sessions(
     request: Request,
@@ -169,7 +179,14 @@ async def list_sessions(
 ) -> SessionListOut:
     repo = _get_repo(request)
     docs = await repo.list_sessions(status=status)
-    items = [SessionOut.from_doc(doc) for doc in docs]
+    # Esconde as sessões INTERNAS efêmeras de scraping do worker (lê limites de
+    # uso e lista de modelos abrindo o `claude`, mostram a tela de estatística e
+    # morrem). Não são sessões do usuário — não devem aparecer na lista.
+    items = [
+        SessionOut.from_doc(doc)
+        for doc in docs
+        if not str(doc.get("tmux_name") or "").startswith(_INTERNAL_PREFIXES)
+    ]
     return SessionListOut(items=items, total=len(items))
 
 
@@ -224,13 +241,75 @@ async def _require_tmux_name(request: Request, session_id: str) -> str:
 
 @router.delete("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
 async def kill_session(request: Request, session_id: str) -> SessionCreateAccepted:
-    """Kill a session's tmux process (TMUX-09)."""
+    """Encerra (para) a sessão: mata o tmux mas MANTÉM o registro (histórico)."""
     tmux_name = await _require_tmux_name(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
         settings, type="kill", payload={"name": tmux_name}
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+@router.delete(
+    "/{session_id}/purge", response_model=SessionCreateAccepted, status_code=202
+)
+async def purge_session(request: Request, session_id: str) -> SessionCreateAccepted:
+    """ELIMINA a sessão de vez: mata o tmux (se vivo) e REMOVE o registro +
+    dados relacionados. Some do app e do host (diferente de encerrar)."""
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    # Remove o registro NA HORA (some da lista imediatamente, sem flicker de
+    # 'apaguei e voltou'); o worker ainda mata o tmux no host e limpa os dados
+    # relacionados (tasks/output/events/screen) ao processar o comando.
+    repo = _get_repo(request)
+    await repo.delete_session(session_id)
+    command_id = await publish_command(
+        settings, type="delete", payload={"name": tmux_name}
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+class SessionFavorite(BaseModel):
+    """Marca/desmarca a sessão como favorita."""
+
+    favorite: bool
+
+
+@router.put("/{session_id}/favorite", status_code=200)
+async def set_favorite(
+    request: Request, session_id: str, body: SessionFavorite
+) -> dict:
+    """Favorita/desfavorita a sessão (preferência persistida no doc)."""
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    await db[settings.sessions_collection].update_one(
+        {"tmux_name": tmux_name}, {"$set": {"favorite": body.favorite}}
+    )
+    return {"favorite": body.favorite}
+
+
+class SessionJarvis(BaseModel):
+    """Liga/desliga o resumo falado (JARVIS) por sessão."""
+
+    jarvis: bool
+
+
+@router.put("/{session_id}/jarvis", status_code=200)
+async def set_jarvis(
+    request: Request, session_id: str, body: SessionJarvis
+) -> dict:
+    """Liga/desliga o JARVIS (voz) para esta sessão (persistido no doc).
+
+    O worker lê esse campo (ou ``app_settings.jarvis_all``) para decidir se fala.
+    """
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    await db[settings.sessions_collection].update_one(
+        {"tmux_name": tmux_name}, {"$set": {"jarvis": body.jarvis}}
+    )
+    return {"jarvis": body.jarvis}
 
 
 @router.patch("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
@@ -373,6 +452,50 @@ async def upload_audio(
         settings,
         type="audio",
         payload={"name": tmux_name, "path": path_str, "upload_id": upload_id},
+    )
+    return AudioUploadAccepted(
+        command_id=command_id, upload_id=upload_id, status="accepted"
+    )
+
+
+@router.post(
+    "/{session_id}/file", response_model=AudioUploadAccepted, status_code=202
+)
+async def upload_file(
+    request: Request, session_id: str, file: UploadFile = _AUDIO_FILE
+) -> AudioUploadAccepted:
+    """Anexa um arquivo/imagem à sessão: salva no host e injeta o caminho.
+
+    Persiste em ``{uploads_dir}/{session_id}/{uuid}.{ext}`` e publica um comando
+    ``file`` — o Worker re-rooteia o caminho para o host e injeta no pane (o
+    agente lê a imagem/arquivo pelo path).
+    """
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+
+    original = Path(file.filename or "").name or "arquivo"
+    ext = Path(original).suffix.lstrip(".") or "bin"
+    target_dir = Path(settings.uploads_dir) / session_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{uuid.uuid4().hex}.{ext}"
+    target_path.write_bytes(await file.read())
+    path_str = str(target_path)
+
+    db = request.app.state.mongo_db
+    uploads_repo = UploadsRepository(db, settings.uploads_collection)
+    upload_id = await uploads_repo.create_upload(
+        session_id=session_id, path=path_str, kind="file", status="received"
+    )
+
+    command_id = await publish_command(
+        settings,
+        type="file",
+        payload={
+            "name": tmux_name,
+            "path": path_str,
+            "filename": original,
+            "upload_id": upload_id,
+        },
     )
     return AudioUploadAccepted(
         command_id=command_id, upload_id=upload_id, status="accepted"

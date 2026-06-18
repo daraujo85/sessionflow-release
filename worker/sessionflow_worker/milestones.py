@@ -99,6 +99,59 @@ def read_milestones(
     return None
 
 
+def remove_milestone(work_dir: str, session_name: str, milestone_id: str) -> bool:
+    """Remove o marco ``milestone_id`` do arquivo namespaced da sessão.
+
+    Usa a MESMA lógica de path do :func:`read_milestones`
+    (``.sessionflow/milestones.<session_name>.json``, expande ``~``). Lê o
+    JSON ({"milestones": [{id, title, status}, ...]}), descarta a entrada cujo
+    ``id`` (fallback no ``title``, como no parse) bate com ``milestone_id`` e
+    regrava o arquivo na mesma forma (json identado, utf-8).
+
+    Best-effort/tolerante: arquivo ausente/inválido → False, nunca levanta.
+    Retorna True só quando algo foi removido.
+    """
+    if not work_dir or not milestone_id:
+        return False
+    path = Path(work_dir).expanduser() / ".sessionflow" / f"milestones.{session_name}.json"
+    try:
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    if not isinstance(data, dict):
+        return False
+    items = data.get("milestones")
+    if not isinstance(items, list):
+        return False
+
+    target = str(milestone_id).strip()
+    kept: list[Any] = []
+    removed = False
+    for m in items:
+        if isinstance(m, dict):
+            title = str(m.get("title", "")).strip()
+            mid = str(m.get("id") or title).strip()
+            if mid == target:
+                removed = True
+                continue
+        kept.append(m)
+
+    if not removed:
+        return False
+
+    data["milestones"] = kept
+    try:
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return True
+
+
 async def sync_session(
     db: AsyncIOMotorDatabase,
     session_id: str,

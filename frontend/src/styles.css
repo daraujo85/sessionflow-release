@@ -149,3 +149,44 @@ a:hover {
   font-family: var(--font-mono);
   font-variant-ligatures: none;
 }
+
+/* ============================================================
+   Motion utilities (GPU-friendly: transform + opacity only)
+   ============================================================ */
+
+/* Subtle list-entrance: fade + small rise. Runs once on render.
+   Keyframes live globally so component styles can reference them. */
+@keyframes sf-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Apply with a per-item animation-delay (capped) for a staggered reveal. */
+.sf-enter {
+  animation: sf-rise-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+/* ============================================================
+   Respect reduced-motion: kill app animations/transitions.
+   Global safety net on top of per-component resets.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .sf-enter {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -27,11 +27,13 @@ import aio_pika
 from libtmux.exc import LibTmuxException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from sessionflow_worker import jarvis
 from sessionflow_worker.agent_launcher import AgentType
 from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
 from sessionflow_worker.metrics import claude_metrics_for
 from sessionflow_worker.output_capture import (
     DEFAULT_SCREEN_COLLECTION,
+    derive_activity,
     screen_wants_attention,
 )
 from sessionflow_worker.push_sender import send_to_all
@@ -200,6 +202,9 @@ class Discovery:
         # ficou ocioso. ``attention`` ∈ {"waiting","idle",None} é a transição.
         status_value = state.value
         attention: str | None = None
+        # Rótulo fino do que o agente faz (derivado da tela). Só faz sentido p/
+        # sessões vivas; quando a sessão é marcada stopped/detached fica "".
+        activity = ""
         if state is SessionState.RUNNING:
             screen_text = await self._screen_text(info.name)
             if screen_wants_attention(screen_text, info.agent_type):
@@ -207,11 +212,13 @@ class Discovery:
                 attention = "waiting"
             elif self._screen_idle(info.name, screen_text):
                 attention = "idle"
+            activity = derive_activity(screen_text, info.agent_type, attention)
 
         set_fields = {
             "tmux_name": info.name,
             "agent_type": info.agent_type.value,
             "status": status_value,
+            "activity": activity,
             "tmux_session_id": info.id,
             "agent_pid": info.pane_pid,
             "last_seen_at": now,
@@ -337,6 +344,17 @@ class Discovery:
                 await send_to_all(self._db, title, desc, url=f"/sessao/{name}")
             except Exception:  # noqa: BLE001 - push nunca derruba o ciclo
                 logger.debug("web push falhou para %r", name, exc_info=True)
+            # JARVIS: resumo falado no celular (best-effort, em background p/ não
+            # bloquear o discovery com o round-trip de resumo+voz).
+            try:
+                screen = await self._screen_text(name)
+                asyncio.create_task(
+                    jarvis.maybe_speak(
+                        self._db, self._channel, name, title, desc, screen
+                    )
+                )
+            except Exception:  # noqa: BLE001 - jarvis nunca derruba o ciclo
+                logger.debug("jarvis: agendamento falhou para %r", name, exc_info=True)
 
     def _claude_metrics(self, info: SessionInfo) -> dict | None:
         """Métricas REAIS de contexto para sessões Claude (best-effort).

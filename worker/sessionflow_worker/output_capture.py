@@ -247,6 +247,38 @@ _ATTENTION_SCREEN_MARKERS = (
 )
 
 
+# Frases COMPLETAS (PT + EN) que indicam que o agente está AGUARDANDO UMA
+# DECISÃO do usuário. Diferente do "❯" ocioso ou de um "?" solto na prosa,
+# essas frases são longas o bastante para não casarem com texto qualquer, e
+# costumam aparecer ALGUMAS linhas acima do prompt atual (não só nas 3
+# últimas) — por isso são checadas numa janela maior (últimas ~10 linhas).
+# Match case-insensitive sobre o texto já sem ANSI. Conservador por design.
+_AWAITING_DECISION_MARKERS = frozenset(
+    {
+        # PT
+        "aguardando sua decisão",
+        "aguardando decisão",
+        "aguardo sua decisão",
+        "aguardo sua resposta",
+        "posso prosseguir",
+        "deseja que eu",
+        "quer que eu",
+        "qual você prefere",
+        # EN
+        "awaiting your decision",
+        "awaiting your input",
+        "awaiting your",
+        "i'll hold",
+        "i will hold here",
+        "waiting for your",
+        "let me know how",
+        "should i proceed",
+        "do you want me to",
+        "how would you like",
+    }
+)
+
+
 def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
     """A TELA VISÍVEL sugere que o agente espera uma DECISÃO do usuário?
 
@@ -265,8 +297,109 @@ def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
     blob = "\n".join(non_empty[-8:]).lower()
     if any(m in blob for m in _ATTENTION_SCREEN_MARKERS):
         return True
+    # "Aguardando decisão": frases completas (PT/EN) podem aparecer algumas
+    # linhas acima do prompt — checa numa janela maior (últimas ~10 linhas).
+    blob10 = "\n".join(non_empty[-10:]).lower()
+    if any(m in blob10 for m in _AWAITING_DECISION_MARKERS):
+        return True
     # Pergunta direta: só nas 3 últimas linhas (prompt atual).
     return any(detect_waiting(ln, agent_type) for ln in non_empty[-3:])
+
+
+# Prefixos de spinner / "pensando" (primeiro char não-vazio de uma linha de
+# trabalho do agente, ex.: "✻ Mustering… (48s · ↓ 1.5k tokens)").
+_THINKING_PREFIXES = ("✻", "✶", "✽", "·", "◯", "◆", "*")
+
+# Pista FRACA de atividade de "pensando" embutida na linha (timer/tokens), ex.:
+# "… (12s" ou "tokens)". Regex p/ o padrão de timer "(<n>s".
+_TIMER_RE = re.compile(r"\(\s*\d+\s*s\b")
+
+
+def derive_activity(
+    text: str, agent_type: AgentType, attention: str | None
+) -> str:
+    """Rótulo amigável (PT-BR) do que o agente está fazendo (função pura).
+
+    Heurística *best-effort* sobre a TELA já capturada. Trabalha sobre as
+    linhas não-vazias (sem ANSI) da CAUDA (últimas ~12 linhas, a área viva) e
+    mapeia o sinal mais recente para um rótulo curto. ``attention`` tem
+    precedência (vem do upstream ``screen_wants_attention``/idle).
+
+    Ordem:
+      1. ``attention == "waiting"`` -> "Aguardando você"
+      2. ``attention == "idle"``    -> "Concluído"
+      3. Varre a cauda de BAIXO p/ CIMA e usa o 1º sinal que casar:
+         - shell/comando  -> "Rodando comando"
+         - edição         -> "Codificando"
+         - leitura/análise-> "Analisando"
+         - pensando       -> "Pensando"
+      4. default -> "Executando"
+
+    ``agent_type`` é reservado p/ refinamento futuro por CLI (hoje não diferencia).
+    """
+    _ = agent_type
+    if attention == "waiting":
+        return "Aguardando sua decisão"
+    if attention == "idle":
+        return "Concluído"
+
+    non_empty = [
+        s for s in (strip_ansi(ln) for ln in text.splitlines()) if s.strip()
+    ]
+    if not non_empty:
+        return "Executando"
+
+    for line in reversed(non_empty[-12:]):
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        # shell/comando.
+        if (
+            "bash(" in lowered
+            or "shell command" in lowered
+            or "running…" in lowered
+            or stripped.startswith("$ ")
+        ):
+            return "Rodando comando"
+
+        # edição/escrita.
+        if any(
+            m in lowered
+            for m in (
+                "edit(",
+                "write(",
+                "update(",
+                "edited",
+                "updated",
+                "create(",
+            )
+        ):
+            return "Codificando"
+
+        # leitura/análise.
+        if any(
+            m in lowered
+            for m in (
+                "read(",
+                "grep(",
+                "glob(",
+                "search",
+                "explore",
+                "reading",
+                "web",
+            )
+        ):
+            return "Analisando"
+
+        # pensando / spinner de trabalho.
+        first = stripped[0]
+        rest = stripped[1:].lstrip()
+        if (first in _THINKING_PREFIXES and rest[:1].isalpha()) or (
+            "tokens)" in lowered or _TIMER_RE.search(stripped)
+        ):
+            return "Pensando"
+
+    return "Executando"
 
 
 def detect_waiting(text: str, agent_type: AgentType) -> bool:
@@ -401,20 +534,65 @@ class OutputCapture:
             lines.pop()
         return "\n".join(lines)
 
+    def capture_scrollback(self, tmux_name: str, lines: int = 400) -> str:
+        """Captura o HISTÓRICO rolado do pane (scrollback) como texto colorido.
+
+        Diferente de :meth:`capture_screen` (só a tela visível atual), roda
+        ``tmux [-L socket] capture-pane -e -p -S -<lines> -t <name>``, que
+        inclui as últimas ``lines`` linhas do scrollback ALÉM da tela visível.
+        Limpo do MESMO jeito que o espelho (``clean_screen_keep_color``, mantém
+        SGR de cor) para o frontend renderizar igual. É mais caro que a tela
+        visível, mas é lido SOB DEMANDA via HTTP (não empurrado por SSE) — só
+        vive no doc do Mongo para o modo "histórico".
+
+        Retorna ``""`` se a sessão não existir ou o comando falhar.
+        """
+        cmd = self._tmux_base_cmd() + [
+            "capture-pane",
+            "-e",
+            "-p",
+            "-S",
+            f"-{lines}",
+            "-t",
+            tmux_name,
+        ]
+        try:
+            proc = subprocess.run(cmd, check=True, capture_output=True)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        text = proc.stdout.decode("utf-8", errors="replace")
+        out = [clean_screen_keep_color(raw.rstrip("\r")) for raw in text.split("\n")]
+        # Remove o "" final (após o \n) e as linhas em branco do rodapé.
+        while out and not strip_ansi(out[-1]).strip():
+            out.pop()
+        return "\n".join(out)
+
     async def snapshot_screen(
         self, tmux_name: str, collection: str = DEFAULT_SCREEN_COLLECTION
     ) -> str:
         """Captura a tela visível e faz **upsert** de 1 doc por sessão.
 
-        Persiste ``{tmux_name, text, at}`` na coleção ``collection``
+        Persiste ``{tmux_name, text, scrollback, at}`` na coleção ``collection``
         (default ``session_screen``), substituindo o ``text`` a cada chamada
-        (espelho ao vivo). Retorna o texto capturado.
+        (espelho ao vivo). O ``scrollback`` (histórico mais profundo) é
+        capturado no MESMO ciclo (captura extra barata) e guardado no doc para
+        leitura SOB DEMANDA via HTTP — NÃO é empurrado por SSE/RabbitMQ (só o
+        ``text`` da tela visível continua sendo empurrado). Retorna o texto
+        capturado (tela visível).
         """
         text = self.capture_screen(tmux_name)
+        scrollback = self.capture_scrollback(tmux_name)
         now = _now()
         await self._db[collection].update_one(
             {"tmux_name": tmux_name},
-            {"$set": {"tmux_name": tmux_name, "text": text, "at": now}},
+            {
+                "$set": {
+                    "tmux_name": tmux_name,
+                    "text": text,
+                    "scrollback": scrollback,
+                    "at": now,
+                }
+            },
             upsert=True,
         )
         # Push SSE do espelho: empurra a tela assim que captura (em vez do front

@@ -53,7 +53,7 @@ import aio_pika
 import libtmux
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import transcriber
+from sessionflow_worker import milestones, transcriber
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
 from sessionflow_worker.rabbit import COMMANDS_QUEUE, EVENTS_QUEUE, publish
 from sessionflow_worker.state import SessionState
@@ -74,7 +74,18 @@ HOST_UPLOADS_DIR = Path(
 )
 
 _VALID_TYPES = frozenset(
-    {"create", "kill", "rename", "resume", "input", "key", "audio"}
+    {
+        "create",
+        "kill",
+        "delete",
+        "delete_task",
+        "rename",
+        "resume",
+        "input",
+        "key",
+        "audio",
+        "file",
+    }
 )
 
 # Teclas especiais permitidas (input do app) → nome da tecla no tmux send-keys.
@@ -184,6 +195,10 @@ class CommandConsumer:
             return await self._handle_create(payload)
         if ctype == "kill":
             return await self._handle_kill(payload)
+        if ctype == "delete":
+            return await self._handle_delete(payload)
+        if ctype == "delete_task":
+            return await self._handle_delete_task(payload)
         if ctype == "rename":
             return await self._handle_rename(payload)
         if ctype == "resume":
@@ -194,6 +209,8 @@ class CommandConsumer:
             return await self._handle_key(payload)
         if ctype == "audio":
             return await self._handle_audio(payload)
+        if ctype == "file":
+            return await self._handle_file(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -258,6 +275,78 @@ class CommandConsumer:
         )
         return {"name": name}
 
+    async def _handle_delete(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """ELIMINA a sessão de vez: mata o tmux (se vivo) e REMOVE o documento
+        + dados relacionados (tasks/output/screen/events). Diferente de ``kill``
+        (que só para e mantém o histórico). Some do app e do host.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("delete requer 'name'")
+
+        # Mata o tmux se ainda existir (idempotente; ignora se já morreu).
+        try:
+            if self._runtime.has_session(name):
+                self._runtime.kill_session(name)
+        except TmuxRuntimeError:
+            pass
+
+        db = self._sessions.database
+        await self._sessions.delete_one({"tmux_name": name})
+        # Limpa dados relacionados (best-effort; chaves variam por coleção).
+        for coll in ("tasks", "session_output", "events"):
+            try:
+                await db[coll].delete_many({"session_id": name})
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await db["session_screen"].delete_many({"tmux_name": name})
+        except Exception:  # noqa: BLE001
+            pass
+        return {"name": name, "deleted": True}
+
+    async def _handle_delete_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apaga uma TAREFA (marco) do arquivo no host e da coleção ``tasks``.
+
+        Payload: ``{name, work_dir, task_id}`` (``name`` = sessão/tmux_name,
+        ``task_id`` = id do marco no JSON). Remove a entrada do arquivo
+        ``.sessionflow/milestones.<name>.json`` (best-effort, para o sync não
+        re-adicionar) e o doc correspondente em ``tasks`` (match por
+        ``session_id`` + ``milestone_id``). Nunca derruba o consumer.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("delete_task requer 'name'")
+        task_id = payload.get("task_id")
+        if not task_id:
+            raise CommandError("delete_task requer 'task_id'")
+        work_dir = payload.get("work_dir") or ""
+
+        # Remove do arquivo de marcos no host (best-effort; nunca levanta).
+        removed_file = False
+        try:
+            removed_file = milestones.remove_milestone(work_dir, name, task_id)
+        except Exception:  # noqa: BLE001 - tolerante por contrato
+            removed_file = False
+
+        # Remove o doc da coleção tasks (match por sessão + id do marco).
+        db = self._sessions.database
+        removed_db = False
+        try:
+            res = await db["tasks"].delete_many(
+                {"session_id": name, "milestone_id": task_id}
+            )
+            removed_db = res.deleted_count > 0
+        except Exception:  # noqa: BLE001 - best-effort
+            removed_db = False
+
+        return {
+            "name": name,
+            "task_id": task_id,
+            "removed_file": removed_file,
+            "removed_db": removed_db,
+        }
+
     async def _handle_rename(self, payload: dict[str, Any]) -> dict[str, Any]:
         old = payload.get("old") or payload.get("name")
         new = payload.get("new")
@@ -285,19 +374,47 @@ class CommandConsumer:
         if not name:
             raise CommandError("resume requer 'name'")
 
-        # Sem TTY no worker: não há attach real. Apenas reconciliamos o estado.
-        # A sessão detached segue viva e rodando; o attach é do cliente (UI).
-        if not self._runtime.has_session(name):
-            raise CommandError(
-                f"não é possível retomar: sessão tmux {name!r} não existe"
+        # Sessão AINDA VIVA (detached): sem TTY no worker não há attach real; só
+        # reconciliamos o estado (o attach é do cliente/UI).
+        if self._runtime.has_session(name):
+            await self._sessions.update_one(
+                {"tmux_name": name},
+                {"$set": {"status": SessionState.RUNNING.value, "updated_at": _now()}},
+                upsert=True,
             )
+            return {"name": name, "note": "resumed (already alive)"}
 
+        # Sessão MORTA (stopped): o tmux dela não existe mais. "Retomar" então
+        # RECRIA a sessão e relança o agente, reusando os parâmetros salvos no
+        # doc (work_dir / agent / model / effort) — é o que o usuário espera.
+        doc = await self._sessions.find_one({"tmux_name": name})
+        if not doc:
+            raise CommandError(f"não é possível retomar: sessão {name!r} desconhecida")
+        work_dir = doc.get("work_dir")
+        if not work_dir:
+            raise CommandError(f"não é possível retomar {name!r}: sem work_dir salvo")
+
+        agent_type = _coerce_agent_type(doc.get("agent_type"))
+        model = doc.get("model")
+        effort = doc.get("effort")
+
+        # new_session expande ``~`` e valida o diretório (erro tipado).
+        info = self._runtime.new_session(name, work_dir)
+        # resume=True → continua a conversa anterior (claude --continue).
+        launch_cmd = build_launch_cmd(agent_type, model, effort, resume=True)
+        self._send_keys(name, launch_cmd)
+
+        now = _now()
         await self._sessions.update_one(
             {"tmux_name": name},
-            {"$set": {"status": SessionState.RUNNING.value, "updated_at": _now()}},
+            {"$set": {
+                "status": SessionState.RUNNING.value,
+                "tmux_id": info.id,
+                "updated_at": now,
+            }},
             upsert=True,
         )
-        return {"name": name, "note": "resumed (no TTY attach in worker)"}
+        return {"name": name, "note": "recreated", "launch_cmd": launch_cmd}
 
     async def _handle_input(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Injeta texto remoto na sessão via send-keys (DASH-13).
@@ -339,6 +456,31 @@ class CommandConsumer:
             raise CommandError(f"tecla não suportada: {key!r}")
         self._send_key(name, tmux_key)
         return {"name": name, "key": key}
+
+    async def _handle_file(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Anexa um arquivo: re-rooteia o path p/ o host e injeta no pane.
+
+        O agente (ex.: Claude Code) lê a imagem/arquivo pelo caminho. Payload:
+        ``{name, path, filename?, upload_id?}``.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("file requer 'name'")
+        path = payload.get("path")
+        if not path:
+            raise CommandError("file requer 'path'")
+        path = self._resolve_upload_path(path)
+        if not os.path.isfile(path):
+            raise CommandError(f"arquivo não encontrado: {path!r}")
+
+        filename = payload.get("filename") or os.path.basename(path)
+        # Injeta o caminho ABSOLUTO no pane (o agente abre/lê o arquivo).
+        self._send_keys(name, f"Arquivo anexado ({filename}): {path}")
+        result: dict[str, Any] = {"name": name, "path": path, "filename": filename}
+        upload_id = payload.get("upload_id")
+        if upload_id is not None:
+            result["upload_id"] = upload_id
+        return result
 
     async def _handle_audio(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Transcreve áudio (Whisper) e injeta o texto na sessão (DASH-15).

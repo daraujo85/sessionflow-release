@@ -23,9 +23,16 @@ router = APIRouter(prefix="/sessions", tags=["screen"])
 
 
 class ScreenOut(BaseModel):
-    """Live screen snapshot returned by the API."""
+    """Live screen snapshot returned by the API.
+
+    ``text`` is the currently visible screen (pushed frequently via SSE).
+    ``scrollback`` is the deeper terminal history (visible screen + rolled-back
+    lines), populated only in the Mongo doc by the Worker and read ON-DEMAND
+    here — never pushed over SSE. Empty string when the doc lacks it.
+    """
 
     text: str = ""
+    scrollback: str = ""
     at: datetime | None = None
 
 
@@ -43,5 +50,9 @@ async def get_screen(request: Request, session_id: str) -> ScreenOut:
 
     doc = await db[settings.screen_collection].find_one({"tmux_name": key})
     if not doc:
-        return ScreenOut(text="", at=None)
-    return ScreenOut(text=doc.get("text", "") or "", at=doc.get("at"))
+        return ScreenOut(text="", scrollback="", at=None)
+    return ScreenOut(
+        text=doc.get("text", "") or "",
+        scrollback=doc.get("scrollback", "") or "",
+        at=doc.get("at"),
+    )

@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # Config geral do app (single-user), ex.: auto-instruir marcos nas sessões.
     app_settings_collection: str = "app_settings"
 
+    # Token compartilhado que protege o webhook inbound do JARVIS
+    # (``POST /jarvis/webhook``). O hook do JARVIS (host) envia no header
+    # ``X-Jarvis-Token``. Vazio = endpoint desabilitado (rejeita tudo).
+    jarvis_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("SESSIONFLOW_JARVIS_TOKEN", "jarvis_token"),
+    )
+
     # CORS origins allowed for the front-end.
     cors_origins: list[str] = [
         "https://sessionflow.boletoazap.dev.br",

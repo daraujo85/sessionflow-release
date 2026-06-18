@@ -27,6 +27,7 @@ from app.routers import models as models_router
 from app.routers import outputs as outputs_router
 from app.routers import screen as screen_router
 from app.routers import profile as profile_router
+from app.routers import jarvis as jarvis_router
 from app.routers import push as push_router
 from app.routers import sessions as sessions_router
 from app.routers import settings as settings_router
@@ -90,6 +91,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             method == "OPTIONS"
             or (method == "GET" and path == "/health")
             or path.startswith("/auth/")
+            # Webhook inbound do JARVIS (host → API): protegido por token próprio
+            # (X-Jarvis-Token), não pelo JWT de usuário.
+            or path == "/jarvis/webhook"
         ):
             return await call_next(request)
 
@@ -129,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(profile_router.router)
     app.include_router(push_router.router)
     app.include_router(settings_router.router)
+    app.include_router(jarvis_router.router)
 
     return app
 

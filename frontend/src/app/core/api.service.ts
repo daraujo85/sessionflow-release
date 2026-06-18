@@ -4,6 +4,7 @@ import { Observable, map } from 'rxjs';
 import {
   AgentModels,
   AgentType,
+  AppSettings,
   CreateSessionPayload,
   Directory,
   EventItem,
@@ -85,6 +86,25 @@ export class ApiService {
     return this.http.delete<void>(this.url(`/sessions/${id}`));
   }
 
+  /** Elimina de vez: mata o tmux (se vivo) + remove o registro do host/app. */
+  purgeSession(id: string): Observable<void> {
+    return this.http.delete<void>(this.url(`/sessions/${id}/purge`));
+  }
+
+  /** Favorita/desfavorita a sessão (persistido no servidor). */
+  setFavorite(id: string, favorite: boolean): Observable<{ favorite: boolean }> {
+    return this.http.put<{ favorite: boolean }>(this.url(`/sessions/${id}/favorite`), {
+      favorite,
+    });
+  }
+
+  /** Liga/desliga o JARVIS (resumo falado) para esta sessão. */
+  setJarvis(id: string, jarvis: boolean): Observable<{ jarvis: boolean }> {
+    return this.http.put<{ jarvis: boolean }>(this.url(`/sessions/${id}/jarvis`), {
+      jarvis,
+    });
+  }
+
   renameSession(id: string, displayName: string): Observable<Session> {
     return this.http.patch<Session>(this.url(`/sessions/${id}`), {
       display_name: displayName,
@@ -127,21 +147,26 @@ export class ApiService {
     );
   }
 
-  /** Config geral do app (ex.: auto-instruir tarefas). */
-  getSettings(): Observable<{ milestones_auto: boolean }> {
-    return this.http.get<{ milestones_auto: boolean }>(this.url('/settings'));
+  /** Config geral do app (auto-instruir tarefas, JARVIS global). */
+  getSettings(): Observable<AppSettings> {
+    return this.http.get<AppSettings>(this.url('/settings'));
   }
 
-  setSettings(milestones_auto: boolean): Observable<{ milestones_auto: boolean }> {
-    return this.http.put<{ milestones_auto: boolean }>(this.url('/settings'), {
-      milestones_auto,
-    });
+  setSettings(settings: AppSettings): Observable<AppSettings> {
+    return this.http.put<AppSettings>(this.url('/settings'), settings);
   }
 
   uploadAudio(id: string, file: File | Blob): Observable<void> {
     const form = new FormData();
     form.append('file', file);
     return this.http.post<void>(this.url(`/sessions/${id}/audio`), form);
+  }
+
+  /** Anexa um arquivo/imagem à sessão (o worker injeta o caminho no agente). */
+  uploadFile(id: string, file: File): Observable<void> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post<void>(this.url(`/sessions/${id}/file`), form);
   }
 
   // --- Output / Events ---
@@ -156,9 +181,15 @@ export class ApiService {
       .pipe(this.items<OutputLine>());
   }
 
-  /** Espelho da tela visível atual do pane (ANSI removido, com `\n`). */
-  getScreen(id: string): Observable<{ text: string; at: string | null }> {
-    return this.http.get<{ text: string; at: string | null }>(
+  /**
+   * Espelho da tela visível atual do pane (ANSI removido, com `\n`).
+   * `scrollback` traz o histórico mais profundo (tela visível + linhas roladas)
+   * lido sob demanda — usado pelo modo "Histórico" do terminal.
+   */
+  getScreen(
+    id: string,
+  ): Observable<{ text: string; at: string | null; scrollback?: string }> {
+    return this.http.get<{ text: string; at: string | null; scrollback?: string }>(
       this.url(`/sessions/${id}/screen`),
     );
   }
@@ -222,6 +253,11 @@ export class ApiService {
     return this.http
       .get<{ items: Task[] }>(this.url('/tasks'), { params })
       .pipe(this.items<Task>());
+  }
+
+  /** Apaga uma tarefa (marco): some daqui e do arquivo de marcos no Mac. */
+  deleteTask(taskId: string): Observable<void> {
+    return this.http.delete<void>(this.url(`/tasks/${taskId}`));
   }
 
   // --- Directories ---

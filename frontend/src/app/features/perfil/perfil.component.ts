@@ -16,6 +16,7 @@ import { SseService } from '../../core/sse.service';
 import { AuthService } from '../../core/auth.service';
 import { PwaInstallService } from '../../core/pwa-install.service';
 import { NotifyService } from '../../core/notify.service';
+import { EventCuesService, CueMode } from '../../core/event-cues.service';
 import {
   Session,
   SessionStatus,
@@ -215,6 +216,37 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                     stroke-linejoin="round"
                   >
                     <path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" />
+                  </svg>
+                }
+                @case ('jarvis') {
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M12 8V4H8" />
+                    <rect width="16" height="12" x="4" y="8" rx="2" />
+                    <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+                  </svg>
+                }
+                @case ('cues') {
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M11 5 6 9H2v6h4l5 4z" />
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
                   </svg>
                 }
                 @case ('lang') {
@@ -711,6 +743,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   private readonly pwa = inject(PwaInstallService);
   protected readonly notify = inject(NotifyService);
+  private readonly cues = inject(EventCuesService);
 
   /** Input de arquivo escondido, disparado pelo clique no avatar. */
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
@@ -777,6 +810,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
   private readonly darkEnabled = signal(true);
   /** Auto-instruir sessões a trabalhar em tarefas/marcos (setting global). */
   private readonly milestonesAuto = signal(true);
+  /** JARVIS (voz) ligado para TODAS as sessões (atalho global). */
+  private readonly jarvisAll = signal(false);
 
   readonly settings = computed<SettingRow[]>(() => [
     {
@@ -802,10 +837,22 @@ export class PerfilComponent implements OnInit, OnDestroy {
       value: this.milestonesAuto(),
     },
     {
+      key: 'jarvis',
+      kind: 'toggle',
+      title: 'JARVIS (voz) em todas as sessões',
+      value: this.jarvisAll(),
+    },
+    {
       key: 'dark',
       kind: 'toggle',
       title: 'Tema escuro',
       value: this.darkEnabled(),
+    },
+    {
+      key: 'cues',
+      kind: 'value',
+      title: 'Avisos de evento',
+      display: cueLabel(this.cues.mode()),
     },
     {
       key: 'lang',
@@ -839,7 +886,10 @@ export class PerfilComponent implements OnInit, OnDestroy {
     this.reloadUsage();
     // Setting global de auto-instruir tarefas.
     this.api.getSettings().subscribe({
-      next: (s) => this.milestonesAuto.set(s.milestones_auto),
+      next: (s) => {
+        this.milestonesAuto.set(s.milestones_auto);
+        this.jarvisAll.set(!!s.jarvis_all);
+      },
       error: () => {
         /* mantém default (on) */
       },
@@ -894,6 +944,13 @@ export class PerfilComponent implements OnInit, OnDestroy {
   /** Row tap — value rows (e.g. Idioma) are placeholders for now. */
   onRowClick(s: SettingRow): void {
     if (s.kind === 'value') {
+      if (s.key === 'cues') {
+        // Tri-estado: cicla off → chime → voice → off a cada toque.
+        const order: CueMode[] = ['off', 'chime', 'voice'];
+        const next = order[(order.indexOf(this.cues.mode()) + 1) % order.length];
+        this.cues.setMode(next);
+        return;
+      }
       // 'lang' link — no language switcher wired yet.
     }
   }
@@ -916,10 +973,23 @@ export class PerfilComponent implements OnInit, OnDestroy {
       case 'milestones': {
         const next = !this.milestonesAuto();
         this.milestonesAuto.set(next); // otimista
-        this.api.setSettings(next).subscribe({
-          next: (s) => this.milestonesAuto.set(s.milestones_auto),
-          error: () => this.milestonesAuto.set(!next), // reverte em erro
-        });
+        this.api
+          .setSettings({ milestones_auto: next, jarvis_all: this.jarvisAll() })
+          .subscribe({
+            next: (s) => this.milestonesAuto.set(s.milestones_auto),
+            error: () => this.milestonesAuto.set(!next), // reverte em erro
+          });
+        break;
+      }
+      case 'jarvis': {
+        const next = !this.jarvisAll();
+        this.jarvisAll.set(next); // otimista
+        this.api
+          .setSettings({ milestones_auto: this.milestonesAuto(), jarvis_all: next })
+          .subscribe({
+            next: (s) => this.jarvisAll.set(!!s.jarvis_all),
+            error: () => this.jarvisAll.set(!next), // reverte em erro
+          });
         break;
       }
       default:
@@ -1035,6 +1105,18 @@ export class PerfilComponent implements OnInit, OnDestroy {
   }
 }
 
+/** Texto curto do estado dos avisos de evento (linha tri-estado do Perfil). */
+function cueLabel(mode: CueMode): string {
+  switch (mode) {
+    case 'chime':
+      return 'Toque';
+    case 'voice':
+      return 'Voz';
+    default:
+      return 'Desligado';
+  }
+}
+
 /** Formata segundos de uptime em "Xd Yh", "Xh Ymin" ou "Xmin". */
 function formatUptime(seconds: number | null | undefined): string {
   if (seconds == null || seconds < 0) {
@@ -1058,7 +1140,7 @@ function formatUptime(seconds: number | null | undefined): string {
 
 /** A single row in the settings list (toggle or read-only value). */
 interface SettingRow {
-  key: 'push' | 'realtime' | 'dark' | 'lang' | 'milestones';
+  key: 'push' | 'realtime' | 'dark' | 'lang' | 'milestones' | 'jarvis' | 'cues';
   kind: 'toggle' | 'value';
   title: string;
   /** Toggle state (toggle rows only). */

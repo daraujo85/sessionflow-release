@@ -59,7 +59,12 @@ export interface Session {
   effort: string | null;
   work_dir: string;
   status: SessionStatus;
+  /** Rótulo fino do que o agente está fazendo (worker, só p/ sessões running). */
+  activity?: string;
   origin: string;
+  favorite?: boolean;
+  /** JARVIS: resumo falado da sessão (voz no celular) ligado p/ esta sessão. */
+  jarvis?: boolean;
   metrics?: SessionMetrics | null;
   [key: string]: unknown;
 }
@@ -121,6 +126,14 @@ export interface CreateSessionPayload {
   work_dir: string;
   model: string | null;
   effort: string | null;
+}
+
+/** Config geral do app — `GET/PUT /settings`. */
+export interface AppSettings {
+  /** Instruir as sessões a trabalhar em tarefas/marcos automaticamente. */
+  milestones_auto: boolean;
+  /** JARVIS (voz) ligado para TODAS as sessões (atalho global). */
+  jarvis_all: boolean;
 }
 
 /** Status do Worker (host) — `GET /worker`. */

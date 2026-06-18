@@ -41,6 +41,20 @@ class SessionsRepository:
 
         return await self._collection.find_one({"_id": oid})
 
+    async def delete_session(self, session_id: str) -> bool:
+        """Remove o doc da sessão pelo id. Retorna True se removeu algo.
+
+        Usado no purge (eliminar) para a sessão sumir da lista NA HORA, sem
+        esperar o worker processar o comando assíncrono (evita o flicker de
+        'apaguei e voltou'). O worker ainda mata o tmux + limpa dados ligados.
+        """
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return False
+        res = await self._collection.delete_one({"_id": oid})
+        return res.deleted_count > 0
+
     async def active_with_name_exists(self, name: str) -> bool:
         """Return True if an ACTIVE session (status != stopped) uses ``name``.
 

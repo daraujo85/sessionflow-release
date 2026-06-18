@@ -127,6 +127,7 @@ def build_launch_cmd(
     model: str | None,
     effort: str | None,
     yolo: bool = True,
+    resume: bool = False,
 ) -> str:
     """Monta a linha de comando a ser enviada via ``tmux send-keys``.
 
@@ -148,6 +149,11 @@ def build_launch_cmd(
         model = None
 
     parts: list[str] = [agent_type.value]
+    # ``resume`` (usado pelo "Retomar"): continua a conversa anterior em vez de
+    # começar do zero. claude/opencode têm ``--continue``; codex/gemini não têm
+    # flag simples → relança novo (best-effort).
+    if resume and agent_type in (AgentType.CLAUDE, AgentType.OPENCODE):
+        parts += ["--continue"]
     resolved_effort = _effort_for_agent(agent_type, effort)
 
     if agent_type is AgentType.CLAUDE:

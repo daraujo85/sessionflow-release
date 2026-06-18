@@ -13,7 +13,7 @@ export interface StatusMeta {
 /** Maps each session status to its display metadata. */
 export const STATUS_META: Record<SessionStatus, StatusMeta> = {
   running: { label: 'Executando', color: '#34D399', dot: '#34D399' },
-  waiting_input: { label: 'Aguardando', color: '#FBBF24', dot: '#FBBF24' },
+  waiting_input: { label: 'Aguardando sua decisão', color: '#FBBF24', dot: '#FBBF24' },
   waiting_external: { label: 'Aguardando externo', color: '#FB923C', dot: '#FB923C' },
   completed: { label: 'Concluído', color: '#34D399', dot: '#34D399' },
   error: { label: 'Erro', color: '#F87171', dot: '#F87171' },

@@ -8,7 +8,7 @@
 <div class="sf-shell" [class.sf-shell--overlay]="isOverlay()" [class.sf-shell--login]="isLogin()">
   <!-- Sem header global: cada tela renderiza o próprio topo (logo/título/sino),
        como no mockup. Evita sino/marca duplicados. -->
-  <main class="sf-content">
+  <main class="sf-content" [@pageFade]="routeKey()">
     <router-outlet />
   </main>
 

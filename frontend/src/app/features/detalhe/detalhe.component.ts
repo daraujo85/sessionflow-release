@@ -18,6 +18,7 @@ import { Location } from '@angular/common';
 
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
+import { DraftStore } from '../../core/draft-store';
 import { Session, SessionMetrics, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
@@ -52,6 +53,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <div class="hdr-info">
             <div class="hdr-title">{{ displayName() }}</div>
             <div class="mono hdr-dir">{{ session()?.work_dir || '—' }}</div>
+            @if (activeTask()) {
+              <div class="hdr-task">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3" /><path d="m9 14 2 2 4-4" /></svg>
+                Tarefa: {{ activeTask() }}
+              </div>
+            }
           </div>
 
           <span
@@ -75,6 +82,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <span class="status-actions">
             <button
               type="button"
+              class="act act--jarvis"
+              [class.on]="!!session()?.jarvis"
+              (click)="toggleJarvis()"
+              [attr.aria-pressed]="!!session()?.jarvis"
+              aria-label="JARVIS: resumo falado desta sessão"
+              title="JARVIS — fala um resumo no celular quando a sessão concluir/aguardar"
+            >
+              @if (session()?.jarvis) {
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
+                </svg>
+              } @else {
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                  <path d="M22 9l-6 6M16 9l6 6" />
+                </svg>
+              }
+            </button>
+            <button
+              type="button"
               class="act act--ghost"
               [disabled]="acting()"
               (click)="resume()"
@@ -89,13 +119,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
             >
               Encerrar
             </button>
+            <button
+              type="button"
+              class="act act--trash"
+              [disabled]="acting()"
+              (click)="eliminate()"
+              aria-label="Eliminar sessão (remove do host e do app)"
+              title="Eliminar de vez (some do Mac e daqui)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" />
+              </svg>
+            </button>
           </span>
         </div>
       </header>
 
-      <!-- Bloco de métricas (sem endpoint real → "—"/"indisponível") -->
+      <!-- Bloco de métricas (recolhido por padrão; topo resume modelo + ctx%) -->
       <section class="metrics" aria-label="Métricas da sessão">
-        <div class="metrics-top">
+        <div
+          class="metrics-top metrics-top--toggle"
+          (click)="metricsOpen.set(!metricsOpen())"
+        >
           <div class="metrics-model">
             <span class="agent-dot" [style.background]="agent().color"></span>
             <div class="metrics-model-info">
@@ -113,7 +159,14 @@ import { ansiToHtml } from '../../shared/ansi-html';
               <div class="metrics-ctx-pct">—</div>
             }
           </div>
+          <svg class="metrics-chev" [class.open]="metricsOpen()" width="18" height="18"
+               viewBox="0 0 24 24" fill="none" stroke="#7A8090" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
         </div>
+
+        @if (metricsOpen()) {
 
         <div class="ctx-bar" aria-hidden="true">
           @if (metrics(); as m) {
@@ -253,6 +306,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
             </div>
           }
         </div>
+        }
       </section>
 
       <!-- Tarefas da sessão (marcos) — recolhível p/ não roubar o terminal -->
@@ -273,7 +327,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
                   type="button"
                   class="tasks-filter"
                   [class.sel]="taskStatusFilter() === f.key"
-                  (click)="taskStatusFilter.set(f.key)"
+                  (click)="taskStatusFilter.set(taskStatusFilter() === f.key ? 'all' : f.key)"
                 >
                   {{ f.label }}
                 </button>
@@ -294,49 +348,186 @@ import { ansiToHtml } from '../../shared/ansi-html';
         </div>
       }
 
-      <!-- Terminal: espelho ao vivo da tela atual do agente -->
-      <div class="term mono" #term aria-label="Tela do terminal">
-        @if (screen().length === 0) {
+      <!-- Barra do terminal: alterna entre espelho AO VIVO e HISTÓRICO rolável -->
+      <div class="term-bar">
+        <button
+          type="button"
+          class="term-toggle"
+          [class.is-on]="historyMode()"
+          (click)="toggleHistory()"
+          [attr.aria-pressed]="historyMode()"
+          [title]="historyMode() ? 'Voltar ao espelho ao vivo' : 'Ver histórico rolável do terminal'"
+        >
+          @if (historyMode()) {
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" /><path d="M12 12 12 7M12 12l4 2" />
+            </svg>
+            Ao vivo
+          } @else {
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l3 2" />
+            </svg>
+            Histórico
+          }
+        </button>
+      </div>
+
+      <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
+      <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()">
+        @if (historyMode()) {
+          <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
+        } @else if (screen().length === 0) {
           <div class="term-msg">Conectando ao terminal…</div>
         } @else {
           <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
         }
+
+        <!-- Pill "↓ ao vivo": aparece no modo ao vivo quando o usuário rolou
+             p/ cima; toca → snap pro fim e retoma o stick. -->
+        @if (!historyMode() && showLivePill()) {
+          <button type="button" class="live-pill" (click)="snapToLive()" aria-label="Ir para o fim (ao vivo)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5v14M6 13l6 6 6-6" />
+            </svg>
+            ao vivo
+          </button>
+        }
       </div>
 
-      <!-- Teclado de controle p/ navegar prompts TUI (pickers, listas) -->
-      <div class="keypad" role="group" aria-label="Teclas de navegação">
-        <button type="button" class="key" (click)="pressKey('up')" aria-label="Cima">↑</button>
-        <button type="button" class="key" (click)="pressKey('down')" aria-label="Baixo">↓</button>
-        <button type="button" class="key" (click)="pressKey('left')" aria-label="Esquerda">←</button>
-        <button type="button" class="key" (click)="pressKey('right')" aria-label="Direita">→</button>
-        <button type="button" class="key key-wide" (click)="pressKey('space')">Espaço</button>
-        <button type="button" class="key key-wide key-accent" (click)="pressKey('enter')">Enter</button>
-        <button type="button" class="key" (click)="pressKey('escape')">Esc</button>
-      </div>
+      <!-- Teclado de controle (recolhido por padrão p/ dar espaço ao terminal;
+           expande no toque do botão ⌨ na barra de input) -->
+      @if (keypadOpen()) {
+        <div class="keypad kp-anim" role="group" aria-label="Teclas de navegação">
+          <button type="button" class="key" (click)="pressKey('up')" aria-label="Cima">↑</button>
+          <button type="button" class="key" (click)="pressKey('down')" aria-label="Baixo">↓</button>
+          <button type="button" class="key" (click)="pressKey('left')" aria-label="Esquerda">←</button>
+          <button type="button" class="key" (click)="pressKey('right')" aria-label="Direita">→</button>
+          <button type="button" class="key key-wide" (click)="pressKey('space')">Espaço</button>
+          <button type="button" class="key key-wide key-accent" (click)="pressKey('enter')">Enter</button>
+          <button type="button" class="key" (click)="pressKey('escape')">Esc</button>
+        </div>
+      }
 
       <!-- Input bar -->
       <footer class="inputbar">
-        <button
-          type="button"
-          class="live-toggle"
-          [class.is-on]="liveMode()"
-          (click)="toggleLive()"
-          [attr.aria-pressed]="liveMode()"
-          aria-label="Modo ao vivo (encaminha o que você digita pro terminal)"
-          title="Modo ao vivo: mostra o autocomplete do CLI enquanto digita"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16" />
-          </svg>
-        </button>
+        <!-- Input de arquivo (sempre presente; abre via botão de anexar) -->
+        <input
+          #fileInput
+          type="file"
+          hidden
+          (change)="onFileSelected($event)"
+        />
 
-        <sf-audio-recorder
-          class="mic"
-          [sessionId]="id()"
-          (transcribing)="onAudioTranscribing($event)"
-          (uploaded)="onAudioUploaded()"
-        ></sf-audio-recorder>
+        @if (pendingFile(); as pf) {
+          <!-- Barra de anexo "staged": preview + cancelar/enviar (espelha o
+               recorder de áudio: escolher → revisar → enviar/descartar) -->
+          <div class="staged" role="group" aria-label="Arquivo pronto para enviar">
+            <button
+              type="button"
+              class="staged-cancel"
+              aria-label="Cancelar anexo"
+              title="Descartar arquivo"
+              [disabled]="attaching()"
+              (click)="cancelFile()"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div class="staged-info">
+              @if (pendingFileUrl(); as url) {
+                <img class="staged-thumb" [src]="url" alt="" />
+              } @else {
+                <span class="staged-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                       stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
+                  </svg>
+                </span>
+              }
+              <span class="staged-meta">
+                <span class="staged-name">{{ pf.name }}</span>
+                <span class="staged-size">{{ pendingFileSizeKb() }} KB</span>
+              </span>
+            </div>
+
+            <button
+              type="button"
+              class="staged-send"
+              [class.is-busy]="attaching()"
+              [disabled]="attaching()"
+              aria-label="Enviar arquivo"
+              title="Enviar arquivo para o agente"
+              (click)="sendFile()"
+            >
+              @if (attaching()) {
+                <span class="staged-spinner" aria-hidden="true"></span>
+              } @else {
+                <svg viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 2 11 13" />
+                  <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+                </svg>
+              }
+            </button>
+          </div>
+        } @else {
+        <!-- Botões de ação: ocultam ao focar o input (mais espaço pra digitar) -->
+        @if (!inputFocused()) {
+          <button
+            type="button"
+            class="live-toggle"
+            [class.is-on]="keypadOpen()"
+            (click)="keypadOpen.set(!keypadOpen())"
+            [attr.aria-pressed]="keypadOpen()"
+            aria-label="Teclas de navegação (setas/Enter/Esc)"
+            title="Mostrar/ocultar teclas de navegação"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="6" width="20" height="12" rx="2" />
+              <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="live-toggle"
+            [class.is-on]="liveMode()"
+            (click)="toggleLive()"
+            [attr.aria-pressed]="liveMode()"
+            aria-label="Modo ao vivo (encaminha o que você digita pro terminal)"
+            title="Modo ao vivo: mostra o autocomplete do CLI enquanto digita"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="attach"
+            [class.is-busy]="attaching()"
+            (click)="pickFile()"
+            aria-label="Anexar arquivo ou imagem"
+            title="Anexar arquivo/imagem para o agente"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
+            </svg>
+          </button>
+          <sf-audio-recorder
+            class="mic"
+            [sessionId]="id()"
+            (transcribing)="onAudioTranscribing($event)"
+            (uploaded)="onAudioUploaded()"
+          ></sf-audio-recorder>
+        }
 
         <input
           class="text-input mono"
@@ -346,6 +537,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
           [ngModel]="draft()"
           (ngModelChange)="onDraftChange($event)"
           (keydown.enter)="send()"
+          (focus)="inputFocused.set(true)"
+          (blur)="inputFocused.set(false)"
           [disabled]="sending()"
         />
 
@@ -371,6 +564,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
             <path d="M22 2 15 22l-4-9-9-4 20-7z" />
           </svg>
         </button>
+        }
       </footer>
     </section>
   `,
@@ -437,6 +631,24 @@ import { ansiToHtml } from '../../shared/ansi-html';
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .hdr-task {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        max-width: 100%;
+        margin-top: 6px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: #1b2a24;
+        color: #34d399;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hdr-task svg {
+        flex: 0 0 auto;
+      }
       .agent-badge {
         flex: none;
         font-size: 11px;
@@ -496,6 +708,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .act--danger:hover:not(:disabled) {
         background: #2a1c1c;
       }
+      .act--trash {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 9px;
+        color: #f87171;
+        border-color: #3a2326;
+      }
+      .act--trash:hover:not(:disabled) {
+        background: #2a1c1c;
+      }
+      .act--jarvis {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 9px;
+        color: #5a6072;
+      }
+      .act--jarvis.on {
+        color: #38bdf8;
+        border-color: #1e3a44;
+        background: #0e2730;
+      }
 
       /* Bloco de métricas */
       .metrics {
@@ -509,6 +744,17 @@ import { ansiToHtml } from '../../shared/ansi-html';
         align-items: center;
         justify-content: space-between;
         gap: 12px;
+      }
+      .metrics-top--toggle {
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .metrics-chev {
+        flex: none;
+        transition: transform 0.2s;
+      }
+      .metrics-chev.open {
+        transform: rotate(180deg);
       }
       .metrics-model {
         display: flex;
@@ -775,7 +1021,40 @@ import { ansiToHtml } from '../../shared/ansi-html';
         white-space: nowrap;
         margin-top: 1px;
       }
+      /* Barra do terminal: toggle ao vivo/histórico */
+      .term-bar {
+        flex: none;
+        display: flex;
+        justify-content: flex-end;
+        padding: 8px 16px 0;
+        background: #0b0e0f;
+      }
+      .term-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid #283230;
+        background: #14191a;
+        color: #8a90a0;
+        font-size: 11.5px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+      }
+      .term-toggle svg {
+        flex: none;
+      }
+      .term-toggle.is-on {
+        color: #00e4b4;
+        border-color: #1e3a30;
+        background: #0e221b;
+      }
       .term {
+        position: relative;
         flex: 1;
         min-height: 0;
         overflow-y: auto;
@@ -783,6 +1062,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
         padding: 14px 16px;
         font-size: 12.5px;
         line-height: 1.7;
+      }
+      .live-pill {
+        position: sticky;
+        bottom: 12px;
+        float: right;
+        margin-right: 2px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        color: #06231d;
+        font-size: 11.5px;
+        font-weight: 700;
+        font-family: inherit;
+        cursor: pointer;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        -webkit-tap-highlight-color: transparent;
+      }
+      .live-pill svg {
+        flex: none;
       }
       .term-msg {
         color: #6b7280;
@@ -807,6 +1109,24 @@ import { ansiToHtml } from '../../shared/ansi-html';
         background: #0e1113;
         touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
+      }
+      .kp-anim {
+        animation: kp-slide 0.18s ease-out;
+      }
+      @keyframes kp-slide {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .kp-anim {
+          animation: none;
+        }
       }
       .key {
         flex: 1 1 0;
@@ -869,6 +1189,25 @@ import { ansiToHtml } from '../../shared/ansi-html';
         -webkit-tap-highlight-color: transparent;
         transition: background 0.15s, color 0.15s, border-color 0.15s;
       }
+      .attach {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        border: 1px solid #283230;
+        background: #181c1b;
+        color: #8a90a0;
+        cursor: pointer;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .attach.is-busy {
+        opacity: 0.5;
+        cursor: progress;
+      }
       .live-toggle.is-on {
         color: #06231d;
         background: linear-gradient(150deg, #2cecc4, #00a482);
@@ -926,6 +1265,136 @@ import { ansiToHtml } from '../../shared/ansi-html';
         opacity: 0.4;
         cursor: not-allowed;
       }
+      /* Barra de anexo "staged" — ocupa a linha inteira da inputbar e
+         espelha o layout [cancelar][conteúdo][enviar] do recorder de áudio. */
+      .staged {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px;
+        border: 1px solid #283230;
+        background: #14191a;
+        border-radius: 14px;
+      }
+      .staged-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .staged-thumb {
+        flex: none;
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 10px;
+        border: 1px solid #283230;
+        display: block;
+      }
+      .staged-icon {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        background: #181c1b;
+        border: 1px solid #283230;
+        color: #8a90a0;
+      }
+      .staged-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+      .staged-meta {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .staged-name {
+        color: #f4f5f7;
+        font-size: 14px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .staged-size {
+        color: #6b7180;
+        font-size: 12px;
+      }
+      .staged-cancel {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border: none;
+        border-radius: var(--radius-full, 999px);
+        background: #2a1c1c;
+        color: #f87171;
+        cursor: pointer;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .staged-cancel:disabled {
+        opacity: 0.5;
+        cursor: progress;
+      }
+      .staged-cancel svg {
+        width: 16px;
+        height: 16px;
+      }
+      .staged-send {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border: none;
+        border-radius: var(--radius-full, 999px);
+        background: linear-gradient(150deg, #34d399, #00a482);
+        color: #04140f;
+        cursor: pointer;
+        padding: 0;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+        transition: opacity 0.15s;
+      }
+      .staged-send:disabled,
+      .staged-send.is-busy {
+        opacity: 0.7;
+        cursor: progress;
+      }
+      .staged-send svg {
+        width: 18px;
+        height: 18px;
+      }
+      .staged-spinner {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid rgba(4, 20, 15, 0.35);
+        border-top-color: #04140f;
+        animation: staged-spin 0.7s linear infinite;
+      }
+      @keyframes staged-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .staged-spinner {
+          animation: none;
+        }
+      }
     `,
   ],
 })
@@ -935,29 +1404,38 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
+  private readonly drafts = inject(DraftStore);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly location = inject(Location);
 
   private readonly termEl = viewChild<ElementRef<HTMLDivElement>>('term');
+  private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
 
   /** Session id from the route (`sessao/:id`). */
   protected readonly id = signal<string>(
     this.route.snapshot.paramMap.get('id') ?? '',
+  );
+  /** Tarefa em foco vinda do clique no Início (query param). */
+  protected readonly activeTask = signal<string>(
+    this.route.snapshot.queryParamMap.get('task') ?? '',
   );
 
   protected readonly session = signal<Session | null>(null);
   /** Tarefas/marcos desta sessão (painel recolhível). */
   protected readonly tasks = signal<Task[]>([]);
   protected readonly tasksOpen = signal<boolean>(false);
+  /** Keypad recolhido por padrão (libera espaço do terminal); ⌨ expande. */
+  protected readonly keypadOpen = signal<boolean>(false);
+  /** Métricas recolhidas por padrão (topo resume modelo + ctx%); toque expande. */
+  protected readonly metricsOpen = signal<boolean>(false);
   /** Filtro de status do painel de tarefas da sessão. */
   protected readonly taskStatusFilter = signal<
     'all' | 'todo' | 'doing' | 'done' | 'blocked'
   >('all');
   protected readonly taskFilters: {
-    key: 'all' | 'todo' | 'doing' | 'done' | 'blocked';
+    key: 'todo' | 'doing' | 'done' | 'blocked';
     label: string;
   }[] = [
-    { key: 'all', label: 'Todas' },
     { key: 'doing', label: 'Em andamento' },
     { key: 'todo', label: 'A fazer' },
     { key: 'blocked', label: 'Bloqueadas' },
@@ -976,6 +1454,18 @@ export class DetalheComponent implements AfterViewChecked {
   );
   protected readonly acting = signal<boolean>(false);
   protected readonly sending = signal<boolean>(false);
+  protected readonly attaching = signal<boolean>(false);
+  /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
+  protected readonly pendingFile = signal<File | null>(null);
+  /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
+  protected readonly pendingFileUrl = signal<string | null>(null);
+  /** Tamanho do arquivo staged em KB (1 casa), p/ exibir no preview. */
+  protected readonly pendingFileSizeKb = computed(() => {
+    const f = this.pendingFile();
+    return f ? Math.max(1, Math.round(f.size / 1024)) : 0;
+  });
+  /** Input focado → esconde os botões de ação (mais espaço pra digitar). */
+  protected readonly inputFocused = signal<boolean>(false);
   protected readonly draft = signal<string>('');
 
   /**
@@ -1001,6 +1491,20 @@ export class DetalheComponent implements AfterViewChecked {
     this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.screen())),
   );
 
+  /**
+   * Modo "Histórico": congela o terminal mostrando o scrollback profundo
+   * (buscado sob demanda) em vez do espelho ao vivo. O usuário rola livremente;
+   * não há auto-refresh nem auto-scroll nesse modo. "Ao vivo" retoma o espelho.
+   */
+  protected readonly historyMode = signal<boolean>(false);
+  /** Texto do scrollback congelado (fonte do render no modo histórico). */
+  protected readonly historyText = signal<string>('');
+  protected readonly historyHtml = computed<SafeHtml>(() =>
+    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.historyText())),
+  );
+  /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
+  protected readonly showLivePill = signal<boolean>(false);
+
   protected readonly canSend = computed(
     () => this.draft().trim().length > 0 && !this.sending() && !!this.id(),
   );
@@ -1016,6 +1520,8 @@ export class DetalheComponent implements AfterViewChecked {
   private stickToBottom = true;
 
   constructor() {
+    // Restaura o rascunho desta sessão (sobrevive à navegação/reload).
+    this.draft.set(this.drafts.get(this.id()));
     this.sse.connect(); // idempotente — garante o canal p/ o push do espelho
     this.loadSession();
     this.refreshScreen();
@@ -1039,6 +1545,11 @@ export class DetalheComponent implements AfterViewChecked {
         return;
       }
       const scr = this.sse.screens()[tn];
+      // No modo histórico o terminal fica congelado — não aplicamos frames novos
+      // (mas continuamos lendo o signal p/ não desinscrever o effect).
+      if (this.historyMode()) {
+        return;
+      }
       if (scr && scr.text !== this.screen()) {
         this.stickToBottom = this.isAtBottom();
         this.screen.set(scr.text);
@@ -1048,7 +1559,10 @@ export class DetalheComponent implements AfterViewChecked {
     // Fallback: se o SSE cair, um poll lento (4s) garante que a tela não trava.
     // Aproveita p/ atualizar as tarefas (worker sincroniza ~6s).
     const poll = setInterval(() => {
-      this.refreshScreen();
+      // No modo histórico o terminal está congelado — só atualiza tarefas.
+      if (!this.historyMode()) {
+        this.refreshScreen();
+      }
       this.loadTasks();
     }, 4000);
     this.destroyRef.onDestroy(() => {
@@ -1056,6 +1570,8 @@ export class DetalheComponent implements AfterViewChecked {
       if (this.liveTimer) {
         clearTimeout(this.liveTimer);
       }
+      // Evita vazar o object URL do preview do anexo staged.
+      this.revokePendingUrl();
     });
   }
 
@@ -1103,8 +1619,38 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /** MODELO: prioriza metrics.model, depois session.model, senão "—". */
+  /**
+   * Modelo lido da STATUSLINE do terminal (o que está REALMENTE selecionado,
+   * ex. "Opus 4.8"). O modelo das métricas vem do transcript (última resposta)
+   * e fica defasado quando se troca via `/model`; a statusline é a verdade do
+   * que o usuário vê. Vazio se não der pra extrair.
+   */
+  protected readonly terminalModel = computed<string>(() => {
+    const scr = this.screen();
+    if (!scr) {
+      return '';
+    }
+    const stripAnsi = (s: string) => s.replace(/\[[0-9;]*m/g, '');
+    const lines = scr.split('\n').map(stripAnsi);
+    const line = [...lines]
+      .reverse()
+      .find(
+        (l) =>
+          l.includes('│') && /Opus|Sonnet|Haiku|Gemini|GPT|claude-/i.test(l),
+      );
+    if (!line) {
+      return '';
+    }
+    const seg = (line.split('│').pop() ?? '').replace(/\([^)]*\)/g, '').trim();
+    return seg;
+  });
+
   protected readonly modelLabel = computed<string>(
-    () => this.metrics()?.model || this.session()?.model || '—',
+    () =>
+      this.terminalModel() ||
+      this.metrics()?.model ||
+      this.session()?.model ||
+      '—',
   );
 
   /** Cor da barra de contexto: <70% mint, 70-85% âmbar, ≥85% vermelho. */
@@ -1123,6 +1669,10 @@ export class DetalheComponent implements AfterViewChecked {
   protected fmtTok(n: number | null | undefined): string {
     if (n == null) {
       return '—';
+    }
+    if (n >= 1_000_000) {
+      const m = Math.round((n / 1_000_000) * 10) / 10;
+      return String(m).replace('.', ',') + 'M';
     }
     if (n >= 1000) {
       const k = Math.round((n / 1000) * 10) / 10;
@@ -1175,12 +1725,45 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   protected end(): void {
+    // "Encerrar" = PARA a sessão (encerra o tmux/agente no host) mas MANTÉM o
+    // registro — vira "Parada" e pode ser Retomada (claude --continue). Só a
+    // 🗑️ (eliminar) apaga de vez. Otimista: marca parada na hora e volta.
+    const id = this.id();
+    if (this.acting() || !id) {
+      return;
+    }
+    const s = this.session();
+    if (s) {
+      this.session.set({ ...s, status: 'stopped' });
+    }
+    this.acting.set(true);
+    this.api
+      .deleteSession(id) // comando "kill": encerra o tmux, preserva o registro
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.acting.set(false);
+          void this.router.navigate(['/sessoes']);
+        },
+        error: () => {
+          this.acting.set(false);
+          void this.router.navigate(['/sessoes']);
+        },
+      });
+  }
+
+  /** Elimina a sessão de vez (mata no host + remove daqui). Confirma antes. */
+  protected eliminate(): void {
     if (this.acting() || !this.id()) {
+      return;
+    }
+    const nm = this.displayName();
+    if (!confirm(`Eliminar a sessão "${nm}"? Isso encerra no Mac e remove ela daqui — não dá pra desfazer.`)) {
       return;
     }
     this.acting.set(true);
     this.api
-      .deleteSession(this.id())
+      .purgeSession(this.id())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
@@ -1188,6 +1771,28 @@ export class DetalheComponent implements AfterViewChecked {
           void this.router.navigate(['/sessoes']);
         },
         error: () => this.acting.set(false),
+      });
+  }
+
+  /** Liga/desliga o JARVIS (resumo falado) desta sessão. Otimista + rollback. */
+  protected toggleJarvis(): void {
+    const s = this.session();
+    const id = this.id();
+    if (!s || !id) {
+      return;
+    }
+    const next = !s.jarvis;
+    this.session.set({ ...s, jarvis: next }); // otimista
+    this.api
+      .setJarvis(id, next)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        error: () => {
+          const cur = this.session();
+          if (cur) {
+            this.session.set({ ...cur, jarvis: !next }); // reverte
+          }
+        },
       });
   }
 
@@ -1205,6 +1810,7 @@ export class DetalheComponent implements AfterViewChecked {
         .pipe(takeUntilDestroyed(this.destroyRef))
         .subscribe({ next: () => this.refreshScreen(), error: () => {} });
       this.draft.set('');
+      this.drafts.set(id, '');
       this.paneBuffer = '';
       return;
     }
@@ -1221,6 +1827,7 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: () => {
           this.draft.set('');
+          this.drafts.set(id, '');
           this.sending.set(false);
         },
         error: () => this.sending.set(false),
@@ -1230,6 +1837,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Atualiza o draft e, no modo ao vivo, agenda o encaminhamento do diff. */
   protected onDraftChange(value: string): void {
     this.draft.set(value);
+    this.drafts.set(this.id(), value); // persiste por sessão
     if (this.liveMode()) {
       this.scheduleForward();
     }
@@ -1321,6 +1929,70 @@ export class DetalheComponent implements AfterViewChecked {
    * Envia uma tecla especial (seta/enter/espaço/esc) ao pane para navegar
    * prompts TUI. O espelho de tela reflete o efeito no próximo poll (~1.2s).
    */
+  /** Abre o seletor de arquivo para anexar à sessão. */
+  protected pickFile(): void {
+    this.fileInput()?.nativeElement.click();
+  }
+
+  /**
+   * Apenas "staged": guarda o arquivo escolhido e gera preview (sem enviar).
+   * O envio só ocorre quando o usuário confirma em {@link sendFile}.
+   */
+  protected onFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ''; // permite reanexar o mesmo arquivo
+    if (!file) {
+      return;
+    }
+    // Revoga preview anterior antes de trocar o arquivo staged.
+    this.revokePendingUrl();
+    this.pendingFile.set(file);
+    if (file.type.startsWith('image/')) {
+      this.pendingFileUrl.set(URL.createObjectURL(file));
+    } else {
+      this.pendingFileUrl.set(null);
+    }
+  }
+
+  /** Descarta o arquivo staged (não envia) e revoga o preview. */
+  protected cancelFile(): void {
+    this.revokePendingUrl();
+    this.pendingFile.set(null);
+  }
+
+  /** Confirma e faz upload do arquivo staged; o worker injeta o caminho no agente. */
+  protected sendFile(): void {
+    const file = this.pendingFile();
+    const id = this.id();
+    if (!file || !id) {
+      return;
+    }
+    this.attaching.set(true);
+    this.api
+      .uploadFile(id, file)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.attaching.set(false);
+          this.revokePendingUrl();
+          this.pendingFile.set(null);
+          this.refreshScreen();
+        },
+        // Mantém o arquivo staged para o usuário poder tentar de novo.
+        error: () => this.attaching.set(false),
+      });
+  }
+
+  /** Revoga o object URL do preview (se houver) e limpa o signal. */
+  private revokePendingUrl(): void {
+    const url = this.pendingFileUrl();
+    if (url) {
+      URL.revokeObjectURL(url);
+    }
+    this.pendingFileUrl.set(null);
+  }
+
   protected pressKey(key: TerminalKey): void {
     const id = this.id();
     if (!id) {
@@ -1432,6 +2104,59 @@ export class DetalheComponent implements AfterViewChecked {
           /* poll é best-effort; ignora erro transitório */
         },
       });
+  }
+
+  /**
+   * Alterna entre espelho AO VIVO e HISTÓRICO. Ao ENTRAR no histórico, busca o
+   * scrollback profundo (fallback p/ o texto da tela visível), congela-o e
+   * desce p/ o fim (mais recente) — contínuo com onde o ao vivo parou, sem
+   * auto-refresh/scroll depois. Ao VOLTAR p/ o ao vivo, retoma e gruda no fim.
+   */
+  protected toggleHistory(): void {
+    if (this.historyMode()) {
+      // Voltando ao vivo: retoma o stick e desce.
+      this.historyMode.set(false);
+      this.stickToBottom = true;
+      this.refreshScreen();
+      queueMicrotask(() => this.scrollToBottom());
+      return;
+    }
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    // Pré-carrega com o que já temos na tela p/ não piscar vazio.
+    this.historyText.set(this.screen());
+    this.historyMode.set(true);
+    this.showLivePill.set(false);
+    this.api
+      .getScreen(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (resp) => {
+          this.historyText.set(resp.scrollback || resp.text || '');
+          // Começa no fim (mais recente), contínuo com o ao vivo.
+          queueMicrotask(() => this.scrollToBottom());
+        },
+        error: () => {
+          /* mantém o pré-carregado */
+        },
+      });
+  }
+
+  /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
+  protected snapToLive(): void {
+    this.stickToBottom = true;
+    this.scrollToBottom();
+    this.showLivePill.set(false);
+  }
+
+  /** Atualiza a pill ↓ ao vivo conforme o usuário rola (só no modo ao vivo). */
+  protected onTermScroll(): void {
+    if (this.historyMode()) {
+      return;
+    }
+    this.showLivePill.set(!this.isAtBottom());
   }
 
   /** True se a viewport do terminal está (quase) no fim — tolerância de 48px. */

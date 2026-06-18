@@ -35,12 +35,16 @@ class SettingsOut(BaseModel):
     """Configurações expostas ao app."""
 
     milestones_auto: bool = True
+    # JARVIS (voz) ligado para TODAS as sessões (atalho global; o liga/desliga
+    # por-sessão fica no doc da sessão). Default off — fala só onde pedido.
+    jarvis_all: bool = False
 
 
 class SettingsIn(BaseModel):
     """Atualização das configurações."""
 
     milestones_auto: bool
+    jarvis_all: bool = False
 
 
 async def read_settings(request: Request) -> SettingsOut:
@@ -50,7 +54,10 @@ async def read_settings(request: Request) -> SettingsOut:
     doc = await db[settings.app_settings_collection].find_one({"_id": SETTINGS_ID})
     if not doc:
         return SettingsOut()
-    return SettingsOut(milestones_auto=bool(doc.get("milestones_auto", True)))
+    return SettingsOut(
+        milestones_auto=bool(doc.get("milestones_auto", True)),
+        jarvis_all=bool(doc.get("jarvis_all", False)),
+    )
 
 
 @router.get("", response_model=SettingsOut)
@@ -64,7 +71,12 @@ async def put_settings(request: Request, body: SettingsIn) -> SettingsOut:
     db = request.app.state.mongo_db
     await db[settings.app_settings_collection].update_one(
         {"_id": SETTINGS_ID},
-        {"$set": {"milestones_auto": body.milestones_auto}},
+        {"$set": {
+            "milestones_auto": body.milestones_auto,
+            "jarvis_all": body.jarvis_all,
+        }},
         upsert=True,
     )
-    return SettingsOut(milestones_auto=body.milestones_auto)
+    return SettingsOut(
+        milestones_auto=body.milestones_auto, jarvis_all=body.jarvis_all
+    )

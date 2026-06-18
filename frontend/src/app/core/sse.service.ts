@@ -26,6 +26,16 @@ export function isOutputLine(e: SseEvent): e is SseOutputLine {
   return typeof (e as SseOutputLine).seq === 'number';
 }
 
+/** Frame de áudio do JARVIS (resumo falado) empurrado pelo worker via SSE. */
+export interface JarvisAudioFrame {
+  session_id: string;
+  title?: string;
+  text?: string;
+  audio_b64: string;
+  mime?: string;
+  at?: string;
+}
+
 /** Maximum entries kept in each rolling buffer. */
 const MAX_BUFFER = 500;
 
@@ -60,6 +70,12 @@ export class SseService {
   readonly notifications = signal<EventItem[]>([]);
   /** Último espelho de tela por sessão (tmux_name) — empurrado pelo worker. */
   readonly screens = signal<Record<string, { text: string; at: string }>>({});
+  /**
+   * Último frame de áudio do JARVIS (resumo falado). Transiente: o worker
+   * publica `type=jarvis_audio` com o áudio em base64; o {@link JarvisAudioService}
+   * reage a este signal e toca no aparelho.
+   */
+  readonly jarvisAudio = signal<JarvisAudioFrame | null>(null);
 
   private source: EventSource | null = null;
   private sessionId?: string;
@@ -169,6 +185,13 @@ export class SseService {
           [key]: { text: raw2.text ?? '', at: raw2.at ?? '' },
         }));
       }
+      return;
+    }
+
+    // JARVIS: áudio transiente (resumo falado). Não entra em events/notifications.
+    const jv = parsed as { type?: string; audio_b64?: string };
+    if (jv.type === 'jarvis_audio' && jv.audio_b64) {
+      this.jarvisAudio.set(parsed as JarvisAudioFrame);
       return;
     }
 

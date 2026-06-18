@@ -13,9 +13,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from bson import ObjectId
+from bson.errors import InvalidId
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from app.publishers.command_publisher import publish_command
 from app.repositories.event_repo import EventRepository
 from app.repositories.task_repo import TaskRepository
 
@@ -122,3 +125,54 @@ async def list_tasks(
     docs = await repo.list_tasks(session_id=session)
     items = [TaskOut.from_doc(doc) for doc in docs]
     return TaskListOut(items=items, total=len(items))
+
+
+@router.delete("/tasks/{task_id}", status_code=202)
+async def delete_task(request: Request, task_id: str) -> Response:
+    """Apaga uma tarefa (marco): some daqui NA HORA e do arquivo no Mac.
+
+    Carrega o doc da tarefa pelo ``_id``; dele tira a sessão (``session_id`` =
+    tmux_name) e o id do marco (``milestone_id``, como gravado no JSON). Acha o
+    ``work_dir`` na sessão (``tmux_name == session_id``). Remove o doc de
+    ``tasks`` imediatamente (some da lista) e publica ``delete_task`` para o
+    worker apagar a entrada do arquivo de marcos no host (senão o sync
+    re-adicionaria). 404 se a tarefa/sessão não existir.
+    """
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+
+    try:
+        oid = ObjectId(task_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    tasks_coll = db[settings.tasks_collection]
+    task = await tasks_coll.find_one({"_id": oid})
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    session_id = task.get("session_id")
+    # Id do marco como está no arquivo de marcos; fallback no título.
+    milestone_id = task.get("milestone_id") or task.get("title")
+    if not session_id or not milestone_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    sessions_coll = db[settings.sessions_collection]
+    session = await sessions_coll.find_one({"tmux_name": session_id})
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    work_dir = session.get("work_dir") or ""
+
+    # Remove o doc NA HORA (some da lista sem esperar o worker).
+    await tasks_coll.delete_one({"_id": oid})
+
+    await publish_command(
+        settings,
+        type="delete_task",
+        payload={
+            "name": session_id,
+            "work_dir": work_dir,
+            "task_id": milestone_id,
+        },
+    )
+    return Response(status_code=202)

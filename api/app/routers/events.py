@@ -47,9 +47,11 @@ def _format_frame(payload: dict[str, Any]) -> str:
     lines = []
     if event_id is not None:
         lines.append(f"id: {event_id}")
-    event_type = payload.get("type") or payload.get("event")
-    if event_type is not None:
-        lines.append(f"event: {event_type}")
+    # IMPORTANTE: NÃO emitir uma linha `event: <type>`. Frames SSE com `event:`
+    # disparam apenas listeners NOMEADOS no EventSource; o frontend escuta só
+    # `onmessage` (eventos default) e discrimina pelo `type` dentro do `data`.
+    # Emitir `event:` fazia o navegador descartar silenciosamente todo evento
+    # tipado (attention, jarvis_audio, …). Tudo flui pelo `data:` agora.
     lines.append(f"data: {data}")
     return "\n".join(lines) + "\n\n"
 

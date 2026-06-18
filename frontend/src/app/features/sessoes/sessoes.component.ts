@@ -23,7 +23,7 @@ interface FilterChip {
 
 /** Filter chips shown horizontally above the list (mockup "SESSÕES"). */
 const FILTERS: readonly FilterChip[] = [
-  { key: 'all', label: 'Todas' },
+  { key: 'favorites', label: '★ Favoritas' },
   { key: 'running', label: 'Ativas', status: 'running' },
   { key: 'waiting_input', label: 'Aguardando', status: 'waiting_input' },
   { key: 'completed', label: 'Concluídas', status: 'completed' },
@@ -40,6 +40,54 @@ const FILTERS: readonly FilterChip[] = [
         <h1 class="sf-title">Sessões</h1>
       </header>
 
+      <div class="sf-search">
+        <svg
+          class="sf-search__icon"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="M21 21l-4.3-4.3" />
+        </svg>
+        <input
+          type="text"
+          class="sf-search__input"
+          placeholder="Buscar sessão..."
+          aria-label="Buscar sessão"
+          [value]="query()"
+          (input)="query.set($any($event.target).value)"
+        />
+        @if (query()) {
+          <button
+            type="button"
+            class="sf-search__clear"
+            aria-label="Limpar busca"
+            (click)="query.set('')"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        }
+      </div>
+
       <nav class="sf-chips" role="tablist" aria-label="Filtrar sessões">
         @for (chip of filters; track chip.key) {
           <button
@@ -55,9 +103,9 @@ const FILTERS: readonly FilterChip[] = [
         }
       </nav>
 
-      @if (loading()) {
+      @if (loading() && sessions().length === 0) {
         <p class="sf-msg">Carregando…</p>
-      } @else if (error()) {
+      } @else if (error() && sessions().length === 0) {
         <p class="sf-msg sf-msg--error">Não foi possível carregar as sessões.</p>
       } @else if (visibleSessions().length === 0) {
         <div class="sf-empty">
@@ -66,14 +114,57 @@ const FILTERS: readonly FilterChip[] = [
         </div>
       } @else {
         <ul class="sf-list">
-          @for (s of visibleSessions(); track s.id) {
-            <li>
+          @for (s of visibleSessions(); track s.id; let i = $index) {
+            <li class="sf-card-wrap sf-enter" [style.animation-delay]="enterDelay(i)">
+              <button
+                type="button"
+                class="sf-delete"
+                [class.is-open]="offset(s.id) <= -72"
+                tabindex="-1"
+                [attr.aria-hidden]="offset(s.id) > -72"
+                (click)="confirmEliminate(s)"
+                aria-label="Eliminar sessão"
+              >
+                <span class="sf-delete__inner">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                  <span class="sf-delete__label">Eliminar</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="sf-fav"
+                [class.on]="!!s.favorite"
+                (click)="toggleFav(s)"
+                [attr.aria-label]="s.favorite ? 'Desfavoritar' : 'Favoritar'"
+                title="Favoritar sessão"
+                [style.transform]="'translateX(' + offset(s.id) + 'px)'"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24"
+                     [attr.fill]="s.favorite ? 'currentColor' : 'none'"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 2l3 6.5 7 .9-5 4.8 1.3 7L12 18l-6.3 3.2L7 14.2l-5-4.8 7-.9z" />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="sf-card"
-                (click)="open(s)"
+                [class.is-dragging]="dragId() === s.id"
+                [class.is-waiting]="s.status === 'waiting_input'"
+                [style.transform]="'translateX(' + offset(s.id) + 'px)'"
+                (click)="onCardClick(s, $event)"
+                (pointerdown)="onPointerDown(s, $event)"
+                (pointermove)="onPointerMove(s, $event)"
+                (pointerup)="onPointerUp(s, $event)"
+                (pointercancel)="onPointerUp(s, $event)"
                 [attr.aria-label]="'Abrir sessão ' + displayName(s)"
               >
+                <span class="sf-press">
                 <span class="sf-row">
                   <span
                     class="sf-avatar"
@@ -101,20 +192,6 @@ const FILTERS: readonly FilterChip[] = [
                     <span class="mono sf-dir">{{ s.work_dir || '—' }}</span>
                   </span>
 
-                  <svg
-                    class="sf-chevron"
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="#5A6072"
-                    stroke-width="2.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M9 6l6 6-6 6" />
-                  </svg>
                 </span>
 
                 <span class="sf-footer">
@@ -123,12 +200,44 @@ const FILTERS: readonly FilterChip[] = [
                     [style.color]="meta(s).color"
                     [style.background]="tint(meta(s).color, 0.13)"
                   >
-                    <span class="sf-dot" [style.background]="meta(s).dot"></span>
-                    {{ meta(s).label }}
+                    <span
+                      class="sf-stat-icon"
+                      [class.sf-stat-pulse]="isActiveIcon(s)"
+                      [style.color]="meta(s).color"
+                    >
+                      @switch (statusIcon(s)) {
+                        @case ('think') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /></svg>
+                        }
+                        @case ('code') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9l-3 3 3 3M16 9l3 3-3 3" /></svg>
+                        }
+                        @case ('analyze') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-3.5-3.5" /></svg>
+                        }
+                        @case ('run') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8l4 4-4 4M12 16h6" /></svg>
+                        }
+                        @case ('wait') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10M7 20h10M8 4c0 4 8 6 8 8s-8 4-8 8M16 4c0 4-8 6-8 8" /></svg>
+                        }
+                        @case ('done') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10" /></svg>
+                        }
+                        @case ('play') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 7l8 5-8 5z" /></svg>
+                        }
+                        @default {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 9h6v6H9z" /></svg>
+                        }
+                      }
+                    </span>
+                    {{ statusLabel(s) }}
                   </span>
                   @if (timeAgo(s)) {
                     <span class="sf-time">{{ timeAgo(s) }}</span>
                   }
+                </span>
                 </span>
               </button>
             </li>
@@ -161,6 +270,60 @@ const FILTERS: readonly FilterChip[] = [
         letter-spacing: -0.6px;
       }
 
+      .sf-search {
+        position: relative;
+        display: flex;
+        align-items: center;
+        width: 100%;
+        margin: 0 0 14px;
+      }
+      .sf-search__icon {
+        position: absolute;
+        left: 12px;
+        color: #6b7180;
+        pointer-events: none;
+      }
+      .sf-search__input {
+        width: 100%;
+        height: 40px;
+        box-sizing: border-box;
+        appearance: none;
+        border: 1px solid #283230;
+        background: #15191a;
+        color: #f4f5f7;
+        font: inherit;
+        font-size: 14.5px;
+        padding: 0 38px 0 38px;
+        border-radius: 12px;
+        outline: none;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .sf-search__input::placeholder {
+        color: #6b7180;
+      }
+      .sf-search__input:focus {
+        border-color: #34d399;
+        background: #181c1b;
+      }
+      .sf-search__clear {
+        position: absolute;
+        right: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border: none;
+        background: none;
+        border-radius: 8px;
+        color: #8a90a0;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-search__clear:hover {
+        color: #f4f5f7;
+      }
+
       .sf-chips {
         display: flex;
         gap: 8px;
@@ -190,6 +353,10 @@ const FILTERS: readonly FilterChip[] = [
         background: #00e4b4;
         border-color: #00e4b4;
         color: #04140f;
+      }
+      /* Press feedback on filter chips. */
+      .sf-chip:active {
+        transform: scale(0.97);
       }
 
       .sf-msg {
@@ -238,7 +405,85 @@ const FILTERS: readonly FilterChip[] = [
           max-width: none;
         }
       }
+      .sf-card-wrap {
+        position: relative;
+        overflow: hidden;
+        border-radius: 18px;
+      }
+      /* Red "Eliminar" action sitting BEHIND the card on the right. */
+      .sf-delete {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 0;
+        width: 104px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        appearance: none;
+        border: none;
+        /* Soft danger gradient + subtle inner depth; corners are clipped by
+           the wrapper's overflow:hidden + radius so this sits flush. */
+        background: linear-gradient(135deg, #7f1d1d, #b91c1c);
+        box-shadow: inset 1px 0 0 rgba(0, 0, 0, 0.25),
+          inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        color: #fecaca;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-delete__inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        /* Gently scale + fade in as the row reveals the action. */
+        opacity: 0;
+        transform: scale(0.85);
+        transition: opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: opacity, transform;
+      }
+      .sf-delete.is-open .sf-delete__inner {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .sf-delete__label {
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-delete__inner {
+          transition: none;
+        }
+      }
+      .sf-fav {
+        position: absolute;
+        top: 19px;
+        right: 12px;
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border: none;
+        background: none;
+        border-radius: 8px;
+        color: #5a6072;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      .sf-fav.on {
+        color: #fbbf24;
+      }
       .sf-card {
+        position: relative;
+        z-index: 1;
         display: block;
         width: 100%;
         text-align: left;
@@ -250,6 +495,13 @@ const FILTERS: readonly FilterChip[] = [
         padding: 15px 16px;
         border-radius: 18px;
         cursor: pointer;
+        touch-action: pan-y;
+        transition: border-color 0.15s, background 0.15s,
+          transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      /* No transform animation while finger/mouse is actively dragging. */
+      .sf-card.is-dragging {
         transition: border-color 0.15s, background 0.15s;
       }
       .sf-card:active {
@@ -258,11 +510,58 @@ const FILTERS: readonly FilterChip[] = [
       .sf-card:hover {
         border-color: #34403d;
       }
+      /* Aguardando AÇÃO do usuário: fundo âmbar sutil + brilho neon pulsante
+         (a cor "aguardando" da paleta) — "tô parado esperando você". */
+      .sf-card.is-waiting {
+        border-color: #4a3a16;
+        background: #1b1710;
+        animation: sf-wait-glow 2.1s ease-in-out infinite;
+      }
+      @keyframes sf-wait-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(251, 191, 36, 0.22),
+            0 0 12px -3px rgba(251, 191, 36, 0.28);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(251, 191, 36, 0.55),
+            0 0 22px 0 rgba(251, 191, 36, 0.5);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-waiting {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.45);
+        }
+      }
+
+      /* Press feedback lives on an INNER wrapper, NOT on .sf-card itself.
+         The swipe gesture drives an inline translateX on .sf-card; putting a
+         scale here keeps the two transforms on separate elements so the tap
+         scale never fights the swipe drag/snap. While dragging we also drop the
+         scale transition so a press during a swipe stays silent. */
+      .sf-press {
+        display: block;
+        transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      .sf-card:active .sf-press {
+        transform: scale(0.97);
+      }
+      .sf-card.is-dragging .sf-press {
+        transform: none;
+        transition: none;
+      }
 
       .sf-row {
         display: flex;
         align-items: center;
         gap: 11px;
+        /* Reserva o canto direito para a estrela de favorito (evita o nome
+           passar por baixo do ícone). */
+        padding-right: 32px;
       }
 
       .sf-avatar {
@@ -326,10 +625,6 @@ const FILTERS: readonly FilterChip[] = [
           Menlo, Consolas, monospace;
       }
 
-      .sf-chevron {
-        flex: 0 0 auto;
-      }
-
       .sf-footer {
         display: flex;
         align-items: center;
@@ -350,17 +645,52 @@ const FILTERS: readonly FilterChip[] = [
         border-radius: 8px;
         white-space: nowrap;
       }
-      .sf-dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
+      .sf-stat-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         flex: 0 0 auto;
+        line-height: 0;
+      }
+      .sf-stat-icon svg {
+        display: block;
+      }
+      .sf-stat-pulse {
+        animation: sf-icon-pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes sf-icon-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.6;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-stat-pulse {
+          animation: none;
+        }
       }
       .sf-time {
         font-size: 12.5px;
         color: #6b7180;
         white-space: nowrap;
         margin-left: auto;
+      }
+
+      /* Respect reduced-motion: disable entrance + press feedback.
+         Note: the swipe transform on .sf-card is driven by inline style and
+         user intent, so we intentionally leave it untouched. */
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card-wrap.sf-enter {
+          animation: none !important;
+        }
+        .sf-press,
+        .sf-chip {
+          transition: none !important;
+          transform: none !important;
+        }
       }
     `,
   ],
@@ -373,20 +703,241 @@ export class SessoesComponent {
 
   protected readonly filters = FILTERS;
 
-  protected readonly activeKey = signal<string>('all');
+  /** Staggered entrance delay per list index, capped so long lists don't lag. */
+  protected enterDelay(i: number): string {
+    return Math.min(i * 28, 220) + 'ms';
+  }
+
+  /** Filtro ativo. Vazio = "todas" (sem chip marcado; não há mais chip "Todas"). */
+  protected readonly activeKey = signal<string>('');
   protected readonly loading = signal<boolean>(true);
   protected readonly error = signal<boolean>(false);
 
+  /** Texto de busca livre (case-insensitive) por nome da sessão. */
+  protected readonly query = signal<string>('');
+
   /** All sessions fetched from the API (live status applied via SSE). */
-  private readonly sessions = signal<Session[]>([]);
+  protected readonly sessions = signal<Session[]>([]);
 
   /** Sessions matching the active filter (client-side so SSE keeps it live). */
   protected readonly visibleSessions = computed<Session[]>(() => {
-    const chip = this.filters.find((c) => c.key === this.activeKey());
+    const key = this.activeKey();
+    const chip = this.filters.find((c) => c.key === key);
     const wanted = chip?.status;
     const list = this.sessions();
-    return wanted ? list.filter((s) => s.status === wanted) : list;
+    const byFilter =
+      key === 'favorites'
+        ? list.filter((s) => !!s.favorite)
+        : wanted
+          ? list.filter((s) => s.status === wanted)
+          : list;
+    // Busca por nome (case-insensitive) combinada com o filtro/chip ativo.
+    const q = this.query().trim().toLowerCase();
+    const filtered = q
+      ? byFilter.filter(
+          (s) =>
+            (s.tmux_name ?? '').toLowerCase().includes(q) ||
+            (s.display_name ?? '').toLowerCase().includes(q),
+        )
+      : byFilter;
+    // Favoritas primeiro (mantém a ordem original dentro de cada grupo).
+    return [...filtered].sort(
+      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
+    );
   });
+
+  // ── Swipe-to-delete (iOS style) ─────────────────────────────────────────
+  /** Limites do arrasto. Aberto = -88px; gatilho de snap = -72px. */
+  private static readonly OPEN = -88;
+  private static readonly SNAP = -72;
+  private static readonly CLAMP = -96;
+  private static readonly TAP_THRESHOLD = 8;
+
+  /** translateX por sessão (px). 0 = fechado. */
+  private readonly offsets = signal<Map<string, number>>(new Map());
+  /** Id da linha em arrasto ativo (desabilita a transição CSS). */
+  protected readonly dragId = signal<string | null>(null);
+
+  /** Estado transitório do gesto em andamento. */
+  private gesture: {
+    id: string;
+    startX: number;
+    startY: number;
+    baseOffset: number;
+    locked: boolean; // true = decidido que é swipe horizontal
+    moved: boolean; // passou do threshold → suprime o click
+    cancelled: boolean; // virou scroll vertical → ignora
+  } | null = null;
+
+  /** Offset atual (px) de uma linha; 0 quando fechada. */
+  protected offset(id: string): number {
+    return this.offsets().get(id) ?? 0;
+  }
+
+  private setOffset(id: string, value: number): void {
+    this.offsets.update((m) => {
+      const next = new Map(m);
+      if (value === 0) {
+        next.delete(id);
+      } else {
+        next.set(id, value);
+      }
+      return next;
+    });
+  }
+
+  /** Fecha todas as linhas, opcionalmente exceto uma. */
+  private closeAll(except?: string): void {
+    this.offsets.update((m) => {
+      if (m.size === 0) {
+        return m;
+      }
+      const next = new Map<string, number>();
+      if (except && m.has(except)) {
+        next.set(except, m.get(except)!);
+      }
+      return next;
+    });
+  }
+
+  protected onPointerDown(s: Session, ev: PointerEvent): void {
+    // Só botão primário do mouse / toque / caneta.
+    if (ev.pointerType === 'mouse' && ev.button !== 0) {
+      return;
+    }
+    this.gesture = {
+      id: s.id,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      baseOffset: this.offset(s.id),
+      locked: false,
+      moved: false,
+      cancelled: false,
+    };
+  }
+
+  protected onPointerMove(s: Session, ev: PointerEvent): void {
+    const g = this.gesture;
+    if (!g || g.id !== s.id || g.cancelled) {
+      return;
+    }
+    const dx = ev.clientX - g.startX;
+    const dy = ev.clientY - g.startY;
+
+    // Decide direção no primeiro movimento relevante.
+    if (!g.locked) {
+      if (Math.abs(dx) < 4 && Math.abs(dy) < 4) {
+        return;
+      }
+      // Scroll vertical vence → deixa a página rolar, aborta o swipe.
+      if (Math.abs(dy) > Math.abs(dx)) {
+        g.cancelled = true;
+        return;
+      }
+      g.locked = true;
+      this.dragId.set(s.id);
+      // Fecha outras linhas ao começar a abrir esta.
+      this.closeAll(s.id);
+      (ev.target as Element).setPointerCapture?.(ev.pointerId);
+    }
+
+    if (Math.abs(dx) > SessoesComponent.TAP_THRESHOLD) {
+      g.moved = true;
+    }
+
+    let next = g.baseOffset + dx;
+    // Rubber-band suave além dos limites.
+    if (next > 0) {
+      next = next * 0.25; // resiste ao arrasto para a direita
+    } else if (next < SessoesComponent.CLAMP) {
+      const over = next - SessoesComponent.CLAMP;
+      next = SessoesComponent.CLAMP + over * 0.25;
+    }
+    this.setOffset(s.id, next);
+  }
+
+  protected onPointerUp(s: Session, ev: PointerEvent): void {
+    const g = this.gesture;
+    if (!g || g.id !== s.id) {
+      return;
+    }
+    this.gesture = null;
+    this.dragId.set(null);
+    if (g.cancelled || !g.locked) {
+      return;
+    }
+    (ev.target as Element).releasePointerCapture?.(ev.pointerId);
+    // Houve arrasto horizontal → suprime o click que vem logo a seguir.
+    if (g.moved) {
+      this.lastWasSwipe = true;
+    }
+    // Snap: passou de -72 abre; senão fecha.
+    const cur = this.offset(s.id);
+    this.setOffset(s.id, cur <= SessoesComponent.SNAP ? SessoesComponent.OPEN : 0);
+  }
+
+  /** Um TAP normal abre a sessão; um swipe (moveu > threshold) é suprimido. */
+  protected onCardClick(s: Session, ev: MouseEvent): void {
+    const moved = this.offset(s.id) !== 0;
+    if (this.lastWasSwipe || moved) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // Se estava aberta, um toque na linha fecha em vez de abrir.
+      if (moved) {
+        this.setOffset(s.id, 0);
+      }
+      this.lastWasSwipe = false;
+      return;
+    }
+    this.open(s);
+  }
+
+  /** Sinaliza que o último gesto foi um swipe (setado no pointerup). */
+  private lastWasSwipe = false;
+
+  /** Tap no botão vermelho: confirma, remove otimista e chama purge. */
+  protected confirmEliminate(s: Session): void {
+    const name = this.displayName(s);
+    const ok = confirm(
+      'Eliminar a sessão "' +
+        name +
+        '"? Mata no Mac e remove daqui — não dá pra desfazer.',
+    );
+    if (!ok) {
+      this.setOffset(s.id, 0); // snap back
+      return;
+    }
+
+    // Remoção otimista (guarda p/ rollback).
+    const prev = this.sessions();
+    this.setOffset(s.id, 0);
+    this.sessions.update((list) => list.filter((x) => x.id !== s.id));
+
+    this.api
+      .purgeSession(s.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        error: () => {
+          // Rollback: restaura o estado anterior e recarrega do servidor.
+          this.sessions.set(prev);
+          this.load();
+        },
+      });
+  }
+
+  /** Favorita/desfavorita (otimista + persiste no servidor). */
+  protected toggleFav(s: Session): void {
+    const next = !s.favorite;
+    this.sessions.update((list) =>
+      list.map((x) => (x.id === s.id ? { ...x, favorite: next } : x)),
+    );
+    this.api.setFavorite(s.id, next).subscribe({
+      error: () =>
+        this.sessions.update((list) =>
+          list.map((x) => (x.id === s.id ? { ...x, favorite: !next } : x)),
+        ),
+    });
+  }
 
   constructor() {
     this.load();
@@ -407,13 +958,12 @@ export class SessoesComponent {
   }
 
   protected selectFilter(chip: FilterChip): void {
-    if (this.activeKey() === chip.key) {
-      return;
-    }
-    this.activeKey.set(chip.key);
-    // Refetch scoped to the chosen status (server-side filter); falls back to
-    // client-side filtering on the cached list while the request is in flight.
-    this.load(chip.status);
+    // Toggle: clicar no chip já ativo desmarca → volta a "todas" (vazio).
+    const isActive = this.activeKey() === chip.key;
+    this.activeKey.set(isActive ? '' : chip.key);
+    // Refetch scoped to the chosen status (server-side filter); ao desmarcar,
+    // recarrega sem filtro. Cai p/ filtro client-side enquanto o request roda.
+    this.load(isActive ? undefined : chip.status);
   }
 
   protected open(s: Session): void {
@@ -431,6 +981,62 @@ export class SessoesComponent {
 
   protected meta(s: Session) {
     return STATUS_META[s.status] ?? STATUS_META.detached;
+  }
+
+  /**
+   * Texto do pill de status. Para sessões RODANDO com um ``activity`` derivado
+   * (ex.: "Codificando", "Pensando"), mostra esse rótulo fino no lugar do
+   * genérico "Executando"; mantém a cor/ponto do status. Demais estados usam o
+   * label normal do STATUS_META.
+   */
+  protected statusLabel(s: Session): string {
+    if (s.status === 'running' && s.activity) {
+      return s.activity;
+    }
+    return this.meta(s).label;
+  }
+
+  /**
+   * Ícone expressivo do status do card, escolhido pela ``activity`` (sessões
+   * rodando) ou pelo status bruto. Mapeia para uma das chaves do template SVG.
+   */
+  protected statusIcon(
+    s: Session,
+  ): 'think' | 'code' | 'analyze' | 'run' | 'wait' | 'done' | 'play' | 'stopped' {
+    if (s.status === 'waiting_input') {
+      return 'wait';
+    }
+    if (s.status === 'completed') {
+      return 'done';
+    }
+    if (s.status === 'stopped' || s.status === 'detached') {
+      return 'stopped';
+    }
+    if (s.status === 'running') {
+      switch (s.activity) {
+        case 'Pensando':
+          return 'think';
+        case 'Codificando':
+          return 'code';
+        case 'Analisando':
+          return 'analyze';
+        case 'Rodando comando':
+          return 'run';
+        case 'Aguardando você':
+          return 'wait';
+        case 'Concluído':
+          return 'done';
+        default:
+          return 'play';
+      }
+    }
+    return 'stopped';
+  }
+
+  /** Ícones "vivos" (com pulse sutil) — estados de trabalho ativo. */
+  protected isActiveIcon(s: Session): boolean {
+    const k = this.statusIcon(s);
+    return k === 'think' || k === 'code' || k === 'analyze' || k === 'run' || k === 'play';
   }
 
   /** Builds a translucent tint (`rgba`) from a `#rrggbb` color for backgrounds. */

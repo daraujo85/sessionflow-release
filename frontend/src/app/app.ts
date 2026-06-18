@@ -1,11 +1,14 @@
 import { Component, signal, computed, inject } from '@angular/core';
 import { RouterOutlet, Router, RouterLink, RouterLinkActive, NavigationEnd } from '@angular/router';
+import { trigger, transition, style, animate } from '@angular/animations';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { SwUpdate } from '@angular/service-worker';
 import { filter, map, startWith } from 'rxjs/operators';
 import { AuthService } from './core/auth.service';
 import { SseService } from './core/sse.service';
 import { NotifyService } from './core/notify.service';
+import { JarvisAudioService } from './core/jarvis-audio.service';
+import { EventCuesService } from './core/event-cues.service';
 
 /** A bottom-nav entry: route + label + SVG path (icons from the mockup). */
 export interface NavItem {
@@ -23,6 +26,20 @@ export interface NavItem {
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
   templateUrl: './app.html',
   styleUrl: './app.css',
+  animations: [
+    // Subtle iOS-like ENTER for the routed page: fade + small rise.
+    // Keyed by the route segment (see routeKey) so it re-fires on navigation.
+    // Leave is instant (void) to avoid overlap jank between pages.
+    trigger('pageFade', [
+      transition('* => *', [
+        style({ opacity: 0, transform: 'translateY(8px)' }),
+        animate(
+          '200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          style({ opacity: 1, transform: 'translateY(0)' }),
+        ),
+      ]),
+    ]),
+  ],
 })
 export class App {
   protected readonly title = signal('SessionFlow');
@@ -33,8 +50,14 @@ export class App {
   private readonly auth = inject(AuthService);
   private readonly sse = inject(SseService);
   private readonly notify = inject(NotifyService);
+  private readonly jarvisAudio = inject(JarvisAudioService);
+  private readonly eventCues = inject(EventCuesService);
 
   constructor() {
+    // JARVIS: liga o pipeline de áudio (efeito SSE + desbloqueio de autoplay).
+    this.jarvisAudio.init();
+    // Avisos de evento (chime/voz discretos) — separado do JARVIS.
+    this.eventCues.init();
     // SSE app-wide quando autenticado: garante que as notificações (sino +
     // sistema) cheguem em QUALQUER tela, não só na de notificações.
     if (this.auth.isAuthenticated()) {
@@ -99,7 +122,6 @@ export class App {
     { path: 'inicio', label: 'Início', d: 'M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z' },
     { path: 'sessoes', label: 'Sessões', d: 'M4 5h16v14H4zM8 10l3 2-3 2M13.5 14h3' },
     { path: 'timeline', label: 'Timeline', d: 'M8 6h12M8 12h12M8 18h12M3.5 6h.01M3.5 12h.01M3.5 18h.01' },
-    { path: 'responder', label: 'Responder', d: 'M21 11.5a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 11.5z' },
     { path: 'perfil', label: 'Perfil', d: 'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21v-1a6 6 0 0 1 12 0v1' },
   ];
 
@@ -116,6 +138,15 @@ export class App {
   /** First path segment of the active URL (e.g. "inicio", "criar", "sessao"). */
   private readonly activeSegment = computed(
     () => (this.currentUrl() || '/').split('?')[0].split('/').filter(Boolean)[0] ?? 'inicio',
+  );
+
+  /**
+   * Animation key for the page-enter transition. Uses the full URL path (sans
+   * query) so the `@pageFade` trigger re-fires on every navigation — including
+   * between sibling routes like `/sessao/a` → `/sessao/b`.
+   */
+  protected readonly routeKey = computed(
+    () => (this.currentUrl() || '/').split('?')[0],
   );
 
   /** Telas sem chrome (full-screen): overlays e a tela de login. */

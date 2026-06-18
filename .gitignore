@@ -31,3 +31,6 @@ data/uploads/*
 # Caches diversos
 .DS_Store
 **/.DS_Store
+
+# Claude Code runtime (locks, agendamentos locais)
+.claude/

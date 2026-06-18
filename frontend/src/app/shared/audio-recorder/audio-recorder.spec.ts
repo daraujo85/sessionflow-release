@@ -137,11 +137,11 @@ describe('AudioRecorderComponent', () => {
     fixture.detectChanges();
 
     // Start, then stop -> triggers upload.
-    await comp.toggle();
+    await comp.start();
     expect(comp['recorder'].recording()).toBe(true);
 
     // Don't await: finish() blocks on the HTTP call until we flush below.
-    const stopping = comp.toggle();
+    const stopping = comp.stop();
     // Let the recorder's stop promise + upload kick off.
     await new Promise((r) => setTimeout(r));
 
