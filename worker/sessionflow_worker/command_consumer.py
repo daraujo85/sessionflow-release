@@ -229,59 +229,52 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # Modo: "tab" (default) abre numa ABA da janela atual (lado a lado, via
-        # Cmd+T do System Events — exige permissão de Acessibilidade 1x); "window"
-        # abre uma janela nova (sem permissão extra). Env SESSIONFLOW_TERMINAL_MODE.
-        mode = os.environ.get("SESSIONFLOW_TERMINAL_MODE", "tab").lower()
-        if mode == "tab":
-            # activate + espera o Terminal vir à frente ANTES do Cmd+T (senão a
-            # tecla pode ir p/ outro app e a aba não nasce). Roda o attach na aba
-            # recém-criada (selected tab) e fixa o título nela, com delay p/ a aba
-            # assentar — set custom title sobrepõe e ignora escapes de título.
-            ascript = [
-                "-e",
-                f'tell application "{term_app}" to activate',
-                "-e",
-                "delay 0.35",
-                "-e",
-                'tell application "System Events" to keystroke "t" using command down',
-                "-e",
-                "delay 0.45",
-                "-e",
-                f'tell application "{term_app}"',
-                "-e",
-                f'set _t to do script "{attach_cmd}" in selected tab of front window',
-                "-e",
-                "delay 0.2",
-                "-e",
-                f'set custom title of _t to "{title}"',
-                "-e",
-                f'set custom title of selected tab of front window to "{title}"',
-                "-e",
-                "end tell",
-            ]
-        else:
-            ascript = [
-                "-e",
-                f'tell application "{term_app}"',
-                "-e",
-                "activate",
-                "-e",
-                f'set _t to do script "{attach_cmd}"',
-                "-e",
-                f'set custom title of _t to "{title}"',
-                "-e",
-                "end tell",
-            ]
+        # REUSO-ou-JANELA (confiável + sem duplicar):
+        #   1) Procura uma aba já existente cujo ``custom title`` == título desta
+        #      sessão (o worker sempre seta) → traz a janela à frente, seleciona a
+        #      aba e regrava o título. NÃO abre duplicata.
+        #   2) Se não achar → abre uma JANELA NOVA já anexada e titulada.
+        #
+        # Por que não ABA (Cmd+T)? Criar aba no Terminal.app exige a tecla via
+        # System Events, que precisa de permissão de Acessibilidade pro processo
+        # do worker — quando falta, o Cmd+T vira no-op e o ``do script`` cai em
+        # janela nova MESMO ASSIM, gerando uma duplicata sem foco a cada clique.
+        # Reusar + janela titulada é determinístico e resolve a bagunça.
+        script = (
+            f'tell application "{term_app}"\n'
+            f"  activate\n"
+            f"  set _done to false\n"
+            f"  repeat with w in windows\n"
+            f"    try\n"
+            f"      repeat with t in tabs of w\n"
+            f"        try\n"
+            f'          if (custom title of t) is "{title}" then\n'
+            f"            set frontmost of w to true\n"
+            f"            set selected tab of w to t\n"
+            f'            set custom title of t to "{title}"\n'
+            f"            set _done to true\n"
+            f"            exit repeat\n"
+            f"          end if\n"
+            f"        end try\n"
+            f"      end repeat\n"
+            f"    end try\n"
+            f"    if _done then exit repeat\n"
+            f"  end repeat\n"
+            f"  if not _done then\n"
+            f'    set _t to do script "{attach_cmd}"\n'
+            f'    set custom title of _t to "{title}"\n'
+            f"  end if\n"
+            f"end tell\n"
+        )
         try:
             subprocess.Popen(
-                ["osascript", *ascript],
+                ["osascript", "-e", script],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except Exception as exc:  # noqa: BLE001
             raise CommandError(f"falha ao abrir o terminal: {exc}") from exc
-        return {"name": name, "note": f"terminal aberto ({term_app}, {mode})"}
+        return {"name": name, "note": f"terminal aberto ({term_app})"}
 
     # -- despacho ---------------------------------------------------------
 
