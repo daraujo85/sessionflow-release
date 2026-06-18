@@ -49,6 +49,7 @@ import re
 import shlex
 import subprocess
 import unicodedata
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -374,8 +375,19 @@ class CommandConsumer:
         # Idioma da sessão criada pelo app (config global): injeta no system
         # prompt p/ o agente já responder no idioma certo (default pt-BR).
         lang_instruction = await self._language_instruction()
+        # UUID fixo da conversa Claude (só claude suporta): permite o Retomar
+        # depois resumir a conversa EXATA via --resume, sem agarrar a conversa
+        # mais recente do diretório (bug do --continue quando há outra sessão
+        # na mesma pasta). Guardado no doc como claude_session_id.
+        claude_session_id = (
+            str(uuid.uuid4()) if agent_type is AgentType.CLAUDE else None
+        )
         launch_cmd = build_launch_cmd(
-            agent_type, model, effort, lang_instruction=lang_instruction
+            agent_type,
+            model,
+            effort,
+            lang_instruction=lang_instruction,
+            session_id=claude_session_id,
         )
         self._send_keys(name, launch_cmd)
 
@@ -393,6 +405,7 @@ class CommandConsumer:
                     "effort": effort,
                     "work_dir": str(work_dir),
                     "tmux_id": info.id,
+                    "claude_session_id": claude_session_id,
                     "updated_at": now,
                 },
                 "$setOnInsert": {"created_at": now},
@@ -541,12 +554,20 @@ class CommandConsumer:
 
         # new_session expande ``~`` e valida o diretório (erro tipado).
         info = self._runtime.new_session(name, work_dir)
-        # resume=True → continua a conversa anterior (claude --continue).
-        # Reinjeta o idioma (default pt-BR): sessões criadas antes desse fluxo
-        # — ou fora dele — passam a responder em português ao Retomar.
+        # resume=True → retoma a conversa anterior. Com claude_session_id salvo,
+        # usa --resume <uuid> (a conversa EXATA dessa sessão); senão cai no
+        # --continue (sessões antigas, sujeitas a agarrar a conversa errada se
+        # houver outra na mesma pasta). Reinjeta o idioma (default pt-BR) p/
+        # sessões criadas antes desse fluxo passarem a responder em português.
         lang_instruction = await self._language_instruction()
+        claude_session_id = doc.get("claude_session_id")
         launch_cmd = build_launch_cmd(
-            agent_type, model, effort, resume=True, lang_instruction=lang_instruction
+            agent_type,
+            model,
+            effort,
+            resume=True,
+            lang_instruction=lang_instruction,
+            session_id=claude_session_id,
         )
         self._send_keys(name, launch_cmd)
 

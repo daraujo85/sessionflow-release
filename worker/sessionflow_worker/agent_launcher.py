@@ -129,6 +129,7 @@ def build_launch_cmd(
     yolo: bool = True,
     resume: bool = False,
     lang_instruction: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Monta a linha de comando a ser enviada via ``tmux send-keys``.
 
@@ -151,10 +152,21 @@ def build_launch_cmd(
 
     parts: list[str] = [agent_type.value]
     # ``resume`` (usado pelo "Retomar"): continua a conversa anterior em vez de
-    # começar do zero. claude/opencode têm ``--continue``; codex/gemini não têm
-    # flag simples → relança novo (best-effort).
-    if resume and agent_type in (AgentType.CLAUDE, AgentType.OPENCODE):
-        parts += ["--continue"]
+    # começar do zero.
+    #
+    # IMPORTANTE: ``--continue`` retoma a conversa MAIS RECENTE do DIRETÓRIO, não
+    # a conversa daquela sessão tmux. Se duas sessões rodam Claude na mesma pasta,
+    # o Retomar agarra a errada. Por isso, quando temos o ``session_id`` (claude
+    # foi criado com ``--session-id <uuid>``), retomamos a conversa EXATA via
+    # ``--resume <uuid>``. Sem id salvo (sessões antigas) cai no ``--continue``.
+    if resume:
+        if agent_type is AgentType.CLAUDE and session_id:
+            parts += ["--resume", session_id]
+        elif agent_type in (AgentType.CLAUDE, AgentType.OPENCODE):
+            parts += ["--continue"]
+    elif agent_type is AgentType.CLAUDE and session_id:
+        # Criação: fixa o ID da conversa p/ poder retomar exatamente ela depois.
+        parts += ["--session-id", session_id]
     resolved_effort = _effort_for_agent(agent_type, effort)
 
     if agent_type is AgentType.CLAUDE:
