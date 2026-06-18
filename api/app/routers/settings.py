@@ -77,6 +77,13 @@ async def put_settings(request: Request, body: SettingsIn) -> SettingsOut:
         }},
         upsert=True,
     )
+    # Desligar o global = silenciar TUDO: zera o toggle por-sessão também (senão
+    # sessões com jarvis=true continuam falando, já que is_enabled é um OU).
+    # Mesma semântica do `/jarvis all off`.
+    if not body.jarvis_all:
+        await db[settings.sessions_collection].update_many(
+            {"jarvis": True}, {"$set": {"jarvis": False}}
+        )
     return SettingsOut(
         milestones_auto=body.milestones_auto, jarvis_all=body.jarvis_all
     )
