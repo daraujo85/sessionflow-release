@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -112,6 +114,20 @@ class CommandError(Exception):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _slugify(s: str) -> str:
+    """Converte um nome amigável num slug seguro p/ tmux.
+
+    Regras (idênticas ao frontend): lowercase; NFD-normaliza e remove
+    diacríticos/acentos; troca cada run de chars fora de ``[a-z0-9]`` por um
+    único ``-``; tira ``-`` das pontas. Ex.: ``"Café da Manhã!"`` →
+    ``"cafe-da-manha"``; ``"3 2 1 BANK"`` → ``"3-2-1-bank"``.
+    """
+    normalized = unicodedata.normalize("NFD", s or "")
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower())
+    return slug.strip("-")
 
 
 class CommandConsumer:
@@ -242,9 +258,14 @@ class CommandConsumer:
     # -- handlers ---------------------------------------------------------
 
     async def _handle_create(self, payload: dict[str, Any]) -> dict[str, Any]:
-        name = payload.get("name")
-        if not name:
+        if not payload.get("name"):
             raise CommandError("create requer 'name'")
+        # ``display`` é o nome amigável (mostrado no app); ``name`` é o SLUG
+        # seguro p/ tmux (sem espaços/acentos). Slug vazio = nome inválido.
+        display = payload.get("display_name") or payload.get("name")
+        name = _slugify(payload.get("name") or "")
+        if not name:
+            raise CommandError("nome inválido (vazio após slug)")
         work_dir = payload.get("work_dir")
         if not work_dir:
             raise CommandError("create requer 'work_dir'")
@@ -275,7 +296,7 @@ class CommandConsumer:
             {
                 "$set": {
                     "tmux_name": name,
-                    "display_name": name,
+                    "display_name": display,
                     "origin": SESSION_ORIGIN,
                     "status": SessionState.RUNNING.value,
                     "agent_type": agent_type.value,

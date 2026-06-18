@@ -40,6 +40,9 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
             [ngModel]="name()"
             (ngModelChange)="name.set($event)"
           />
+          <span class="hint-muted slug-preview">
+            Terminal: <span class="mono">{{ slug() || '—' }}</span>
+          </span>
         </label>
 
         <!-- Tipo de agente -->
@@ -357,6 +360,13 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
         font-size: var(--text-xs);
         color: var(--text-muted);
       }
+      .slug-preview {
+        margin-top: var(--space-1);
+      }
+      .slug-preview .mono {
+        font-family: var(--font-mono);
+        color: var(--text-strong);
+      }
       .error {
         margin: 0;
         padding: var(--space-3);
@@ -399,7 +409,10 @@ export class CriarComponent {
   readonly efforts = EFFORTS;
 
   // --- Form state (signals) ---
+  /** Friendly DISPLAY name (free text; spaces/accents OK). */
   readonly name = signal('');
+  /** Terminal-safe slug derived live from the display name (tmux session name). */
+  readonly slug = computed(() => this.slugify(this.name()));
   readonly agent = signal<AgentType>('claude');
   /** Selected model id (when a chip list is available). */
   readonly model = signal<string>('');
@@ -421,10 +434,24 @@ export class CriarComponent {
   readonly submitting = signal(false);
   readonly errorMsg = signal('');
 
-  /** Whether the form is ready to submit. */
+  /** Whether the form is ready to submit (slug must be non-empty). */
   readonly canSubmit = computed(
-    () => this.name().trim().length > 0 && this.workDir().trim().length > 0,
+    () => this.slug().length > 0 && this.workDir().trim().length > 0,
   );
+
+  /**
+   * Converte um nome amigável num slug seguro p/ tmux. Regras (idênticas ao
+   * worker): lowercase; NFD + remove acentos; troca runs de chars fora de
+   * [a-z0-9] por '-'; tira '-' das pontas. Ex: "Café da Manhã!" → "cafe-da-manha".
+   */
+  private slugify(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
 
   private readonly dirQuery$ = new Subject<string>();
 
@@ -544,7 +571,9 @@ export class CriarComponent {
     const hasModelList = this.models().length > 0;
     const modelValue = hasModelList ? this.model() : this.freeModel().trim();
     const payload: CreateSessionPayload = {
-      name: this.name().trim(),
+      // ``name`` é o SLUG (nome de sessão tmux); ``display_name`` é o amigável.
+      name: this.slug(),
+      display_name: this.name().trim(),
       agent_type: this.agent(),
       work_dir: this.workDir().trim(),
       model: modelValue || null,

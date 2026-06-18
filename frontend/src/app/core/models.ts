@@ -122,6 +122,7 @@ export interface AgentModels {
 /** Payload required to create a new session. */
 export interface CreateSessionPayload {
   name: string;
+  display_name?: string;
   agent_type: AgentType;
   work_dir: string;
   model: string | null;

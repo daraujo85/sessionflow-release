@@ -83,6 +83,7 @@ class SessionCreate(BaseModel):
     """Request body for creating a session (TMUX-05/06/07)."""
 
     name: str = Field(min_length=1)
+    display_name: str | None = None
     agent_type: AgentType
     work_dir: str = Field(min_length=1)
     model: str | None = None
@@ -211,6 +212,7 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
 
     payload = {
         "name": name,
+        "display_name": (body.display_name or "").strip() or None,
         "agent_type": body.agent_type.value,
         "work_dir": work_dir,
         "model": body.model,
