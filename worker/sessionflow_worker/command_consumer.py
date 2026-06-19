@@ -229,40 +229,16 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # ABA-se-puder, senão JANELA — sempre TITULADA e anexada pelo NOME (logo,
-        # conteúdo sempre correto; nunca reusa janela por rótulo, que fica obsoleto
-        # com o Retomar).
-        #
-        # Tenta criar ABA na janela da frente via Cmd+T (System Events). Isso só
-        # funciona se o processo do worker tiver permissão de Acessibilidade —
-        # quando não tem, o Cmd+T é no-op silencioso. Por isso CONTAMOS as abas
-        # antes/depois: se aumentou, a aba nasceu → roda o attach NELA; se não,
-        # caímos em JANELA nova. Em ambos os casos fixamos o ``custom title``.
+        # SEMPRE abre JANELA NOVA já anexada (``do script`` sem alvo) e titulada.
+        # NUNCA mira uma aba existente: ``do script ... in <aba>`` pode DIGITAR o
+        # comando dentro de uma sessão que já roda ali (ex.: injetar "tmux attach
+        # -t secretaria" no claude do sessionflow). Janela nova é seguro e o
+        # conteúdo é sempre o certo (anexa pelo NOME). Aba via Cmd+T fica fora —
+        # o risco de injeção não compensa.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
-            f"  delay 0.3\n"
-            f"  set _before to 0\n"
-            f"  try\n"
-            f"    set _before to count of tabs of front window\n"
-            f"  end try\n"
-            f"end tell\n"
-            f'tell application "System Events"\n'
-            f"  try\n"
-            f'    keystroke "t" using command down\n'
-            f"  end try\n"
-            f"end tell\n"
-            f"delay 0.45\n"
-            f'tell application "{term_app}"\n'
-            f"  set _after to _before\n"
-            f"  try\n"
-            f"    set _after to count of tabs of front window\n"
-            f"  end try\n"
-            f"  if _after > _before then\n"
-            f'    set _t to do script "{attach_cmd}" in selected tab of front window\n'
-            f"  else\n"
-            f'    set _t to do script "{attach_cmd}"\n'
-            f"  end if\n"
+            f'  set _t to do script "{attach_cmd}"\n'
             f'  set custom title of _t to "{title}"\n'
             f"end tell\n"
         )
