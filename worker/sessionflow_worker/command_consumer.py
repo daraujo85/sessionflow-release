@@ -229,16 +229,45 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # SEMPRE abre JANELA NOVA já anexada (``do script`` sem alvo) e titulada.
-        # NUNCA mira uma aba existente: ``do script ... in <aba>`` pode DIGITAR o
-        # comando dentro de uma sessão que já roda ali (ex.: injetar "tmux attach
-        # -t secretaria" no claude do sessionflow). Janela nova é seguro e o
-        # conteúdo é sempre o certo (anexa pelo NOME). Aba via Cmd+T fica fora —
-        # o risco de injeção não compensa.
+        # ABA-se-puder-COM-SEGURANÇA, senão JANELA — sempre titulada e anexada
+        # pelo NOME (conteúdo sempre certo).
+        #
+        # Tenta criar aba via Cmd+T (System Events; só funciona com Acessibilidade
+        # liberada pro worker). Só rodamos o attach NA ABA se DUAS condições baterem:
+        #   1) o nº de abas AUMENTOU (a aba nasceu mesmo), E
+        #   2) a aba selecionada NÃO está ``busy`` (é um shell fresco).
+        # Isso evita a INJEÇÃO: sem o guard, se o Cmd+T falhasse, o ``do script in
+        # <aba>`` digitava o comando dentro da sessão que já rodava ali (ex.: jogou
+        # "tmux attach -t secretaria" no claude do sessionflow). Sem aba segura,
+        # caímos em JANELA nova (``do script`` sem alvo), que nunca injeta.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
-            f'  set _t to do script "{attach_cmd}"\n'
+            f"  delay 0.3\n"
+            f"  set _before to 0\n"
+            f"  try\n"
+            f"    set _before to count of tabs of front window\n"
+            f"  end try\n"
+            f"end tell\n"
+            f'tell application "System Events"\n'
+            f"  try\n"
+            f'    keystroke "t" using command down\n'
+            f"  end try\n"
+            f"end tell\n"
+            f"delay 0.45\n"
+            f'tell application "{term_app}"\n'
+            f"  set _useTab to false\n"
+            f"  try\n"
+            f"    if (count of tabs of front window) > _before then\n"
+            f"      set _sel to selected tab of front window\n"
+            f"      if not (busy of _sel) then set _useTab to true\n"
+            f"    end if\n"
+            f"  end try\n"
+            f"  if _useTab then\n"
+            f'    set _t to do script "{attach_cmd}" in _sel\n'
+            f"  else\n"
+            f'    set _t to do script "{attach_cmd}"\n'
+            f"  end if\n"
             f'  set custom title of _t to "{title}"\n'
             f"end tell\n"
         )
