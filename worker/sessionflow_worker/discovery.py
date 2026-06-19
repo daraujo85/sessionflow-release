@@ -189,11 +189,15 @@ class Discovery:
         )
         prev_status = prev.get("status") if prev else None
 
-        # Sessão viva: tmux presente, agente vivo se há pane_pid, exit_code None.
+        # Sessão viva = tmux presente E o AGENTE (claude/codex/...) ainda na
+        # árvore de processos do pane. Antes era ``pane_pid is not None``, mas o
+        # pane sempre tem PID (o shell), então sessões cujo claude saiu — sobrou
+        # só o zsh — apareciam "running" e o comando ia pro vazio. agent_type é
+        # inferido da cmdline (contém "claude ..." só enquanto o agente vive).
         state = derive_state(
             tmux_present=True,
             attached=info.attached,
-            agent_alive=info.pane_pid is not None,
+            agent_alive=info.agent_type is not AgentType.UNKNOWN,
             exit_code=None,
         )
 

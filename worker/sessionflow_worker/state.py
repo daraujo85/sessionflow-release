@@ -54,10 +54,8 @@ def derive_state(
     if agent_alive:
         return SessionState.RUNNING
 
-    # Sem agente vivo e ninguém anexado → sessão tmux ociosa (processo encerrado
-    # mas o tmux sobrou) = detached.
-    if not attached:
-        return SessionState.DETACHED
-
-    # tmux presente, anexado, sem agente vivo, exit_code 0/None.
-    return SessionState.RUNNING
+    # Sem agente vivo → o processo do agente encerrou, sobrou só o tmux (e talvez
+    # o shell). NÃO é "running": mandar comando não faz nada. Vira ``detached``
+    # (a UI oferece Retomar), MESMO que um cliente tmux ainda esteja anexado
+    # olhando o shell — anexado não significa agente vivo.
+    return SessionState.DETACHED
