@@ -47,6 +47,7 @@ class SessionOut(BaseModel):
     tmux_session_id: str | None = None
     agent_pid: int | None = None
     last_seen_at: datetime | None = None
+    last_activity_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     # Métricas reais da janela de contexto (sessões Claude); None se indisponível.

@@ -66,6 +66,8 @@ export interface Session {
   /** JARVIS: resumo falado da sessão (voz no celular) ligado p/ esta sessão. */
   jarvis?: boolean;
   metrics?: SessionMetrics | null;
+  /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
+  last_activity_at?: string | null;
   [key: string]: unknown;
 }
 

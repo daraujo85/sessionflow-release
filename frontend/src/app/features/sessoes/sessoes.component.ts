@@ -13,6 +13,7 @@ import { ApiService } from '../../core/api.service';
 import { Session, SessionStatus } from '../../core/models';
 import { SseService } from '../../core/sse.service';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
+import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
 
 /** One selectable filter chip. `status` undefined means "Todas". */
 interface FilterChip {
@@ -1056,31 +1057,17 @@ export class SessoesComponent {
     return s.display_name || s.tmux_name || s.id;
   }
 
+  /**
+   * "Última atividade há X". Usa ``last_activity_at`` (instante real em que a
+   * tela mudou / houve input) — NÃO ``updated_at``, que o worker bate todo ciclo
+   * e mostraria "agora" sempre. Cai p/ updated/created só se faltar.
+   */
   protected timeAgo(s: Session): string {
     const raw =
+      s.last_activity_at ??
       (s['updated_at'] as string | undefined) ??
       (s['created_at'] as string | undefined);
-    if (!raw) {
-      return '';
-    }
-    const then = Date.parse(raw);
-    if (Number.isNaN(then)) {
-      return '';
-    }
-    const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-    if (secs < 60) {
-      return 'agora';
-    }
-    const mins = Math.floor(secs / 60);
-    if (mins < 60) {
-      return `há ${mins} min`;
-    }
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) {
-      return `há ${hours} h`;
-    }
-    const days = Math.floor(hours / 24);
-    return `há ${days} d`;
+    return fmtTimeAgo(raw);
   }
 
   private load(status?: SessionStatus): void {

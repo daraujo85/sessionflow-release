@@ -18,6 +18,7 @@ contagens corrompidas).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -185,9 +186,10 @@ class Discovery:
         # Estado anterior (antes do upsert) p/ detectar transições.
         prev = await coll.find_one(
             {"tmux_name": info.name},
-            projection={"status": 1},
+            projection={"status": 1, "screen_sig": 1},
         )
         prev_status = prev.get("status") if prev else None
+        prev_sig = prev.get("screen_sig") if prev else None
 
         # Sessão viva = tmux presente E o AGENTE (claude/codex/...) ainda na
         # árvore de processos do pane. Antes era ``pane_pid is not None``, mas o
@@ -209,8 +211,19 @@ class Discovery:
         # Rótulo fino do que o agente faz (derivado da tela). Só faz sentido p/
         # sessões vivas; quando a sessão é marcada stopped/detached fica "".
         activity = ""
+        # ``last_activity_at``: instante (wall-clock) da ÚLTIMA atividade REAL —
+        # quando a tela mudou de fato. Não confundir com ``updated_at``, que é
+        # batido todo ciclo. Permite ao app mostrar "última atividade há X".
+        # Assinatura ESTÁVEL (md5) p/ comparar entre ciclos e sobreviver a
+        # restart do worker (``hash()`` nativo é aleatório por processo).
+        screen_sig: str | None = None
+        screen_changed = False
         if state is SessionState.RUNNING:
             screen_text = await self._screen_text(info.name)
+            screen_sig = hashlib.md5(
+                screen_text.encode("utf-8", "ignore")
+            ).hexdigest()
+            screen_changed = screen_sig != prev_sig
             if screen_wants_attention(screen_text, info.agent_type):
                 status_value = SessionState.WAITING_INPUT.value
                 attention = "waiting"
@@ -233,6 +246,13 @@ class Discovery:
         # SessionFlow) com vazio.
         if info.work_dir:
             set_fields["work_dir"] = info.work_dir
+
+        # Marca atividade só quando a tela mudou de verdade (senão preserva o
+        # last_activity_at anterior — não incluir no $set já mantém o valor).
+        if screen_sig is not None:
+            set_fields["screen_sig"] = screen_sig
+            if screen_changed:
+                set_fields["last_activity_at"] = now
 
         # Métricas REAIS da janela de contexto (só sessões Claude com work_dir).
         # É leitura de 1 arquivo JSONL por ciclo — barato; computamos sempre.

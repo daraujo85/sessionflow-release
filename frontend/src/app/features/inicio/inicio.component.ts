@@ -16,6 +16,7 @@ import { Session, SessionStatus, Task, TaskState } from '../../core/models';
 /** Display state for a task row; extends TaskState with a derived "paused". */
 type TaskDisplayState = TaskState | 'paused';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
+import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
 
 /** Session statuses considered "active" on the home screen. */
 const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
@@ -154,6 +155,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 <span class="sf-card-status" [style.color]="statusMeta(s.status).color">{{
                   statusLabel(s)
                 }}</span>
+                @if (timeAgo(s)) {
+                  <span class="sf-card-time">· {{ timeAgo(s) }}</span>
+                }
                 <span class="sf-card-sub mono">{{ subline(s) }}</span>
               </span>
               <svg
@@ -536,6 +540,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       .sf-card-status {
         font-size: 13.5px;
         margin-top: 3px;
+      }
+      .sf-card-time {
+        font-size: 12.5px;
+        color: #7a8090;
+        margin-left: 4px;
       }
       .sf-card-sub {
         font-size: 13px;
@@ -947,6 +956,18 @@ export class InicioComponent implements OnInit {
       return s.activity;
     }
     return this.statusMeta(s.status).label;
+  }
+
+  /**
+   * "Última atividade há X" — usa ``last_activity_at`` (tela mudou / input real),
+   * não ``updated_at`` (batido todo ciclo). Mostra se a sessão está parada faz tempo.
+   */
+  protected timeAgo(s: Session): string {
+    return fmtTimeAgo(
+      s.last_activity_at ??
+        (s['updated_at'] as string | undefined) ??
+        (s['created_at'] as string | undefined),
+    );
   }
 
   /**

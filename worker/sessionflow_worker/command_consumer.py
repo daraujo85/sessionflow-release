@@ -405,6 +405,7 @@ class CommandConsumer:
                     "tmux_id": info.id,
                     "claude_session_id": claude_session_id,
                     "updated_at": now,
+                    "last_activity_at": now,
                 },
                 "$setOnInsert": {"created_at": now},
             },
@@ -600,6 +601,13 @@ class CommandConsumer:
         # mostrar o autocomplete, sem submeter).
         enter = payload.get("enter", True)
         self._send_keys(name, text, enter=bool(enter))
+        # Submeter (enter) é INTERAÇÃO do usuário → marca atividade na hora (a
+        # tela também mudaria em ~6s, mas isso deixa o "última atividade" imediato).
+        # Digitação ao vivo (enter=False) é transitória, não conta.
+        if enter:
+            await self._sessions.update_one(
+                {"tmux_name": name}, {"$set": {"last_activity_at": _now()}}
+            )
         return {"name": name}
 
     async def _handle_key(self, payload: dict[str, Any]) -> dict[str, Any]:
