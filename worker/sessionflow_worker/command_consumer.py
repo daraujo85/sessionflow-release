@@ -229,24 +229,40 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # SEMPRE abre uma JANELA NOVA já anexada (``tmux attach -t <nome>``) e
-        # titulada. Garante o CONTEÚDO CERTO: anexa pela sessão pelo NOME, então
-        # nunca mostra a sessão errada.
+        # ABA-se-puder, senão JANELA — sempre TITULADA e anexada pelo NOME (logo,
+        # conteúdo sempre correto; nunca reusa janela por rótulo, que fica obsoleto
+        # com o Retomar).
         #
-        # Por que não reusar janela existente? Reusar casando pela ``custom
-        # title`` é frágil: o "Retomar" mata e recria a sessão tmux, deixando o
-        # rótulo da janela obsoleto (janela rotulada "planner" acaba anexada à
-        # meetsync). Não há como o AppleScript saber a QUAL sessão uma janela
-        # está anexada, então qualquer reuso por rótulo pode mostrar a errada.
-        # Janela nova por clique é o mal menor — e sempre correta.
-        #
-        # Por que não ABA (Cmd+T)? Criar aba exige tecla via System Events, que
-        # precisa de Acessibilidade pro processo do worker; sem isso o Cmd+T é
-        # no-op e cai em janela nova mesmo assim. Então vamos direto na janela.
+        # Tenta criar ABA na janela da frente via Cmd+T (System Events). Isso só
+        # funciona se o processo do worker tiver permissão de Acessibilidade —
+        # quando não tem, o Cmd+T é no-op silencioso. Por isso CONTAMOS as abas
+        # antes/depois: se aumentou, a aba nasceu → roda o attach NELA; se não,
+        # caímos em JANELA nova. Em ambos os casos fixamos o ``custom title``.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
-            f'  set _t to do script "{attach_cmd}"\n'
+            f"  delay 0.3\n"
+            f"  set _before to 0\n"
+            f"  try\n"
+            f"    set _before to count of tabs of front window\n"
+            f"  end try\n"
+            f"end tell\n"
+            f'tell application "System Events"\n'
+            f"  try\n"
+            f'    keystroke "t" using command down\n'
+            f"  end try\n"
+            f"end tell\n"
+            f"delay 0.45\n"
+            f'tell application "{term_app}"\n'
+            f"  set _after to _before\n"
+            f"  try\n"
+            f"    set _after to count of tabs of front window\n"
+            f"  end try\n"
+            f"  if _after > _before then\n"
+            f'    set _t to do script "{attach_cmd}" in selected tab of front window\n'
+            f"  else\n"
+            f'    set _t to do script "{attach_cmd}"\n'
+            f"  end if\n"
             f'  set custom title of _t to "{title}"\n'
             f"end tell\n"
         )
