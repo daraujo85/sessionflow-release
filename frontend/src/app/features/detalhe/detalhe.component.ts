@@ -1545,21 +1545,39 @@ export class DetalheComponent implements AfterViewChecked {
   private stickToBottom = true;
 
   constructor() {
-    // Restaura o rascunho desta sessão (sobrevive à navegação/reload).
-    this.draft.set(this.drafts.get(this.id()));
     this.sse.connect(); // idempotente — garante o canal p/ o push do espelho
-    this.loadSession();
-    this.refreshScreen();
 
-    // Ao ABRIR a sessão, instrui (1x) a trabalhar em tarefas/marcos. O server
-    // é idempotente e respeita o toggle global — aqui é só disparar.
-    const sid = this.id();
-    if (sid) {
-      this.api
-        .instructMilestones(sid)
-        .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe({ error: () => {} });
-    }
+    // id REATIVO: ao navegar /sessao/A -> /sessao/B o Angular REUSA este mesmo
+    // componente, então ler só o snapshot deixa o id PRESO na sessão anterior —
+    // a tela, o upload e o input passam a mirar a sessão errada (bug "mostra o
+    // sessionflow dentro da secretaria"). Assinamos o paramMap e, a cada id
+    // novo, resetamos o estado por-sessão e recarregamos do zero.
+    this.route.paramMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((pm) => {
+        const sid = pm.get('id') ?? '';
+        if (sid === this.id() && this.session()) {
+          return; // mesma sessão já carregada
+        }
+        this.id.set(sid);
+        // Limpa o estado da sessão anterior (senão "vaza" pra esta).
+        this.session.set(null);
+        this.screen.set('');
+        this.tasks.set([]);
+        this.historyMode.set(false);
+        this.liveMode.set(false);
+        this.draft.set(this.drafts.get(sid));
+        this.loadSession();
+        this.refreshScreen();
+        // Ao ABRIR a sessão, instrui (1x) a trabalhar em tarefas/marcos. O
+        // server é idempotente e respeita o toggle global.
+        if (sid) {
+          this.api
+            .instructMilestones(sid)
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe({ error: () => {} });
+        }
+      });
 
     // Espelho PUSHADO: o worker empurra a tela (SSE) assim que muda. Aplicamos
     // o último frame da NOSSA sessão (casado por tmux_name) — feedback quase
