@@ -232,14 +232,19 @@ class CommandConsumer:
         # ABA-se-puder-COM-SEGURANÇA, senão JANELA — sempre titulada e anexada
         # pelo NOME (conteúdo sempre certo).
         #
-        # Tenta criar aba via Cmd+T (System Events; só funciona com Acessibilidade
-        # liberada pro worker). Só rodamos o attach NA ABA se DUAS condições baterem:
-        #   1) o nº de abas AUMENTOU (a aba nasceu mesmo), E
-        #   2) a aba selecionada NÃO está ``busy`` (é um shell fresco).
-        # Isso evita a INJEÇÃO: sem o guard, se o Cmd+T falhasse, o ``do script in
-        # <aba>`` digitava o comando dentro da sessão que já rodava ali (ex.: jogou
-        # "tmux attach -t secretaria" no claude do sessionflow). Sem aba segura,
-        # caímos em JANELA nova (``do script`` sem alvo), que nunca injeta.
+        # Fluxo: Cmd+T (System Events; só cria aba se o worker tem Acessibilidade)
+        # → se o nº de abas AUMENTOU (aba nova nasceu), ESPERA ela ficar PRONTA
+        # (shell carregado, ``not busy``) e roda o attach NELA. Senão, JANELA nova.
+        #
+        # Dois cuidados:
+        #  • O "aba nova nasceu" (_grew) é o guard ANTI-INJEÇÃO: se o Cmd+T falha,
+        #    não miramos a aba selecionada (que pode ser uma sessão ativa) — vamos
+        #    direto p/ janela. (Sem isso, já jogou "tmux attach" dentro de outro
+        #    claude.)
+        #  • ESPERAR o shell da aba nova carregar (busy→livre) é o que conserta o
+        #    bug "abre aba vazia + sessão em janela à parte": ``do script in <aba
+        #    busy>`` faz o Terminal abrir JANELA nova; rodando só quando a aba está
+        #    livre, o attach roda DENTRO da aba.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
@@ -254,17 +259,26 @@ class CommandConsumer:
             f'    keystroke "t" using command down\n'
             f"  end try\n"
             f"end tell\n"
-            f"delay 0.45\n"
+            f"delay 0.35\n"
             f'tell application "{term_app}"\n'
+            f"  set _grew to false\n"
+            f"  try\n"
+            f"    if (count of tabs of front window) > _before then set _grew to true\n"
+            f"  end try\n"
+            f"  if _grew then\n"
+            f"    repeat 40 times\n"
+            f"      try\n"
+            f"        if not (busy of selected tab of front window) then exit repeat\n"
+            f"      end try\n"
+            f"      delay 0.1\n"
+            f"    end repeat\n"
+            f"  end if\n"
             f"  set _useTab to false\n"
             f"  try\n"
-            f"    if (count of tabs of front window) > _before then\n"
-            f"      set _sel to selected tab of front window\n"
-            f"      if not (busy of _sel) then set _useTab to true\n"
-            f"    end if\n"
+            f"    if _grew and not (busy of selected tab of front window) then set _useTab to true\n"
             f"  end try\n"
             f"  if _useTab then\n"
-            f'    set _t to do script "{attach_cmd}" in _sel\n'
+            f'    set _t to do script "{attach_cmd}" in selected tab of front window\n'
             f"  else\n"
             f'    set _t to do script "{attach_cmd}"\n'
             f"  end if\n"
