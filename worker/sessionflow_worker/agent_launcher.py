@@ -130,6 +130,7 @@ def build_launch_cmd(
     resume: bool = False,
     lang_instruction: str | None = None,
     session_id: str | None = None,
+    name: str | None = None,
 ) -> str:
     """Monta a linha de comando a ser enviada via ``tmux send-keys``.
 
@@ -198,6 +199,13 @@ def build_launch_cmd(
     if lang_instruction:
         if agent_type is AgentType.CLAUDE:
             parts += ["--append-system-prompt", lang_instruction]
+
+    # Nome de exibição DA SESSÃO do claude (-n/--name): aparece no prompt box, no
+    # picker /resume e no título do terminal. Faz a sessão do Claude Code ter o
+    # MESMO nome amigável da sessão tmux (ex.: "multiambiente"), em vez de ficar
+    # sem nome. Só claude tem essa flag.
+    if name and agent_type is AgentType.CLAUDE:
+        parts += ["--name", name]
 
     if yolo:
         parts += MAX_PERMISSION_FLAGS.get(agent_type, [])

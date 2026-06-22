@@ -229,22 +229,21 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # ABA-se-puder-COM-SEGURANÇA, senão JANELA — sempre titulada e anexada
-        # pelo NOME (conteúdo sempre certo).
+        # ABA-se-puder, senão JANELA — sempre titulada e anexada pelo NOME.
         #
-        # Fluxo: Cmd+T (System Events; só cria aba se o worker tem Acessibilidade)
-        # → se o nº de abas AUMENTOU (aba nova nasceu), ESPERA ela ficar PRONTA
-        # (shell carregado, ``not busy``) e roda o attach NELA. Senão, JANELA nova.
+        # Fluxo: Cmd+T (System Events; só cria aba com Acessibilidade liberada) →
+        # se o nº de abas AUMENTOU (aba nova nasceu e está focada), DIGITA o attach
+        # NELA via teclado e Enter. Senão, JANELA nova (do script).
         #
-        # Dois cuidados:
-        #  • O "aba nova nasceu" (_grew) é o guard ANTI-INJEÇÃO: se o Cmd+T falha,
-        #    não miramos a aba selecionada (que pode ser uma sessão ativa) — vamos
-        #    direto p/ janela. (Sem isso, já jogou "tmux attach" dentro de outro
-        #    claude.)
-        #  • ESPERAR o shell da aba nova carregar (busy→livre) é o que conserta o
-        #    bug "abre aba vazia + sessão em janela à parte": ``do script in <aba
-        #    busy>`` faz o Terminal abrir JANELA nova; rodando só quando a aba está
-        #    livre, o attach roda DENTRO da aba.
+        # Por que DIGITAR em vez de ``do script ... in <aba>``? O ``do script in
+        # <aba>`` abre JANELA nova quando a aba está "busy" (shell ainda carregando)
+        # — era o bug "abre aba vazia + sessão em janela à parte". Digitar via
+        # keystroke roda na aba FOCADA (a recém-criada), sem esse quirk: o shell
+        # bufferiza e executa quando o prompt aparece.
+        #
+        # Segurança anti-injeção: só digita se _grew (aba nova de fato criada). Se
+        # o Cmd+T falhar, _grew=false → JANELA nova (do script sem alvo), nunca
+        # digita dentro de uma sessão que já roda na aba atual.
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
@@ -259,31 +258,30 @@ class CommandConsumer:
             f'    keystroke "t" using command down\n'
             f"  end try\n"
             f"end tell\n"
-            f"delay 0.35\n"
+            f"delay 0.5\n"
+            f"set _grew to false\n"
             f'tell application "{term_app}"\n'
-            f"  set _grew to false\n"
             f"  try\n"
             f"    if (count of tabs of front window) > _before then set _grew to true\n"
             f"  end try\n"
-            f"  if _grew then\n"
-            f"    repeat 40 times\n"
-            f"      try\n"
-            f"        if not (busy of selected tab of front window) then exit repeat\n"
-            f"      end try\n"
-            f"      delay 0.1\n"
-            f"    end repeat\n"
-            f"  end if\n"
-            f"  set _useTab to false\n"
-            f"  try\n"
-            f"    if _grew and not (busy of selected tab of front window) then set _useTab to true\n"
-            f"  end try\n"
-            f"  if _useTab then\n"
-            f'    set _t to do script "{attach_cmd}" in selected tab of front window\n'
-            f"  else\n"
-            f'    set _t to do script "{attach_cmd}"\n'
-            f"  end if\n"
-            f'  set custom title of _t to "{title}"\n'
             f"end tell\n"
+            f"if _grew then\n"
+            f'  tell application "System Events"\n'
+            f'    keystroke "{attach_cmd}"\n'
+            f"    key code 36\n"
+            f"  end tell\n"
+            f"  delay 0.3\n"
+            f'  tell application "{term_app}"\n'
+            f"    try\n"
+            f'      set custom title of selected tab of front window to "{title}"\n'
+            f"    end try\n"
+            f"  end tell\n"
+            f"else\n"
+            f'  tell application "{term_app}"\n'
+            f'    set _t to do script "{attach_cmd}"\n'
+            f'    set custom title of _t to "{title}"\n'
+            f"  end tell\n"
+            f"end if\n"
         )
         try:
             subprocess.Popen(
@@ -400,6 +398,7 @@ class CommandConsumer:
             effort,
             lang_instruction=lang_instruction,
             session_id=claude_session_id,
+            name=display,
         )
         self._send_keys(name, launch_cmd)
 
@@ -581,6 +580,7 @@ class CommandConsumer:
             resume=True,
             lang_instruction=lang_instruction,
             session_id=claude_session_id,
+            name=doc.get("display_name") or name,
         )
         self._send_keys(name, launch_cmd)
 
