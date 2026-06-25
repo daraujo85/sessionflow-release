@@ -176,7 +176,9 @@ async def test_audio_transcribes_and_injects(
     # Marcador único; o "texto transcrito" é um echo desse marcador.
     marker = f"sfmark{uuid.uuid4().hex[:8]}"
 
-    async def _fake_transcribe(path: str, model_name: str = "base") -> str:
+    async def _fake_transcribe(
+        path: str, model_name: str = "base", language: str | None = "pt"
+    ) -> str:
         return f"echo {marker}"
 
     # NÃO carrega o modelo real: substitui o transcribe por um stub.
@@ -221,7 +223,9 @@ async def test_audio_transcribe_failure_emits_error(
     name = make_name()
     runtime.new_session(name, tmp_path)
 
-    async def _boom(path: str, model_name: str = "base") -> str:
+    async def _boom(
+        path: str, model_name: str = "base", language: str | None = "pt"
+    ) -> str:
         raise FileNotFoundError(f"arquivo de áudio não encontrado: {path!r}")
 
     monkeypatch.setattr(transcriber, "transcribe", _boom)

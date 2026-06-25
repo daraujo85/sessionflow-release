@@ -119,7 +119,9 @@ def patch_launch(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     """
     calls: list[tuple] = []
 
-    def _fake(agent_type, model, effort) -> str:
+    def _fake(agent_type, model, effort, **kwargs) -> str:
+        # Aceita os kwargs atuais (lang_instruction/session_id/name/resume) sem
+        # acoplar o teste à assinatura exata do build_launch_cmd real.
         calls.append((agent_type, model, effort))
         return "true"
 
@@ -310,7 +312,8 @@ async def test_resume_nonexistent_errors(
     assert runtime.has_session(ghost) is False
     event = await consumer.handle(_cmd("resume", {"name": ghost}))
     assert event["ok"] is False
-    assert "não existe" in event["error"]
+    # Sessão sem doc no Mongo: não há de onde retomar.
+    assert "desconhecida" in event["error"]
 
 
 async def test_resume_existing_marks_running(
@@ -353,3 +356,48 @@ async def test_dedupe_by_command_id(
     assert second["ok"] is True
     assert second.get("deduplicated") is True
     assert len(patch_launch) == 1  # build_launch_cmd NÃO chamado de novo
+
+
+async def test_stale_create_is_skipped(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Comando de ciclo de vida velho (preso na fila) é descartado: não relança.
+
+    Reproduz a causa da duplicação — um ``create``/``resume`` que ficou parado
+    na fila enquanto o worker estava fora e voltou horas depois.
+    """
+    from datetime import timedelta
+
+    name = make_name()
+    command = _cmd(
+        "create",
+        {"name": name, "agent_type": "claude", "work_dir": str(tmp_path)},
+    )
+    # Carimba como pedido há muito tempo (bem além do TTL).
+    old = cc_mod._now() - timedelta(seconds=cc_mod.COMMAND_STALE_TTL_S + 600)
+    command["requested_at"] = old.isoformat()
+
+    event = await consumer.handle(command)
+    assert event["ok"] is True
+    assert event.get("skipped") == "stale"
+    assert len(patch_launch) == 0  # NÃO relançou o agente
+    # Não criou doc nem sessão tmux.
+    assert await db[coll_name].find_one({"tmux_name": name}) is None
+    assert not runtime.has_session(name)
+
+
+async def test_fresh_create_passes_guard(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Comando recente (restart normal do worker) passa pelo guard normalmente."""
+    name = make_name()
+    command = _cmd(
+        "create",
+        {"name": name, "agent_type": "claude", "work_dir": str(tmp_path)},
+    )
+    command["requested_at"] = cc_mod._now().isoformat()  # agora
+
+    event = await consumer.handle(command)
+    assert event["ok"] is True
+    assert event.get("skipped") is None
+    assert len(patch_launch) == 1  # relançou normalmente

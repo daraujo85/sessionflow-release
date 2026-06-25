@@ -10,7 +10,7 @@ dependencies = [
     "aio-pika",
     "pydantic",
     "python-dotenv",
-    "parakeet-mlx>=0.5.2",
+    "mlx-whisper",
     "pywebpush>=2.3.0",
 ]
 

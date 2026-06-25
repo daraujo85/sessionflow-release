@@ -44,6 +44,7 @@ Decisões de design
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -66,6 +67,20 @@ from sessionflow_worker.tmux_runtime import TmuxRuntime, TmuxRuntimeError
 
 SESSIONS_COLLECTION = "sessions"
 SESSION_ORIGIN = "sessionflow"
+
+logger = logging.getLogger("sessionflow_worker.command_consumer")
+
+# TTL de frescor do comando. Comandos representam INTENÇÃO IMEDIATA do usuário;
+# se ficaram na fila além disso (ex.: worker caiu e voltou horas depois), a
+# intenção provavelmente já não vale — reprocessá-los "do nada" RESSUSCITA
+# sessões encerradas e duplica estado. Restart normal do worker (segundos) passa
+# folgado. 0/negativo desativa o guard. Configurável via env.
+COMMAND_STALE_TTL_S = float(os.environ.get("SESSIONFLOW_COMMAND_TTL_S", "300"))
+
+# Só comandos de CICLO DE VIDA (criam/ressuscitam sessão) são descartados quando
+# velhos — é o que causou a duplicação. Os demais (kill/delete/rename) são
+# idempotentes ou destrutivos-desejáveis e seguem mesmo atrasados.
+_STALE_GUARDED_TYPES = frozenset({"create", "resume", "input", "key", "audio", "file"})
 
 # A API roda no Docker e grava uploads em ``/data/uploads/<sid>/<file>`` (path
 # do CONTAINER), publicado no comando ``audio``. O Worker roda no HOST, onde
@@ -118,6 +133,24 @@ class CommandError(Exception):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _command_age_s(command: dict[str, Any]) -> float | None:
+    """Idade do comando em segundos a partir de ``requested_at`` (ISO-8601).
+
+    ``None`` se ausente/inválido (sem timestamp não há como julgar frescor;
+    o guard então deixa passar — fail-open). Tolera o sufixo ``Z``.
+    """
+    raw = command.get("requested_at")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (_now() - ts).total_seconds()
 
 
 def _slugify(s: str) -> str:
@@ -198,6 +231,31 @@ class CommandConsumer:
         if key in ("es", "es-es", "español", "espanhol"):
             return "Responde SIEMPRE en español."
         return None
+
+    async def _language_code(self) -> str | None:
+        """Código ISO-639-1 do idioma da app p/ FORÇAR na transcrição de áudio.
+
+        Lê ``app_settings.language`` (default ``pt-BR`` → ``"pt"``). Devolve
+        ``"pt"``/``"es"``/``"en"``… ou ``None`` (auto-detect) p/ idiomas não
+        mapeados. Best-effort: falha de leitura cai em PT (default do app).
+        """
+        lang = "pt-BR"
+        try:
+            doc = await self._db["app_settings"].find_one(
+                {"_id": "app"}, {"language": 1}
+            )
+            if doc and doc.get("language"):
+                lang = str(doc["language"])
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        key = lang.strip().lower()
+        if key in ("pt", "pt-br", "pt_br", "português", "portugues", ""):
+            return "pt"
+        if key in ("es", "es-es", "español", "espanhol"):
+            return "es"
+        if key in ("en", "en-us", "en-gb", "english", "inglês", "ingles"):
+            return "en"
+        return None  # idioma desconhecido: deixa o Whisper auto-detectar.
 
     async def _handle_open_terminal(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Abre a sessão num Terminal do Mac (``tmux attach``) p/ uso lado a lado.
@@ -310,6 +368,22 @@ class CommandConsumer:
             return await self._emit(
                 command_id, ctype, ok=True, deduplicated=True
             )
+
+        # Guard de comando EXPIRADO: comandos de ciclo de vida que ficaram presos
+        # na fila além do TTL (worker caiu/voltou) NÃO são reprocessados — era o
+        # que ressuscitava sessões encerradas e duplicava. No-op idempotente.
+        if COMMAND_STALE_TTL_S > 0 and ctype in _STALE_GUARDED_TYPES:
+            age = _command_age_s(command)
+            if age is not None and age > COMMAND_STALE_TTL_S:
+                logger.warning(
+                    "comando %r (%s) descartado: expirado (%.0fs > TTL %.0fs)",
+                    ctype, command_id, age, COMMAND_STALE_TTL_S,
+                )
+                if command_id:
+                    self._processed.add(command_id)
+                return await self._emit(
+                    command_id, ctype, ok=True, skipped="stale", age_s=round(age),
+                )
 
         try:
             if ctype not in _VALID_TYPES:
@@ -687,8 +761,11 @@ class CommandConsumer:
             raise CommandError("audio requer 'path'")
         path = self._resolve_upload_path(path)
 
+        # Força o idioma do app (default PT-BR) — o auto-detect do modelo às
+        # vezes escorrega para inglês transcrevendo fala em português.
+        language = await self._language_code()
         try:
-            text = await transcriber.transcribe(path)
+            text = await transcriber.transcribe(path, language=language)
         except FileNotFoundError as exc:
             raise CommandError(f"áudio não transcrito: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - falha de modelo/transcrição
