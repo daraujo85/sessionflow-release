@@ -118,7 +118,9 @@ def _clean_for_speech(text: str) -> str:
     """
     t = _URL_RE.sub("", text or "")
     t = _DROP_RE.sub(" ", t)
-    t = re.sub(r"\.{2,}", ".", t)  # "..." -> "."
+    # Colapsa QUALQUER sequência de pontuação (incl. "...", ". .", ".,") num
+    # único ponto+espaço — senão o XTTS lê a pontuação solta como "ponto, ponto".
+    t = re.sub(r"[.,;:!?](?:\s*[.,;:!?])+", ". ", t)
     t = re.sub(r"\s+([.,!?;:])", r"\1", t)  # espaço antes de pontuação
     t = re.sub(r"\s+", " ", t).strip()
     t = t.strip(" .,:;-—–")  # remove pontuação/sobras nas EXTREMIDADES
