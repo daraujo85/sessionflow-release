@@ -337,12 +337,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
       @if (tasks().length > 0) {
         <div class="tasks">
           <button type="button" class="tasks-head" (click)="tasksOpen.set(!tasksOpen())">
-            <span class="tasks-title">Tarefas ({{ tasks().length }})</span>
-            <span class="tasks-sub">{{ tasksDoneCount() }}/{{ tasks().length }} concluídas</span>
-            <svg class="tasks-chev" [class.open]="tasksOpen()" width="18" height="18" viewBox="0 0 24 24"
-                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m6 9 6 6 6-6" />
-            </svg>
+            <span class="tasks-head-top">
+              <span class="tasks-title">Tarefas ({{ tasks().length }})</span>
+              <span class="tasks-sub">{{ tasksDoneCount() }}/{{ tasks().length }} concluídas</span>
+              <svg class="tasks-chev" [class.open]="tasksOpen()" width="18" height="18" viewBox="0 0 24 24"
+                   fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+            @if (currentTask(); as ct) {
+              <span class="tasks-current">
+                <span class="tasks-current-dot" [style.background]="taskColor(ct.state)"></span>
+                <span class="tasks-current-lead" [style.color]="taskColor(ct.state)">{{ currentTaskLead() }}:</span>
+                <span class="tasks-current-title">{{ ct.title }}</span>
+              </span>
+            }
           </button>
           @if (tasksOpen()) {
             <div class="tasks-filters">
@@ -436,7 +445,24 @@ import { ansiToHtml } from '../../shared/ansi-html';
       }
 
       <!-- Input bar -->
-      <footer class="inputbar">
+      <footer
+        class="inputbar"
+        [class.drag-over]="dragOver()"
+        (dragover)="onDragOver($event)"
+        (dragleave)="onDragLeave($event)"
+        (drop)="onDrop($event)"
+      >
+        @if (dragOver()) {
+          <div class="drop-hint" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <path d="M7 10l5 5 5-5" />
+              <path d="M12 15V3" />
+            </svg>
+            <span>Solte para anexar</span>
+          </div>
+        }
         <!-- Input de arquivo (sempre presente; abre via botão de anexar) -->
         <input
           #fileInput
@@ -948,25 +974,56 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
       /* Terminal */
       /* Painel de tarefas da sessão (recolhível) */
+      /* Faixa de largura cheia, consistente com a caixa de métricas (.metrics)
+         logo acima — antes era um card recuado, que destoava. */
       .tasks {
         flex: none;
-        margin: 0 14px;
-        border: 1px solid #20262a;
-        border-radius: 12px;
-        background: #12181a;
-        overflow: hidden;
+        border-bottom: 1px solid #20262a;
+        background: #121614;
       }
       .tasks-head {
         width: 100%;
         display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 14px;
+        flex-direction: column;
+        gap: 6px;
+        padding: 13px 16px;
         background: none;
         border: none;
         color: #f4f5f7;
         cursor: pointer;
         text-align: left;
+      }
+      .tasks-head-top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      /* Linha de destaque: tarefa em andamento (ou a mais recente) — preenche
+         a barra que antes ficava vazia. */
+      .tasks-current {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        font-size: 12px;
+      }
+      .tasks-current-dot {
+        flex: none;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .tasks-current-lead {
+        flex: none;
+        font-weight: 700;
+      }
+      .tasks-current-title {
+        flex: 1;
+        min-width: 0;
+        color: #c7ccd6;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .tasks-title {
         font-size: 13.5px;
@@ -989,7 +1046,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         display: flex;
         flex-wrap: wrap;
         gap: 5px;
-        padding: 0 14px 8px;
+        padding: 0 16px 8px;
       }
       .tasks-filter {
         padding: 4px 9px;
@@ -1015,7 +1072,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .tasks-list {
         list-style: none;
         margin: 0;
-        padding: 0 14px 10px;
+        padding: 0 16px 10px;
         max-height: 38vh;
         overflow-y: auto;
       }
@@ -1190,6 +1247,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         border-color: transparent;
       }
       .inputbar {
+        position: relative;
         flex: none;
         display: flex;
         align-items: center;
@@ -1197,6 +1255,26 @@ import { ansiToHtml } from '../../shared/ansi-html';
         padding: 12px 14px calc(16px + env(safe-area-inset-bottom, 0px));
         border-top: 1px solid #20262a;
         background: #0e1113;
+        transition: background 0.15s, box-shadow 0.15s;
+      }
+      .inputbar.drag-over {
+        background: #0f1a17;
+        box-shadow: inset 0 0 0 2px #00e4b4;
+      }
+      /* Pista visual cobrindo o compositor enquanto arrasta. */
+      .drop-hint {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: rgba(8, 20, 17, 0.82);
+        color: #00e4b4;
+        font-size: 13.5px;
+        font-weight: 700;
+        pointer-events: none;
       }
       .live-toggle {
         flex: none;
@@ -1477,9 +1555,44 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly tasksDoneCount = computed(
     () => this.tasks().filter((t) => t.state === 'done').length,
   );
+  /**
+   * Tarefa em destaque no cabeçalho (preenche a barra que ficava vazia):
+   * a EM ANDAMENTO; senão a BLOQUEADA; senão a mais recente (a lista já vem
+   * ordenada por updated_at desc do backend). `null` se não há tarefas.
+   */
+  protected readonly currentTask = computed<Task | null>(() => {
+    const list = this.tasks();
+    if (!list.length) {
+      return null;
+    }
+    return (
+      list.find((t) => t.state === 'doing') ??
+      list.find((t) => t.state === 'blocked') ??
+      list[0]
+    );
+  });
+  /** Prefixo do destaque ("Em andamento" / "Bloqueada" / "Última"…). */
+  protected readonly currentTaskLead = computed<string>(() => {
+    const t = this.currentTask();
+    if (!t) {
+      return '';
+    }
+    if (t.state === 'doing') {
+      return 'Em andamento';
+    }
+    if (t.state === 'blocked') {
+      return 'Bloqueada';
+    }
+    if (t.state === 'done') {
+      return 'Última concluída';
+    }
+    return 'A fazer';
+  });
   protected readonly acting = signal<boolean>(false);
   protected readonly sending = signal<boolean>(false);
   protected readonly attaching = signal<boolean>(false);
+  /** Arquivo/imagem sendo arrastado sobre o compositor (realça a área de drop). */
+  protected readonly dragOver = signal<boolean>(false);
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -2007,6 +2120,11 @@ export class DetalheComponent implements AfterViewChecked {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     input.value = ''; // permite reanexar o mesmo arquivo
+    this.stageFile(file);
+  }
+
+  /** Põe o arquivo em "staged" + gera preview (imagem). Reusado por seletor e drop. */
+  private stageFile(file: File | null | undefined): void {
     if (!file) {
       return;
     }
@@ -2018,6 +2136,39 @@ export class DetalheComponent implements AfterViewChecked {
     } else {
       this.pendingFileUrl.set(null);
     }
+  }
+
+  /** Arrastou um arquivo sobre o compositor: realça a área e aceita o drop. */
+  protected onDragOver(event: DragEvent): void {
+    if (!event.dataTransfer?.types?.includes('Files')) {
+      return; // arrastando texto/seleção — ignora
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    if (!this.dragOver()) {
+      this.dragOver.set(true);
+    }
+  }
+
+  /** Saiu da área de drop (só limpa quando sai de fato do compositor). */
+  protected onDragLeave(event: DragEvent): void {
+    const to = event.relatedTarget as Node | null;
+    const host = event.currentTarget as HTMLElement;
+    if (to && host.contains(to)) {
+      return; // ainda dentro (passou sobre um filho)
+    }
+    this.dragOver.set(false);
+  }
+
+  /** Soltou o arquivo: stage do primeiro item (espelha o seletor/áudio). */
+  protected onDrop(event: DragEvent): void {
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    this.dragOver.set(false);
+    this.stageFile(files[0]);
   }
 
   /** Descarta o arquivo staged (não envia) e revoga o preview. */
