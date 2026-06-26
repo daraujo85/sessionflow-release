@@ -151,7 +151,7 @@ export class App {
 
   /** Telas sem chrome (full-screen): overlays e a tela de login. */
   protected readonly isOverlay = computed(() =>
-    ['criar', 'sessao', 'notificacoes', 'login'].includes(this.activeSegment()),
+    ['criar', 'sessao', 'notificacoes', 'login', 's'].includes(this.activeSegment()),
   );
 
   /** Login é full-bleed (sem a coluna de 480px do shell). */

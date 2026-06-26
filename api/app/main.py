@@ -16,19 +16,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from app import share
 from app.auth import decode_token, extract_token
 from app.config import Settings, get_settings
 from app.events_broker import EventsBroker
+from app.repositories.sessions_repo import SessionsRepository
 from app.routers import auth as auth_router
 from app.routers import directories as directories_router
 from app.routers import events as events_router
 from app.routers import history as history_router
+from app.routers import jarvis as jarvis_router
 from app.routers import models as models_router
 from app.routers import outputs as outputs_router
-from app.routers import screen as screen_router
 from app.routers import profile as profile_router
-from app.routers import jarvis as jarvis_router
 from app.routers import push as push_router
+from app.routers import screen as screen_router
 from app.routers import sessions as sessions_router
 from app.routers import settings as settings_router
 from app.routers import worker as worker_router
@@ -98,10 +100,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await call_next(request)
 
         token = extract_token(request)
-        claims = decode_token(token or "", secret=request.app.state.settings.jwt_secret)
-        if claims is None:
-            return JSONResponse(status_code=401, content={"detail": "unauthorized"})
-        return await call_next(request)
+        claims = decode_token(token or "", secret=cfg.jwt_secret)
+        if claims is not None:
+            return await call_next(request)
+
+        # Sem JWT de usuário → tenta TOKEN DE SHARE (link compartilhável de 1
+        # sessão). Ele só é aceito nas rotas DAQUELA session_id (e no SSE
+        # filtrado por ela), nunca no resto da API — e enquanto a sessão estiver
+        # viva/no prazo (checado contra o banco a cada request).
+        share_tok = request.query_params.get("k") or request.headers.get("x-share-token")
+        if share_tok:
+            target = share.session_id_from_path(path)
+            if target is None and path == "/events":
+                target = request.query_params.get("session")
+            path_ok = bool(target) and (
+                share.path_allows_share(path, target) or path == "/events"
+            )
+            if target and path_ok:
+                repo = SessionsRepository(
+                    request.app.state.mongo_db, cfg.sessions_collection
+                )
+                doc = await repo.get_session(target)
+                if share.token_valid(doc, share_tok):
+                    request.state.share_session_id = target
+                    return await call_next(request)
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
     app.add_middleware(
         CORSMiddleware,

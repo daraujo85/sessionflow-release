@@ -66,6 +66,15 @@ export const routes: Routes = [
       ),
   },
 
+  // --- Link compartilhável (PÚBLICO, sem guard): modo convidado, escopado a
+  //     UMA sessão via ?k=<token>. Reusa a tela de detalhe travada. ---
+  {
+    path: 's/:id',
+    data: { guest: true },
+    loadComponent: () =>
+      import('./features/detalhe/detalhe.component').then((m) => m.DetalheComponent),
+  },
+
   // --- Defaults ---
   { path: '', redirectTo: 'inicio', pathMatch: 'full' },
   { path: '**', redirectTo: 'inicio' },

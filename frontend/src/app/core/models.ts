@@ -98,6 +98,13 @@ export interface Task {
   state: TaskState;
 }
 
+/** Estado do link compartilhável de uma sessão (efêmero, escopado). */
+export interface ShareLink {
+  active: boolean;
+  url?: string | null;
+  expires_at?: string | null;
+}
+
 export interface OutputLine {
   id: string;
   seq: number;

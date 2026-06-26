@@ -6,8 +6,11 @@
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
-  max-width: 480px;
-  margin: 0 auto;
+  /* Largura TOTAL em qualquer tela (antes capava em 480px → sobravam margens em
+     telefones grandes/tablets que reportam <768px CSS). Telefone comum já é mais
+     estreito que isso, então visualmente não muda; tablet passa a usar 100%.
+     O desktop (≥1024px) reabre a sidebar e organiza a largura. */
+  width: 100%;
   background: var(--surface-page);
 }
 
@@ -132,7 +135,9 @@
 /* ---- Floating action button ---- */
 .sf-fab {
   position: fixed;
-  right: max(var(--space-5), calc(50vw - 240px + var(--space-5)));
+  /* Conteúdo é full-width agora → FAB cola na borda direita (antes seguia a
+     coluna centralizada de 480px). */
+  right: var(--space-5);
   bottom: calc(64px + env(safe-area-inset-bottom, 0px) + var(--space-4));
   z-index: 40;
   display: inline-flex;
@@ -243,14 +248,19 @@
    Responsividade (mobile-first intacto; só amplia em telas maiores)
    ============================================================ */
 
-/* Tablet: coluna mais larga; bottom-nav segue centralizada. */
+/* Tablet: usa a largura TODA (como a tela de sessão), sem coluna centralizada
+   — antes capava em 760px e sobravam margens nas laterais. Bottom-nav segue
+   centralizada; o FAB cola na borda direita. */
 @media (min-width: 768px) {
   .sf-shell:not(.sf-shell--login) {
-    max-width: 760px;
+    max-width: none;
   }
   .sf-content {
     padding: var(--space-5);
     padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px) + var(--space-5));
+  }
+  .sf-fab {
+    right: var(--space-5);
   }
 }
 
@@ -262,11 +272,11 @@
     padding-left: 220px; /* espaço da sidebar fixa */
   }
   .sf-content {
-    /* width:100% para PREENCHER (margin:auto num flex item encolheria ao
-       conteúdo); max-width + margin auto centraliza dentro da área. */
+    /* Usa toda a largura ao lado da sidebar (antes capava em 1120px centralizado
+       → sobravam margens em telas largas, ex.: tablet em paisagem). */
     width: 100%;
-    max-width: 1120px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     padding: var(--space-6);
     padding-bottom: var(--space-6);
   }
@@ -313,10 +323,9 @@
     height: 20px;
   }
 
-  /* FAB acompanha a borda direita da área de conteúdo (sidebar 220 + max 1120
-     centralizado no espaço restante). Em telas estreitas cai no canto. */
+  /* Conteúdo agora usa a largura toda → FAB cola na borda direita. */
   .sf-fab {
-    right: max(var(--space-6), calc((100% - 220px - 1120px) / 2 + var(--space-6)));
+    right: var(--space-6);
     bottom: var(--space-6);
   }
 }

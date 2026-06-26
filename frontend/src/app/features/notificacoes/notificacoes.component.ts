@@ -99,6 +99,16 @@ const KIND_META: Record<
           </svg>
         </button>
         <h1 class="notif__title">Notificações</h1>
+        @if (items().length > 0) {
+          <button
+            type="button"
+            class="notif__clear"
+            aria-label="Limpar todas as notificações"
+            (click)="clearAll()"
+          >
+            Limpar todas
+          </button>
+        }
       </header>
 
       <div class="notif__scroll">
@@ -181,6 +191,25 @@ const KIND_META: Record<
         font-size: 19px;
         font-weight: 700;
         color: #f4f5f7;
+      }
+
+      /* "Limpar todas": empurrado para a direita, sutil até o hover. */
+      .notif__clear {
+        margin-left: auto;
+        flex: none;
+        padding: 8px 12px;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        background: #181c1b;
+        color: #c9cdd6;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .notif__clear:hover {
+        color: #f4f5f7;
+        border-color: #3a4450;
       }
 
       /* Lista rolável: padding 16px 20px 30px. */
@@ -339,6 +368,20 @@ export class NotificacoesComponent {
 
   goBack(): void {
     this.location.back();
+  }
+
+  /**
+   * Limpa todas as notificações: zera a lista local NA HORA (otimista) e o
+   * buffer ao vivo do SSE (some o badge do sino), e grava o watermark no
+   * servidor para não voltarem no reload. Histórico de atividade é preservado.
+   */
+  clearAll(): void {
+    this.fetched.set([]);
+    this.sse.clearNotifications();
+    this.api
+      .clearNotifications()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ error: () => {} });
   }
 
   open(n: EventItem): void {

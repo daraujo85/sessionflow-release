@@ -1,6 +1,6 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, InjectionToken, inject } from '@angular/core';
-import { Observable, map } from 'rxjs';
+import { Observable, map, retry, timer, timeout } from 'rxjs';
 import {
   AgentModels,
   AgentType,
@@ -12,6 +12,7 @@ import {
   OutputLine,
   Session,
   SessionStatus,
+  ShareLink,
   Task,
   TerminalKey,
   UsageInfo,
@@ -120,6 +121,23 @@ export class ApiService {
     return this.http.post<void>(this.url(`/sessions/${id}/open-terminal`), {});
   }
 
+  // --- Link compartilhável (efêmero, escopado a 1 sessão) ---
+
+  /** Estado atual do link de share da sessão (ativo? URL? validade?). */
+  getShareLink(id: string): Observable<ShareLink> {
+    return this.http.get<ShareLink>(this.url(`/sessions/${id}/share`));
+  }
+
+  /** Gera (ou rotaciona) o link compartilhável. Vale 24h; morre se a sessão parar/sumir. */
+  createShareLink(id: string): Observable<ShareLink> {
+    return this.http.post<ShareLink>(this.url(`/sessions/${id}/share`), {});
+  }
+
+  /** Revoga o link na hora. */
+  revokeShareLink(id: string): Observable<ShareLink> {
+    return this.http.delete<ShareLink>(this.url(`/sessions/${id}/share`));
+  }
+
   // --- Models ---
 
   /** Modelos reais para um agente; devolve o 1º item do envelope ou null. */
@@ -164,14 +182,49 @@ export class ApiService {
   uploadAudio(id: string, file: File | Blob): Observable<void> {
     const form = new FormData();
     form.append('file', file);
-    return this.http.post<void>(this.url(`/sessions/${id}/audio`), form);
+    return this.http
+      .post<void>(this.url(`/sessions/${id}/audio`), form)
+      .pipe(this.uploadResilience());
   }
 
-  /** Anexa um arquivo/imagem à sessão (o worker injeta o caminho no agente). */
-  uploadFile(id: string, file: File): Observable<void> {
+  /**
+   * timeout + retry para uploads: a borda da Cloudflare às vezes devolve
+   * 502/504/0 (gateway) ou pendura o POST no celular/tablet. Reenviar 2x com
+   * pequena espera costuma resolver esses erros transitórios de gateway. Não
+   * reenvia em 4xx reais (ex.: 401/413), que não adianta repetir.
+   */
+  private uploadResilience<T>() {
+    return (source: Observable<T>) =>
+      source.pipe(
+        timeout(45000),
+        retry({
+          count: 2,
+          delay: (err) => {
+            const s = err?.status;
+            const transient = s === 0 || s === 502 || s === 503 || s === 504 || err?.name === 'TimeoutError';
+            if (!transient) {
+              throw err; // erro definitivo: não reenvia
+            }
+            return timer(1200);
+          },
+        }),
+      );
+  }
+
+  /**
+   * Anexa um arquivo/imagem à sessão (o worker injeta o caminho no agente).
+   * `caption` opcional é o texto que acompanha o anexo — vai junto na mesma
+   * mensagem pro agente (imagem + texto de uma vez).
+   */
+  uploadFile(id: string, file: File, caption?: string): Observable<void> {
     const form = new FormData();
     form.append('file', file);
-    return this.http.post<void>(this.url(`/sessions/${id}/file`), form);
+    if (caption && caption.trim()) {
+      form.append('caption', caption.trim());
+    }
+    return this.http
+      .post<void>(this.url(`/sessions/${id}/file`), form)
+      .pipe(this.uploadResilience());
   }
 
   // --- Output / Events ---
@@ -213,6 +266,11 @@ export class ApiService {
     return this.http
       .get<{ items: Notification[] }>(this.url('/notifications'))
       .pipe(this.items<Notification>());
+  }
+
+  /** Limpa todas as notificações do sininho (watermark; preserva histórico). */
+  clearNotifications(): Observable<void> {
+    return this.http.delete<void>(this.url('/notifications'));
   }
 
   /** Status REAL do Worker (host) para o card do Perfil. */

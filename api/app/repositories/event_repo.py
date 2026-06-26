@@ -45,8 +45,18 @@ class EventRepository:
         cursor = self._collection.find(query).sort("at", -1)
         return await cursor.to_list(length=None)
 
-    async def notifications(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return recent events whose ``kind`` is a known notification kind."""
-        query = {"kind": {"$in": list(_NOTIFICATION_KINDS)}}
+    async def notifications(
+        self, limit: int = 50, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Return recent events whose ``kind`` is a known notification kind.
+
+        ``since`` é o marco de "limpo até aqui" (watermark): quando informado,
+        só retorna notificações com ``at`` MAIS NOVO que ele. É assim que o
+        "Limpar todas" funciona sem apagar nada — o histórico (``events``)
+        continua intacto, só o sininho passa a ignorar o que veio antes.
+        """
+        query: dict[str, Any] = {"kind": {"$in": list(_NOTIFICATION_KINDS)}}
+        if since is not None:
+            query["at"] = {"$gt": since}
         cursor = self._collection.find(query).sort("at", -1).limit(limit)
         return await cursor.to_list(length=limit)

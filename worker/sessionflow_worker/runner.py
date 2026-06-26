@@ -31,10 +31,15 @@ SIGINT/SIGTERM cancelam todas as tasks, e as conexões são fechadas no finally.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import signal
 import socket
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,7 +63,7 @@ from sessionflow_worker.mongo import (
 )
 from sessionflow_worker.milestones import sync_session
 from sessionflow_worker.output_capture import OutputCapture
-from sessionflow_worker.rabbit import connect, declare_topology
+from sessionflow_worker.rabbit import COMMANDS_QUEUE, connect, declare_topology
 from sessionflow_worker.tmux_runtime import TmuxRuntime
 from sessionflow_worker.usage import persist_usage, scrape_usage
 
@@ -81,6 +86,111 @@ USAGE_INTERVAL = 600.0
 # Backoff de reconexão (boot/runtime defensivos).
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 30.0
+
+# Watchdog do consumer de comandos. Com ``connect_robust``, uma reconexão pode
+# deixar o ``queue.iterator()`` "preso" (para de entregar SEM levantar exceção):
+# a task ``command_consumer`` nem termina nem erra, então o ``asyncio.wait``
+# (FIRST_COMPLETED) nunca dispara e a fila acumula com 0 consumidores — o worker
+# fica vivo mas surdo. O watchdog observa a VERDADE no broker (nº de
+# consumidores na fila via mgmt API): 0 por ``_WATCHDOG_GRACE`` checagens
+# seguidas → levanta ``ConsumerStalled``, que cai no caminho de reconexão do
+# :func:`run` e reconstrói tudo (conexão/canal/consumer novos).
+_WATCHDOG_INTERVAL = 30.0
+_WATCHDOG_GRACE = 2
+_WATCHDOG_HTTP_TIMEOUT = 5.0
+
+
+class ConsumerStalled(RuntimeError):
+    """Consumer de comandos sumiu da fila (0 consumidores) — força rebuild."""
+
+
+def _mgmt_queue_url_and_auth() -> tuple[str, str] | None:
+    """Monta a URL da mgmt API p/ a fila de comandos + header Basic.
+
+    Deriva usuário/senha/host da URI AMQP (``RABBITMQ_URI_HOST`` >
+    ``RABBITMQ_URI``) e troca a porta pela da mgmt (``RABBITMQ_MGMT_HOST_PORT``,
+    default 15672). Retorna ``(url, authorization)`` ou ``None`` se não der pra
+    montar (sem URI / parse falho) — nesse caso o watchdog não age.
+    """
+    uri = os.environ.get("RABBITMQ_URI_HOST") or os.environ.get("RABBITMQ_URI")
+    if not uri:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(uri)
+        host = parts.hostname or "127.0.0.1"
+        user = urllib.parse.unquote(parts.username or "guest")
+        password = urllib.parse.unquote(parts.password or "guest")
+    except ValueError:
+        return None
+    mgmt_port = os.environ.get("RABBITMQ_MGMT_HOST_PORT", "15672")
+    vhost = os.environ.get("RABBITMQ_VHOST", "/")
+    vhost_enc = urllib.parse.quote(vhost, safe="")
+    queue_enc = urllib.parse.quote(COMMANDS_QUEUE, safe="")
+    url = f"http://{host}:{mgmt_port}/api/queues/{vhost_enc}/{queue_enc}"
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return url, f"Basic {token}"
+
+
+def _commands_consumer_count() -> int | None:
+    """Nº de consumidores na fila ``sessionflow.commands`` (via mgmt API).
+
+    Bloqueante (urllib) — chamar via ``asyncio.to_thread``. Retorna ``None`` em
+    QUALQUER falha (mgmt fora, timeout, JSON inesperado): o watchdog trata
+    ``None`` como "não dá pra afirmar" e NÃO age, evitando derrubar o worker por
+    uma falha do próprio check.
+    """
+    built = _mgmt_queue_url_and_auth()
+    if built is None:
+        return None
+    url, authorization = built
+    req = urllib.request.Request(url, headers={"Authorization": authorization})
+    try:
+        with urllib.request.urlopen(req, timeout=_WATCHDOG_HTTP_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    count = data.get("consumers")
+    return count if isinstance(count, int) else None
+
+
+async def consumer_watchdog(
+    interval: float = _WATCHDOG_INTERVAL, grace: int = _WATCHDOG_GRACE
+) -> None:
+    """Vigia se a fila de comandos ainda tem consumidor vivo (auto-cura).
+
+    A cada ``interval`` consulta o broker. ``count > 0`` zera o contador;
+    ``count == 0`` por ``grace`` checagens seguidas levanta ``ConsumerStalled``
+    (→ rebuild via :func:`run`). ``count is None`` (não deu pra checar) é
+    ignorado — não conta como falha.
+    """
+    misses = 0
+    while True:
+        await asyncio.sleep(interval)
+        count = await asyncio.to_thread(_commands_consumer_count)
+        if count is None:
+            continue  # mgmt indisponível/erro do check: não afirma nada.
+        if count > 0:
+            if misses:
+                logger.info(
+                    "watchdog: consumer de %s de volta (%d consumidor(es))",
+                    COMMANDS_QUEUE,
+                    count,
+                )
+            misses = 0
+            continue
+        misses += 1
+        logger.warning(
+            "watchdog: 0 consumidores em %s (%d/%d)",
+            COMMANDS_QUEUE,
+            misses,
+            grace,
+        )
+        if misses >= grace:
+            raise ConsumerStalled(
+                f"{COMMANDS_QUEUE} sem consumidor após {grace} checagens; rebuild"
+            )
 
 
 def load_env() -> None:
@@ -348,6 +458,7 @@ async def _build_and_run(stop: asyncio.Event) -> None:
         asyncio.create_task(usage_loop(db), name="usage_loop"),
         asyncio.create_task(heartbeat_loop(db), name="heartbeat"),
         asyncio.create_task(milestones_loop(db), name="milestones"),
+        asyncio.create_task(consumer_watchdog(), name="consumer_watchdog"),
         asyncio.create_task(_stopper(), name="stopper"),
     ]
     logger.info("Worker no ar: %d tasks rodando", len(tasks) - 1)

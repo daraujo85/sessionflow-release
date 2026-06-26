@@ -287,59 +287,23 @@ class CommandConsumer:
         title = re.sub(r'[\n\r"]', " ", title).strip()[:60] or name
 
         term_app = os.environ.get("SESSIONFLOW_TERMINAL_APP", "Terminal")
-        # ABA-se-puder, senão JANELA — sempre titulada e anexada pelo NOME.
+        # JANELA nova, limpa e titulada, já anexada à sessão.
         #
-        # Fluxo: Cmd+T (System Events; só cria aba com Acessibilidade liberada) →
-        # se o nº de abas AUMENTOU (aba nova nasceu e está focada), DIGITA o attach
-        # NELA via teclado e Enter. Senão, JANELA nova (do script).
-        #
-        # Por que DIGITAR em vez de ``do script ... in <aba>``? O ``do script in
-        # <aba>`` abre JANELA nova quando a aba está "busy" (shell ainda carregando)
-        # — era o bug "abre aba vazia + sessão em janela à parte". Digitar via
-        # keystroke roda na aba FOCADA (a recém-criada), sem esse quirk: o shell
-        # bufferiza e executa quando o prompt aparece.
-        #
-        # Segurança anti-injeção: só digita se _grew (aba nova de fato criada). Se
-        # o Cmd+T falhar, _grew=false → JANELA nova (do script sem alvo), nunca
-        # digita dentro de uma sessão que já roda na aba atual.
+        # Por que NÃO aba: no Terminal.app, criar aba exige ``Cmd+T`` via System
+        # Events, e foi medido que nesse setup o Cmd+T abre uma JANELA, não uma
+        # aba (windows 6→7) — resultado: sobrava "aba/janela vazia" + a sessão em
+        # outra janela. ``do script`` (sem alvo) abre UMA janela de forma
+        # determinística, sem depender de Acessibilidade. (Para abas de verdade,
+        # o iTerm2 expõe ``create tab`` no AppleScript — trocar via
+        # SESSIONFLOW_TERMINAL_APP se um dia for instalado.)
         script = (
             f'tell application "{term_app}"\n'
             f"  activate\n"
-            f"  delay 0.3\n"
-            f"  set _before to 0\n"
+            f'  set _t to do script "{attach_cmd}"\n'
             f"  try\n"
-            f"    set _before to count of tabs of front window\n"
-            f"  end try\n"
-            f"end tell\n"
-            f'tell application "System Events"\n'
-            f"  try\n"
-            f'    keystroke "t" using command down\n'
-            f"  end try\n"
-            f"end tell\n"
-            f"delay 0.5\n"
-            f"set _grew to false\n"
-            f'tell application "{term_app}"\n'
-            f"  try\n"
-            f"    if (count of tabs of front window) > _before then set _grew to true\n"
-            f"  end try\n"
-            f"end tell\n"
-            f"if _grew then\n"
-            f'  tell application "System Events"\n'
-            f'    keystroke "{attach_cmd}"\n'
-            f"    key code 36\n"
-            f"  end tell\n"
-            f"  delay 0.3\n"
-            f'  tell application "{term_app}"\n'
-            f"    try\n"
-            f'      set custom title of selected tab of front window to "{title}"\n'
-            f"    end try\n"
-            f"  end tell\n"
-            f"else\n"
-            f'  tell application "{term_app}"\n'
-            f'    set _t to do script "{attach_cmd}"\n'
             f'    set custom title of _t to "{title}"\n'
-            f"  end tell\n"
-            f"end if\n"
+            f"  end try\n"
+            f"end tell\n"
         )
         try:
             subprocess.Popen(
@@ -735,8 +699,15 @@ class CommandConsumer:
             raise CommandError(f"arquivo não encontrado: {path!r}")
 
         filename = payload.get("filename") or os.path.basename(path)
-        # Injeta o caminho ABSOLUTO no pane (o agente abre/lê o arquivo).
-        self._send_keys(name, f"Arquivo anexado ({filename}): {path}")
+        # Injeta o caminho ABSOLUTO no pane (o agente abre/lê o arquivo). Se veio
+        # uma legenda (texto do usuário), manda TUDO numa linha só — imagem +
+        # texto chegam juntos, sem o agente concluir só pela imagem antes do texto.
+        caption = (payload.get("caption") or "").strip()
+        if caption:
+            message = f"{caption} (arquivo anexado: {path})"
+        else:
+            message = f"Arquivo anexado ({filename}): {path}"
+        self._send_keys(name, message)
         result: dict[str, Any] = {"name": name, "path": path, "filename": filename}
         upload_id = payload.get("upload_id")
         if upload_id is not None:

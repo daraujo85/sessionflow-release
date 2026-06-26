@@ -10,7 +10,7 @@ collections:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from bson import ObjectId
@@ -105,15 +105,44 @@ async def events_history(
     return EventListOut(items=items, total=len(items))
 
 
+# Doc único de configurações do app (mesmo usado pelo router de settings).
+_APP_SETTINGS_ID = "app"
+_CLEARED_AT_KEY = "notifications_cleared_at"
+
+
 @router.get("/notifications", response_model=EventListOut)
 async def notifications(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
 ) -> EventListOut:
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    # Watermark do "Limpar todas": só notificações mais novas que ele aparecem.
+    doc = await db[settings.app_settings_collection].find_one({"_id": _APP_SETTINGS_ID})
+    since = doc.get(_CLEARED_AT_KEY) if doc else None
     repo = _notification_repo(request)
-    docs = await repo.notifications(limit=limit)
+    docs = await repo.notifications(limit=limit, since=since)
     items = [EventOut.from_doc(doc) for doc in docs]
     return EventListOut(items=items, total=len(items))
+
+
+@router.delete("/notifications", status_code=204)
+async def clear_notifications(request: Request) -> Response:
+    """Limpa TODAS as notificações do sininho — sem destruir nada.
+
+    Grava ``notifications_cleared_at = agora`` em ``app_settings`` (watermark).
+    O ``GET /notifications`` passa a só devolver o que for mais novo que isso, e
+    o ``GET /events/history`` continua mostrando tudo (o histórico é preservado).
+    Idempotente: chamar de novo só avança o marco.
+    """
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    await db[settings.app_settings_collection].update_one(
+        {"_id": _APP_SETTINGS_ID},
+        {"$set": {_CLEARED_AT_KEY: datetime.now(UTC)}},
+        upsert=True,
+    )
+    return Response(status_code=204)
 
 
 @router.get("/tasks", response_model=TaskListOut)

@@ -18,8 +18,9 @@ import { Location } from '@angular/common';
 
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
+import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
-import { Session, SessionMetrics, Task, TerminalKey } from '../../core/models';
+import { Session, SessionMetrics, ShareLink, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
 import { ansiToHtml } from '../../shared/ansi-html';
@@ -34,21 +35,32 @@ import { ansiToHtml } from '../../shared/ansi-html';
       <!-- Header -->
       <header class="hdr">
         <div class="hdr-top">
-          <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#C9CDD6"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M15 18l-6-6 6-6" />
-            </svg>
-          </button>
+          @if (!guest()) {
+            <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#C9CDD6"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
+          } @else {
+            <span class="guest-badge" title="Você está vendo um link compartilhado desta sessão">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 8a6 6 0 0 0-9.33-5M6 8a6 6 0 0 0 9.33 5" />
+                <circle cx="12" cy="12" r="3" /><path d="M12 2v2M12 20v2" />
+              </svg>
+              Compartilhado
+            </span>
+          }
 
           <div class="hdr-info">
             <div class="hdr-title">{{ displayName() }}</div>
@@ -80,6 +92,23 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </span>
 
           <span class="status-actions">
+            @if (!guest()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                [class.on]="shareOpen()"
+                (click)="toggleShare()"
+                [attr.aria-pressed]="shareOpen()"
+                aria-label="Compartilhar a sessão"
+                title="Gerar um link temporário pra alguém ver/controlar só esta sessão"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                  <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+                </svg>
+              </button>
+            }
             <button
               type="button"
               class="act act--jarvis"
@@ -159,6 +188,37 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </span>
         </div>
       </header>
+
+      <!-- Painel "Compartilhar" (só dono): gera/copia/revoga o link temporário -->
+      @if (shareOpen() && !guest()) {
+        <section class="share" aria-label="Compartilhar sessão">
+          @if (shareLink()?.active) {
+            <div class="share-row">
+              <input class="share-url mono" type="text" readonly [value]="shareLink()?.url || ''" (focus)="$any($event.target).select()" />
+              <button type="button" class="share-btn share-btn--primary" (click)="copyShareLink()">
+                {{ shareCopied() ? 'Copiado!' : 'Copiar' }}
+              </button>
+            </div>
+            <div class="share-foot">
+              <span class="share-hint">Vale 24h · morre se a sessão for parada/eliminada · controle total</span>
+              <span class="share-acts">
+                <button type="button" class="share-link-btn" [disabled]="shareBusy()" (click)="generateShareLink()">Gerar novo</button>
+                <button type="button" class="share-link-btn share-link-btn--danger" [disabled]="shareBusy()" (click)="revokeShareLink()">Revogar</button>
+              </span>
+            </div>
+          } @else {
+            <div class="share-row">
+              <span class="share-hint">Nenhum link ativo. Crie um link temporário pra alguém ver e controlar só esta sessão (não acessa o resto do app).</span>
+            </div>
+            <div class="share-foot">
+              <span class="share-hint">Expira em 24h e para de funcionar se você parar/eliminar a sessão.</span>
+              <button type="button" class="share-btn share-btn--primary" [disabled]="shareBusy()" (click)="generateShareLink()">
+                {{ shareBusy() ? 'Gerando…' : 'Gerar link' }}
+              </button>
+            </div>
+          }
+        </section>
+      }
 
       <!-- Bloco de métricas (recolhido por padrão; topo resume modelo + ctx%) -->
       <section class="metrics" aria-label="Métricas da sessão">
@@ -463,23 +523,42 @@ import { ansiToHtml } from '../../shared/ansi-html';
             <span>Solte para anexar</span>
           </div>
         }
-        <!-- Input de arquivo (sempre presente; abre via botão de anexar) -->
+        <!-- Input de arquivo (sempre presente; abre via botão de anexar).
+             NÃO usar [hidden]/display:none: vários navegadores Android (ex.:
+             tablet Xiaomi) ignoram o .click() programático num input file
+             escondido assim. Esconder visualmente off-screen mantém o picker. -->
         <input
           #fileInput
           type="file"
-          hidden
+          accept="image/*,*/*"
+          class="visually-hidden"
           (change)="onFileSelected($event)"
         />
 
         @if (pendingFile(); as pf) {
-          <!-- Barra de anexo "staged": preview + cancelar/enviar (espelha o
-               recorder de áudio: escolher → revisar → enviar/descartar) -->
-          <div class="staged" role="group" aria-label="Arquivo pronto para enviar">
+          <!-- Preview do anexo numa linha ACIMA do compositor: o input continua
+               disponível, então dá pra escrever uma legenda e enviar imagem +
+               texto JUNTOS num envio só (o ✕ remove o anexo). -->
+          <div class="staged-preview" role="group" aria-label="Anexo pronto para enviar">
+            @if (pendingFileUrl(); as url) {
+              <img class="staged-thumb" [src]="url" alt="" />
+            } @else {
+              <span class="staged-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
+                </svg>
+              </span>
+            }
+            <span class="staged-meta">
+              <span class="staged-name">{{ pf.name }}</span>
+              <span class="staged-size">{{ pendingFileSizeKb() }} KB</span>
+            </span>
             <button
               type="button"
-              class="staged-cancel"
-              aria-label="Cancelar anexo"
-              title="Descartar arquivo"
+              class="staged-remove"
+              aria-label="Remover anexo"
+              title="Remover anexo"
               [disabled]="attaching()"
               (click)="cancelFile()"
             >
@@ -488,45 +567,10 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 <path d="M18 6 6 18M6 6l12 12" />
               </svg>
             </button>
-
-            <div class="staged-info">
-              @if (pendingFileUrl(); as url) {
-                <img class="staged-thumb" [src]="url" alt="" />
-              } @else {
-                <span class="staged-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                       stroke-linecap="round" stroke-linejoin="round">
-                    <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
-                  </svg>
-                </span>
-              }
-              <span class="staged-meta">
-                <span class="staged-name">{{ pf.name }}</span>
-                <span class="staged-size">{{ pendingFileSizeKb() }} KB</span>
-              </span>
-            </div>
-
-            <button
-              type="button"
-              class="staged-send"
-              [class.is-busy]="attaching()"
-              [disabled]="attaching()"
-              aria-label="Enviar arquivo"
-              title="Enviar arquivo para o agente"
-              (click)="sendFile()"
-            >
-              @if (attaching()) {
-                <span class="staged-spinner" aria-hidden="true"></span>
-              } @else {
-                <svg viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.2"
-                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M22 2 11 13" />
-                  <path d="M22 2 15 22l-4-9-9-4 20-7z" />
-                </svg>
-              }
-            </button>
           </div>
-        } @else {
+        }
+
+        <div class="composer">
         <!-- Botões de ação: ocultam ao focar o input (mais espaço pra digitar) -->
         @if (!inputFocused()) {
           <button
@@ -582,39 +626,44 @@ import { ansiToHtml } from '../../shared/ansi-html';
         <input
           class="text-input mono"
           type="text"
-          [placeholder]="liveMode() ? 'Digite — ao vivo no terminal…' : 'Enviar comando ao terminal…'"
+          [placeholder]="pendingFile() ? 'Escreva algo sobre o anexo (opcional)…' : (liveMode() ? 'Digite — ao vivo no terminal…' : 'Enviar comando ao terminal…')"
           autocomplete="off"
           [ngModel]="draft()"
           (ngModelChange)="onDraftChange($event)"
           (keydown.enter)="send()"
           (focus)="inputFocused.set(true)"
           (blur)="inputFocused.set(false)"
-          [disabled]="sending()"
+          [disabled]="sending() || attaching()"
         />
 
         <button
           type="button"
           class="send"
+          [class.is-busy]="attaching()"
           [disabled]="!canSend()"
           (click)="send()"
           aria-label="Enviar"
         >
-          <svg
-            width="19"
-            height="19"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#04140f"
-            stroke-width="2.4"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M22 2 11 13" />
-            <path d="M22 2 15 22l-4-9-9-4 20-7z" />
-          </svg>
+          @if (attaching()) {
+            <span class="staged-spinner" aria-hidden="true"></span>
+          } @else {
+            <svg
+              width="19"
+              height="19"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#04140f"
+              stroke-width="2.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M22 2 11 13" />
+              <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+            </svg>
+          }
         </button>
-        }
+        </div>
       </footer>
     </section>
   `,
@@ -734,6 +783,100 @@ import { ansiToHtml } from '../../shared/ansi-html';
         margin-left: auto;
         display: flex;
         gap: 8px;
+      }
+      /* Badge "Compartilhado" no lugar do voltar (modo convidado). */
+      .guest-badge {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        border: 1px solid #283230;
+        background: #14201c;
+        color: #00e4b4;
+        font-size: 11.5px;
+        font-weight: 700;
+      }
+      /* Painel "Compartilhar" — faixa abaixo do header, estilo das outras. */
+      .share {
+        flex: none;
+        padding: 12px 16px;
+        border-bottom: 1px solid #20262a;
+        background: #121614;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .share-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .share-url {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 10px;
+        border-radius: 9px;
+        border: 1px solid #283230;
+        background: #0e1113;
+        color: #e7eae9;
+        font-size: 12px;
+      }
+      .share-btn {
+        flex: none;
+        padding: 8px 12px;
+        border-radius: 9px;
+        border: 1px solid #283230;
+        background: #181c1b;
+        color: #c9cdd6;
+        font-size: 12.5px;
+        font-weight: 700;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .share-btn--primary {
+        background: #00e4b4;
+        border-color: transparent;
+        color: #06231d;
+      }
+      .share-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .share-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .share-hint {
+        font-size: 11.5px;
+        color: #7a8090;
+        line-height: 1.35;
+      }
+      .share-acts {
+        flex: none;
+        display: flex;
+        gap: 12px;
+      }
+      .share-link-btn {
+        background: none;
+        border: none;
+        padding: 0;
+        color: #9aa0ae;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .share-link-btn--danger {
+        color: #f87171;
+      }
+      .share-link-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
       }
       .act {
         appearance: none;
@@ -1250,12 +1393,51 @@ import { ansiToHtml } from '../../shared/ansi-html';
         position: relative;
         flex: none;
         display: flex;
-        align-items: center;
-        gap: 10px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
         padding: 12px 14px calc(16px + env(safe-area-inset-bottom, 0px));
         border-top: 1px solid #20262a;
         background: #0e1113;
         transition: background 0.15s, box-shadow 0.15s;
+      }
+      /* Linha do compositor: botões + input + enviar (a barra em si é coluna,
+         pra acomodar o preview do anexo acima). */
+      .composer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      /* Preview do anexo staged (linha acima do input). */
+      .staged-preview {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        background: #12181a;
+      }
+      .staged-remove {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border: none;
+        border-radius: 8px;
+        background: #20262a;
+        color: #c7ccd6;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .staged-remove:disabled {
+        opacity: 0.5;
+      }
+      .staged-remove svg {
+        width: 15px;
+        height: 15px;
       }
       .inputbar.drag-over {
         background: #0f1a17;
@@ -1275,6 +1457,19 @@ import { ansiToHtml } from '../../shared/ansi-html';
         font-size: 13.5px;
         font-weight: 700;
         pointer-events: none;
+      }
+      /* Esconde o <input type=file> sem display:none (Android bloqueia o
+         .click() programático quando o input está hidden/display:none). */
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }
       .live-toggle {
         flex: none;
@@ -1510,6 +1705,22 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly drafts = inject(DraftStore);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly location = inject(Location);
+  private readonly shareSvc = inject(ShareSessionService);
+
+  /**
+   * MODO CONVIDADO: a sessão foi aberta via link compartilhável (`/s/:id`).
+   * Esconde a navegação (voltar/compartilhar) — o convidado só vê/controla
+   * ESTA sessão. O escopo real é garantido no backend (token só vale aqui).
+   */
+  protected readonly guest = signal<boolean>(
+    this.route.snapshot.data['guest'] === true,
+  );
+
+  // --- Estado do painel "Compartilhar" (só dono) ---
+  protected readonly shareOpen = signal<boolean>(false);
+  protected readonly shareLink = signal<ShareLink | null>(null);
+  protected readonly shareBusy = signal<boolean>(false);
+  protected readonly shareCopied = signal<boolean>(false);
 
   private readonly termEl = viewChild<ElementRef<HTMLDivElement>>('term');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
@@ -1644,7 +1855,11 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly showLivePill = signal<boolean>(false);
 
   protected readonly canSend = computed(
-    () => this.draft().trim().length > 0 && !this.sending() && !!this.id(),
+    () =>
+      (this.draft().trim().length > 0 || !!this.pendingFile()) &&
+      !this.sending() &&
+      !this.attaching() &&
+      !!this.id(),
   );
 
   /** Texto da última tela renderizada, para disparar o auto-scroll. */
@@ -1658,6 +1873,14 @@ export class DetalheComponent implements AfterViewChecked {
   private stickToBottom = true;
 
   constructor() {
+    // MODO CONVIDADO: pega o token do link (?k=) e registra ANTES de conectar o
+    // SSE/chamar a API — assim toda chamada já vai escopada por ele. (Fora do
+    // modo guest, fica null e tudo segue com o JWT normal.)
+    if (this.guest()) {
+      this.shareSvc.set(this.route.snapshot.queryParamMap.get('k'));
+      this.destroyRef.onDestroy(() => this.shareSvc.clear());
+    }
+
     this.sse.connect(); // idempotente — garante o canal p/ o push do espelho
 
     // id REATIVO: ao navegar /sessao/A -> /sessao/B o Angular REUSA este mesmo
@@ -1902,6 +2125,82 @@ export class DetalheComponent implements AfterViewChecked {
       });
   }
 
+  // --- Link compartilhável (só dono) ---
+
+  /** Abre/fecha o painel "Compartilhar"; ao abrir, busca o estado atual do link. */
+  protected toggleShare(): void {
+    const open = !this.shareOpen();
+    this.shareOpen.set(open);
+    this.shareCopied.set(false);
+    if (open && this.shareLink() === null) {
+      const id = this.id();
+      if (id) {
+        this.api
+          .getShareLink(id)
+          .pipe(takeUntilDestroyed(this.destroyRef))
+          .subscribe({
+            next: (l) => this.shareLink.set(l),
+            error: () => this.shareLink.set({ active: false }),
+          });
+      }
+    }
+  }
+
+  /** Gera (ou rotaciona) o link — vale 24h e morre se a sessão parar/sumir. */
+  protected generateShareLink(): void {
+    const id = this.id();
+    if (!id || this.shareBusy()) {
+      return;
+    }
+    this.shareBusy.set(true);
+    this.shareCopied.set(false);
+    this.api
+      .createShareLink(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (l) => {
+          this.shareLink.set(l);
+          this.shareBusy.set(false);
+        },
+        error: () => this.shareBusy.set(false),
+      });
+  }
+
+  /** Revoga o link na hora (invalida mesmo com a sessão viva). */
+  protected revokeShareLink(): void {
+    const id = this.id();
+    if (!id || this.shareBusy()) {
+      return;
+    }
+    this.shareBusy.set(true);
+    this.api
+      .revokeShareLink(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (l) => {
+          this.shareLink.set(l);
+          this.shareBusy.set(false);
+          this.shareCopied.set(false);
+        },
+        error: () => this.shareBusy.set(false),
+      });
+  }
+
+  /** Copia a URL do link pro clipboard (feedback efêmero "copiado"). */
+  protected copyShareLink(): void {
+    const url = this.shareLink()?.url;
+    if (!url || typeof navigator === 'undefined' || !navigator.clipboard) {
+      return;
+    }
+    void navigator.clipboard
+      .writeText(url)
+      .then(() => {
+        this.shareCopied.set(true);
+        setTimeout(() => this.shareCopied.set(false), 2000);
+      })
+      .catch(() => {});
+  }
+
   protected end(): void {
     // "Encerrar" = PARA a sessão (encerra o tmux/agente no host) mas MANTÉM o
     // registro — vira "Parada" e pode ser Retomada (claude --continue). Só a
@@ -1921,11 +2220,15 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: () => {
           this.acting.set(false);
-          void this.router.navigate(['/sessoes']);
+          if (!this.guest()) {
+            void this.router.navigate(['/sessoes']);
+          }
         },
         error: () => {
           this.acting.set(false);
-          void this.router.navigate(['/sessoes']);
+          if (!this.guest()) {
+            void this.router.navigate(['/sessoes']);
+          }
         },
       });
   }
@@ -1946,7 +2249,9 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: () => {
           this.acting.set(false);
-          void this.router.navigate(['/sessoes']);
+          if (!this.guest()) {
+            void this.router.navigate(['/sessoes']);
+          }
         },
         error: () => this.acting.set(false),
       });
@@ -1977,6 +2282,12 @@ export class DetalheComponent implements AfterViewChecked {
   protected send(): void {
     const id = this.id();
     if (!id) {
+      return;
+    }
+    // Anexo staged → envia o ARQUIVO (com o texto digitado como legenda) num
+    // fluxo só, pra imagem + texto chegarem JUNTOS no agente.
+    if (this.pendingFile()) {
+      this.sendFile();
       return;
     }
     // Modo ao vivo: o texto JÁ está no pane (foi encaminhado enquanto digitava)
@@ -2016,7 +2327,8 @@ export class DetalheComponent implements AfterViewChecked {
   protected onDraftChange(value: string): void {
     this.draft.set(value);
     this.drafts.set(this.id(), value); // persiste por sessão
-    if (this.liveMode()) {
+    // Com anexo staged, o texto é LEGENDA do arquivo — não encaminha ao vivo.
+    if (this.liveMode() && !this.pendingFile()) {
       this.scheduleForward();
     }
   }
@@ -2177,25 +2489,32 @@ export class DetalheComponent implements AfterViewChecked {
     this.pendingFile.set(null);
   }
 
-  /** Confirma e faz upload do arquivo staged; o worker injeta o caminho no agente. */
+  /**
+   * Faz upload do arquivo staged junto com o texto digitado (legenda), pra
+   * imagem + texto chegarem JUNTOS no agente. O worker injeta os dois numa
+   * mensagem só. Limpa anexo e draft em caso de sucesso.
+   */
   protected sendFile(): void {
     const file = this.pendingFile();
     const id = this.id();
-    if (!file || !id) {
+    if (!file || !id || this.attaching()) {
       return;
     }
+    const caption = this.draft().trim();
     this.attaching.set(true);
     this.api
-      .uploadFile(id, file)
+      .uploadFile(id, file, caption)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
           this.attaching.set(false);
           this.revokePendingUrl();
           this.pendingFile.set(null);
+          this.draft.set('');
+          this.drafts.set(id, '');
           this.refreshScreen();
         },
-        // Mantém o arquivo staged para o usuário poder tentar de novo.
+        // Mantém o arquivo staged (e o texto) para o usuário tentar de novo.
         error: () => this.attaching.set(false),
       });
   }

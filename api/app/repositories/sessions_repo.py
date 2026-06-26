@@ -55,6 +55,32 @@ class SessionsRepository:
         res = await self._collection.delete_one({"_id": oid})
         return res.deleted_count > 0
 
+    async def set_share(
+        self, session_id: str, token: str, expires_at: Any
+    ) -> bool:
+        """Grava/rotaciona o token de link compartilhável + sua validade."""
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return False
+        res = await self._collection.update_one(
+            {"_id": oid},
+            {"$set": {"share_token": token, "share_expires_at": expires_at}},
+        )
+        return res.matched_count > 0
+
+    async def clear_share(self, session_id: str) -> bool:
+        """Revoga o link: remove token + validade do doc da sessão."""
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return False
+        res = await self._collection.update_one(
+            {"_id": oid},
+            {"$unset": {"share_token": "", "share_expires_at": ""}},
+        )
+        return res.modified_count > 0
+
     async def active_with_name_exists(self, name: str) -> bool:
         """Return True if an ACTIVE session (status != stopped) uses ``name``.
 

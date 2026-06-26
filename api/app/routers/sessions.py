@@ -11,23 +11,29 @@ Session documents are serialized from Mongo: ``_id`` (ObjectId) -> ``id``
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from app import share
 from app.publishers.command_publisher import publish_command
 from app.repositories.sessions_repo import SessionsRepository
 from app.repositories.uploads_repo import UploadsRepository
+
+# Validade do link compartilhável: além de morrer ao parar/apagar a sessão, o
+# link caduca sozinho depois disso (segurança).
+SHARE_TTL = timedelta(hours=24)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 # Module-level singleton so the ``File`` call is not evaluated in the function
 # signature default (ruff B008).
 _AUDIO_FILE = File(...)
+_CAPTION_FORM = Form(None)
 
 
 class SessionOut(BaseModel):
@@ -233,6 +239,65 @@ async def get_session(request: Request, session_id: str) -> SessionOut:
     return SessionOut.from_doc(doc)
 
 
+class ShareLinkOut(BaseModel):
+    """Estado do link compartilhável de uma sessão."""
+
+    active: bool = False
+    url: str | None = None
+    expires_at: datetime | None = None
+
+
+def _share_url(request: Request, session_id: str, token: str) -> str:
+    """Monta a URL pública do link (origem do frontend + rota guest /s/:id)."""
+    origin = (request.app.state.settings.rp_origin or "").rstrip("/")
+    if not origin:
+        # Fallback: deriva da própria request (dev/local).
+        origin = str(request.base_url).rstrip("/")
+    return f"{origin}/s/{session_id}?k={token}"
+
+
+@router.get("/{session_id}/share", response_model=ShareLinkOut)
+async def get_share_link(request: Request, session_id: str) -> ShareLinkOut:
+    """Estado atual do link (dono): ativo? URL? validade?"""
+    repo = _get_repo(request)
+    doc = await repo.get_session(session_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not share.token_valid(doc, doc.get("share_token")):
+        return ShareLinkOut(active=False)
+    return ShareLinkOut(
+        active=True,
+        url=_share_url(request, session_id, str(doc["share_token"])),
+        expires_at=doc.get("share_expires_at"),
+    )
+
+
+@router.post("/{session_id}/share", response_model=ShareLinkOut, status_code=201)
+async def create_share_link(request: Request, session_id: str) -> ShareLinkOut:
+    """Gera (ou rotaciona) o link compartilhável da sessão. Vale 24h, morre se a
+    sessão for parada/apagada, e pode ser revogada (DELETE)."""
+    repo = _get_repo(request)
+    doc = await repo.get_session(session_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    token = share.new_token()
+    expires_at = datetime.now(UTC) + SHARE_TTL
+    await repo.set_share(session_id, token, expires_at)
+    return ShareLinkOut(
+        active=True,
+        url=_share_url(request, session_id, token),
+        expires_at=expires_at,
+    )
+
+
+@router.delete("/{session_id}/share", response_model=ShareLinkOut)
+async def revoke_share_link(request: Request, session_id: str) -> ShareLinkOut:
+    """Revoga o link na hora (mesmo com a sessão viva)."""
+    repo = _get_repo(request)
+    await repo.clear_share(session_id)
+    return ShareLinkOut(active=False)
+
+
 async def _require_tmux_name(request: Request, session_id: str) -> str:
     """Fetch a session by id and return its ``tmux_name`` or raise 404."""
     repo = _get_repo(request)
@@ -418,7 +483,7 @@ async def instruct_milestones(request: Request, session_id: str) -> dict:
     )
     await db[settings.sessions_collection].update_one(
         {"tmux_name": tmux_name},
-        {"$set": {"milestones_instructed_at": datetime.now(timezone.utc)}},
+        {"$set": {"milestones_instructed_at": datetime.now(UTC)}},
     )
     return {"status": "instructed", "command_id": command_id}
 
@@ -465,13 +530,17 @@ async def upload_audio(
     "/{session_id}/file", response_model=AudioUploadAccepted, status_code=202
 )
 async def upload_file(
-    request: Request, session_id: str, file: UploadFile = _AUDIO_FILE
+    request: Request,
+    session_id: str,
+    file: UploadFile = _AUDIO_FILE,
+    caption: str | None = _CAPTION_FORM,
 ) -> AudioUploadAccepted:
     """Anexa um arquivo/imagem à sessão: salva no host e injeta o caminho.
 
     Persiste em ``{uploads_dir}/{session_id}/{uuid}.{ext}`` e publica um comando
     ``file`` — o Worker re-rooteia o caminho para o host e injeta no pane (o
-    agente lê a imagem/arquivo pelo path).
+    agente lê a imagem/arquivo pelo path). ``caption`` opcional é o texto que
+    acompanha o anexo — vai junto na mesma injeção (imagem + texto de uma vez).
     """
     tmux_name = await _require_tmux_name(request, session_id)
     settings = request.app.state.settings
@@ -490,6 +559,7 @@ async def upload_file(
         session_id=session_id, path=path_str, kind="file", status="received"
     )
 
+    caption_clean = (caption or "").strip()
     command_id = await publish_command(
         settings,
         type="file",
@@ -498,6 +568,7 @@ async def upload_file(
             "path": path_str,
             "filename": original,
             "upload_id": upload_id,
+            "caption": caption_clean or None,
         },
     )
     return AudioUploadAccepted(

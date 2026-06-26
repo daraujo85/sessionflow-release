@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { API_BASE_URL } from './api.service';
 import { AuthService } from './auth.service';
+import { ShareSessionService } from './share-session.service';
 import { NotifyService } from './notify.service';
 import { EventItem } from './models';
 
@@ -53,6 +54,7 @@ const MAX_BACKOFF = 30_000;
 export class SseService {
   private readonly baseUrl = inject(API_BASE_URL);
   private readonly auth = inject(AuthService);
+  private readonly share = inject(ShareSessionService);
   private readonly notify = inject(NotifyService);
 
   /** Ids de eventos já notificados no sistema (evita duplicar em reconexão). */
@@ -100,6 +102,15 @@ export class SseService {
     this.open();
   }
 
+  /**
+   * Zera o buffer em memória de notificações (o "Limpar todas" do sininho).
+   * Some o badge na hora; novas notificações ao vivo voltam a entrar normal.
+   * O backend guarda o watermark — o reload também volta limpo.
+   */
+  clearNotifications(): void {
+    this.notifications.set([]);
+  }
+
   /** Closes the stream and cancels any pending reconnect. */
   disconnect(): void {
     this.stopped = true;
@@ -127,8 +138,12 @@ export class SseService {
       params.set('session', this.sessionId);
     }
     const token = this.auth.token();
+    const shareToken = this.share.token();
     if (token) {
       params.set('token', token);
+    } else if (shareToken) {
+      // Convidado: o SSE também vai escopado pelo token de share (?k=).
+      params.set('k', shareToken);
     }
     const qs = params.toString();
     const url = `${this.baseUrl}/events${qs ? `?${qs}` : ''}`;
