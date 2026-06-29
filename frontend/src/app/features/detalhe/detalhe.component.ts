@@ -570,6 +570,14 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </div>
         }
 
+        @if (transcribing()) {
+          <!-- Feedback do "gap": áudio enviado, transcrição rolando no worker. -->
+          <div class="transcribing" role="status" aria-live="polite">
+            <span class="transcribing-spinner" aria-hidden="true"></span>
+            <span>Transcrevendo seu áudio…</span>
+          </div>
+        }
+
         <div class="composer">
         <!-- Botões de ação: ocultam ao focar o input (mais espaço pra digitar) -->
         @if (!inputFocused()) {
@@ -1408,6 +1416,38 @@ import { ansiToHtml } from '../../shared/ansi-html';
         align-items: center;
         gap: 10px;
       }
+      /* Aviso "transcrevendo áudio…" (linha acima do compositor). */
+      .transcribing {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 12px;
+        border: 1px solid #1f3a33;
+        border-radius: 10px;
+        background: #0f1a17;
+        color: #00e4b4;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .transcribing-spinner {
+        flex: none;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        border: 2px solid rgba(0, 228, 180, 0.3);
+        border-top-color: #00e4b4;
+        animation: transcribe-spin 0.7s linear infinite;
+      }
+      @keyframes transcribe-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .transcribing-spinner {
+          animation: none;
+        }
+      }
       /* Preview do anexo staged (linha acima do input). */
       .staged-preview {
         display: flex;
@@ -1804,6 +1844,13 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly attaching = signal<boolean>(false);
   /** Arquivo/imagem sendo arrastado sobre o compositor (realça a área de drop). */
   protected readonly dragOver = signal<boolean>(false);
+  /**
+   * Áudio gravado → enviado → AGUARDANDO transcrição. Cobre o "gap" entre o
+   * envio e o texto aparecer no terminal, pra o usuário saber que está rolando.
+   * Limpo quando a tela muda (texto injetado) ou por timeout de segurança.
+   */
+  protected readonly transcribing = signal<boolean>(false);
+  private transcribeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -1932,6 +1979,8 @@ export class DetalheComponent implements AfterViewChecked {
       if (scr && scr.text !== this.screen()) {
         this.stickToBottom = this.isAtBottom();
         this.screen.set(scr.text);
+        // A tela mudou → o texto transcrito (ou a resposta) chegou: tira o aviso.
+        this.clearTranscribingHint();
       }
     });
 
@@ -1948,6 +1997,9 @@ export class DetalheComponent implements AfterViewChecked {
       clearInterval(poll);
       if (this.liveTimer) {
         clearTimeout(this.liveTimer);
+      }
+      if (this.transcribeTimer) {
+        clearTimeout(this.transcribeTimer);
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
@@ -2548,16 +2600,42 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * O áudio é transcrito no backend e injetado no pane do agente; o resultado
-   * aparece no espelho de tela no próximo poll. Sem ação local necessária.
+   * O recorder emite ``true`` ao COMEÇAR o upload. Ligamos o indicador de
+   * "transcrevendo" e o mantemos até o texto aparecer na tela (ver effect do
+   * espelho) ou um timeout de segurança — assim o usuário não fica no escuro
+   * entre enviar o áudio e o texto surgir. O ``false`` (fim do upload) é
+   * ignorado de propósito: a transcrição ainda está rolando no worker.
    */
-  protected onAudioTranscribing(_active: boolean): void {
-    // noop — o espelho reflete a tela real do agente.
+  protected onAudioTranscribing(active: boolean): void {
+    if (active) {
+      this.startTranscribingHint();
+    }
   }
 
-  /** Após upload do áudio o backend processa/transcreve; nada a fazer aqui. */
+  /** Upload do áudio concluído — a transcrição segue no worker; mantém o aviso. */
   protected onAudioUploaded(): void {
-    // O resultado aparece no espelho de tela; sem ação local necessária.
+    this.startTranscribingHint();
+  }
+
+  private startTranscribingHint(): void {
+    this.transcribing.set(true);
+    if (this.transcribeTimer) {
+      clearTimeout(this.transcribeTimer);
+    }
+    // Rede de segurança: se a tela não mudar (ex.: transcrição vazia/erro), some
+    // sozinho em 40s pra não ficar girando pra sempre.
+    this.transcribeTimer = setTimeout(() => this.transcribing.set(false), 40000);
+  }
+
+  private clearTranscribingHint(): void {
+    if (!this.transcribing()) {
+      return;
+    }
+    this.transcribing.set(false);
+    if (this.transcribeTimer) {
+      clearTimeout(this.transcribeTimer);
+      this.transcribeTimer = null;
+    }
   }
 
   private loadSession(): void {
@@ -2632,8 +2710,12 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: (resp) => {
           // Captura ANTES do update: o usuário estava colado no fim?
+          const next = resp.text ?? '';
+          if (next !== this.screen()) {
+            this.clearTranscribingHint(); // texto chegou via poll → some o aviso
+          }
           this.stickToBottom = this.isAtBottom();
-          this.screen.set(resp.text ?? '');
+          this.screen.set(next);
         },
         error: () => {
           /* poll é best-effort; ignora erro transitório */
