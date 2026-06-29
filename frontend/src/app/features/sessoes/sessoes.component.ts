@@ -12,6 +12,7 @@ import { Router } from '@angular/router';
 import { ApiService } from '../../core/api.service';
 import { Session, SessionStatus } from '../../core/models';
 import { SseService } from '../../core/sse.service';
+import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
 import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
 
@@ -187,6 +188,18 @@ const FILTERS: readonly FilterChip[] = [
                             <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
                           </svg>
                           worker
+                        </span>
+                      }
+                      @if (isSpeaking(s)) {
+                        <span class="sf-speaker" title="Áudio desta sessão tocando agora"
+                              aria-label="Falando">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                               stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                               stroke-linejoin="round" aria-hidden="true">
+                            <path d="M11 5 6 9H2v6h4l5 4z" />
+                            <path class="sf-wave sf-wave1" d="M15.5 8.5a5 5 0 0 1 0 7" />
+                            <path class="sf-wave sf-wave2" d="M18.5 5.5a9 9 0 0 1 0 13" />
+                          </svg>
                         </span>
                       }
                     </span>
@@ -598,6 +611,34 @@ const FILTERS: readonly FilterChip[] = [
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      /* Alto-falante "falando agora": ondas pulsando enquanto o áudio toca. */
+      .sf-speaker {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #00e4b4;
+      }
+      .sf-speaker .sf-wave {
+        transform-origin: 9px 12px;
+        animation: sf-speaker-wave 1.1s ease-in-out infinite;
+      }
+      .sf-speaker .sf-wave2 {
+        animation-delay: 0.18s;
+      }
+      @keyframes sf-speaker-wave {
+        0%, 100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-speaker .sf-wave {
+          animation: none;
+          opacity: 0.9;
+        }
+      }
       .sf-worker-chip {
         flex: none;
         display: inline-flex;
@@ -699,7 +740,13 @@ const FILTERS: readonly FilterChip[] = [
 export class SessoesComponent {
   private readonly api = inject(ApiService);
   private readonly sse = inject(SseService);
+  private readonly jarvis = inject(JarvisAudioService);
   private readonly router = inject(Router);
+
+  /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
+  protected isSpeaking(s: Session): boolean {
+    return !!s.tmux_name && this.jarvis.speakingSessionId() === s.tmux_name;
+  }
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly filters = FILTERS;

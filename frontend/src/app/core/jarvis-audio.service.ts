@@ -27,6 +27,9 @@ export class JarvisAudioService {
   readonly enabled = signal(readEnabled());
   /** Áudio tocando agora (para um indicador visual, se quiser). */
   readonly speaking = signal(false);
+  /** tmux_name da sessão cujo áudio está tocando agora (ou null) — p/ marcar o
+   * card que está "falando" nas listas. */
+  readonly speakingSessionId = signal<string | null>(null);
 
   private readonly queue: JarvisAudioFrame[] = [];
   /** Um único elemento, "abençoado" no 1º gesto e reusado p/ todos os clipes. */
@@ -126,6 +129,7 @@ export class JarvisAudioService {
       }
       this.playing = false;
       this.speaking.set(false);
+      this.speakingSessionId.set(null);
     } else if (this.queue.length > 0 && !this.playing) {
       this.playNext();
     }
@@ -139,6 +143,7 @@ export class JarvisAudioService {
     }
     this.playing = false;
     this.speaking.set(false);
+    this.speakingSessionId.set(null);
   }
 
   private enqueue(frame: JarvisAudioFrame): void {
@@ -156,6 +161,7 @@ export class JarvisAudioService {
     if (this.suppressed) {
       this.playing = false;
       this.speaking.set(false);
+      this.speakingSessionId.set(null);
       return;
     }
     const frame = this.queue.shift();
@@ -163,16 +169,19 @@ export class JarvisAudioService {
     if (!frame || !el) {
       this.playing = false;
       this.speaking.set(false);
+      this.speakingSessionId.set(null);
       return;
     }
     this.playing = true;
     this.speaking.set(true);
+    this.speakingSessionId.set(frame.session_id ?? null);
     el.src = `data:${frame.mime || 'audio/ogg'};base64,${frame.audio_b64}`;
     void el.play().catch(() => {
       // Bloqueado mesmo abençoado (raro): exige novo gesto.
       this.unlocked = false;
       this.playing = false;
       this.speaking.set(false);
+      this.speakingSessionId.set(null);
     });
   }
 }
