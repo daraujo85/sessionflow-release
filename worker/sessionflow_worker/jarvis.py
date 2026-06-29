@@ -118,6 +118,11 @@ def _clean_for_speech(text: str) -> str:
     """
     t = _URL_RE.sub("", text or "")
     t = _DROP_RE.sub(" ", t)
+    # Ponto ENTRE letras/números (nome de arquivo, versão, decimal) → espaço.
+    # Senão o XTTS lê cada ponto como "ponto": ``detalhe.component.ts`` viraria
+    # "detalhe ponto component ponto ts"; ``4.8`` → "quatro ponto oito". É a
+    # causa do "ponto ponto" no meio de uma fala fluente.
+    t = re.sub(r"(?<=\w)\.(?=\w)", " ", t)
     # Colapsa QUALQUER sequência de pontuação (incl. "...", ". .", ".,") num
     # único ponto+espaço — senão o XTTS lê a pontuação solta como "ponto, ponto".
     t = re.sub(r"[.,;:!?](?:\s*[.,;:!?])+", ". ", t)

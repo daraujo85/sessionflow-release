@@ -22,6 +22,9 @@ from sessionflow_worker.jarvis import _clean_for_speech
         ("Primeira frase. Segunda frase.", "Primeira frase. Segunda frase"),
         # Markdown/símbolos somem.
         ("item *negrito* e (paren) #tag", "item negrito e paren tag"),
+        # Ponto entre letras/números (arquivo/versão/decimal) NÃO vira "ponto".
+        ("Editei detalhe.component.ts e app.css", "Editei detalhe component ts e app css"),
+        ("Atualizei pra Opus 4.8", "Atualizei pra Opus 4 8"),
     ],
 )
 def test_clean_for_speech_drops_loose_punctuation(raw: str, expected: str) -> None:
