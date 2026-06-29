@@ -465,6 +465,25 @@ import { ansiToHtml } from '../../shared/ansi-html';
             Histórico
           }
         </button>
+
+        <!-- Rolagem do scrollback: ▲ sobe (entra no histórico se estiver ao
+             vivo, pois lá tem o histórico completo), ▼ desce. -->
+        <div class="term-scroll">
+          <button type="button" class="term-scroll-btn" (click)="scrollTerm('up')"
+                  aria-label="Rolar para cima" title="Subir (histórico do terminal)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 15 6-6 6 6" />
+            </svg>
+          </button>
+          <button type="button" class="term-scroll-btn" (click)="scrollTerm('down')"
+                  aria-label="Rolar para baixo" title="Descer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
@@ -1259,9 +1278,33 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .term-bar {
         flex: none;
         display: flex;
+        align-items: center;
         justify-content: flex-end;
+        gap: 8px;
         padding: 8px 16px 0;
         background: #0b0e0f;
+      }
+      .term-scroll {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .term-scroll-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 28px;
+        border-radius: 8px;
+        border: 1px solid #283230;
+        background: #12181a;
+        color: #9aa0ae;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      .term-scroll-btn:active {
+        background: #1b2426;
+        color: #e7eae9;
       }
       .term-toggle {
         display: inline-flex;
@@ -2742,19 +2785,31 @@ export class DetalheComponent implements AfterViewChecked {
    */
   protected toggleHistory(): void {
     if (this.historyMode()) {
-      // Voltando ao vivo: retoma o stick e desce.
-      this.historyMode.set(false);
-      this.stickToBottom = true;
-      this.refreshScreen();
-      queueMicrotask(() => this.scrollToBottom());
-      return;
+      this.exitHistory();
+    } else {
+      this.enterHistory();
     }
+  }
+
+  /** Volta ao espelho ao vivo: retoma o stick e desce. */
+  private exitHistory(): void {
+    this.historyMode.set(false);
+    this.stickToBottom = true;
+    this.refreshScreen();
+    queueMicrotask(() => this.scrollToBottom());
+  }
+
+  /**
+   * Entra no modo histórico: carrega o scrollback profundo (frozen), começa no
+   * fim (contínuo com o ao vivo). ``scrollUpAfter`` rola uma página pra cima
+   * após carregar — usado quando o usuário pede "subir" estando ao vivo.
+   */
+  private enterHistory(scrollUpAfter = false): void {
     const id = this.id();
     if (!id) {
       return;
     }
-    // Pré-carrega com o que já temos na tela p/ não piscar vazio.
-    this.historyText.set(this.screen());
+    this.historyText.set(this.screen()); // pré-carrega p/ não piscar vazio
     this.historyMode.set(true);
     this.showLivePill.set(false);
     this.api
@@ -2763,13 +2818,39 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: (resp) => {
           this.historyText.set(resp.scrollback || resp.text || '');
-          // Começa no fim (mais recente), contínuo com o ao vivo.
-          queueMicrotask(() => this.scrollToBottom());
+          queueMicrotask(() => {
+            this.scrollToBottom();
+            if (scrollUpAfter) {
+              this.scrollTermBy('up');
+            }
+          });
         },
         error: () => {
           /* mantém o pré-carregado */
         },
       });
+  }
+
+  /**
+   * Botões ▲/▼: paginam o terminal. Subir estando AO VIVO entra no histórico
+   * (que tem o scrollback) já rolando pra cima — senão não há nada acima da
+   * tela visível pra mostrar.
+   */
+  protected scrollTerm(dir: 'up' | 'down'): void {
+    if (dir === 'up' && !this.historyMode()) {
+      this.enterHistory(true);
+      return;
+    }
+    this.scrollTermBy(dir);
+  }
+
+  private scrollTermBy(dir: 'up' | 'down'): void {
+    const el = this.termEl()?.nativeElement;
+    if (!el) {
+      return;
+    }
+    const page = Math.max(80, el.clientHeight * 0.85);
+    el.scrollBy({ top: dir === 'up' ? -page : page, behavior: 'smooth' });
   }
 
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */

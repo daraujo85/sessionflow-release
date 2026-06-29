@@ -534,7 +534,7 @@ class OutputCapture:
             lines.pop()
         return "\n".join(lines)
 
-    def capture_scrollback(self, tmux_name: str, lines: int = 400) -> str:
+    def capture_scrollback(self, tmux_name: str, lines: int = 2000) -> str:
         """Captura o HISTÓRICO rolado do pane (scrollback) como texto colorido.
 
         Diferente de :meth:`capture_screen` (só a tela visível atual), roda
