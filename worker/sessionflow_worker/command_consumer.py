@@ -676,7 +676,15 @@ class CommandConsumer:
         key = payload.get("key")
         if not key:
             raise CommandError("key requer 'key'")
-        tmux_key = _KEY_MAP.get(str(key).lower())
+        k = str(key).lower()
+        # scroll-up/scroll-down → evento de RODA DO MOUSE (SGR) pro agente, que
+        # então redesenha o histórico (TUIs de tela alternada, ex.: Claude Code,
+        # guardam o scrollback dentro de si — o tmux não tem o que rolar). É o
+        # mesmo que o touchpad faz no Mac.
+        if k in ("scroll-up", "scroll-down"):
+            self._send_wheel(name, up=(k == "scroll-up"))
+            return {"name": name, "key": k}
+        tmux_key = _KEY_MAP.get(k)
         if tmux_key is None:
             raise CommandError(f"tecla não suportada: {key!r}")
         self._send_key(name, tmux_key)
@@ -769,6 +777,31 @@ class CommandConsumer:
         evita anexar um Enter (a própria tecla já é o evento desejado).
         """
         self._active_pane(name).send_keys(tmux_key, enter=False, literal=False)
+
+    def _send_wheel(self, name: str, up: bool, count: int = 4) -> None:
+        """Injeta ``count`` eventos de RODA DO MOUSE (SGR 1006) no pane.
+
+        Sequência: ``ESC [ < <btn> ; <col> ; <row> M`` com btn 64 (cima) / 65
+        (baixo). Enviada como bytes crus via ``tmux send-keys -H`` (libtmux não
+        manda hex cru). O agente com mouse habilitado interpreta como scroll e
+        redesenha — replica o touchpad no Mac. Best-effort: não derruba o
+        consumer se o tmux reclamar.
+        """
+        # 1b=ESC 5b=[ 3c=< | 36 34=64(up)/36 35=65(down) | 3b=; 31 30=10 ... 4d=M
+        btn = ["36", "34"] if up else ["36", "35"]
+        seq = ["1b", "5b", "3c", *btn, "3b", "31", "30", "3b", "31", "30", "4d"]
+        socket_name = getattr(self._server, "socket_name", None)
+        cmd = ["tmux"]
+        if socket_name and socket_name != "default":
+            cmd += ["-L", socket_name]
+        cmd += ["send-keys", "-t", name, "-H", *(seq * max(1, count))]
+        try:
+            subprocess.run(
+                cmd, check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            raise CommandError(f"falha ao rolar: {exc}") from exc
 
     def _resolve_upload_path(self, path: str) -> str:
         """Resolve o path do upload de áudio para o filesystem do HOST.

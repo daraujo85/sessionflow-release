@@ -2804,7 +2804,7 @@ export class DetalheComponent implements AfterViewChecked {
    * fim (contínuo com o ao vivo). ``scrollUpAfter`` rola uma página pra cima
    * após carregar — usado quando o usuário pede "subir" estando ao vivo.
    */
-  private enterHistory(scrollUpAfter = false): void {
+  private enterHistory(): void {
     const id = this.id();
     if (!id) {
       return;
@@ -2818,12 +2818,7 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: (resp) => {
           this.historyText.set(resp.scrollback || resp.text || '');
-          queueMicrotask(() => {
-            this.scrollToBottom();
-            if (scrollUpAfter) {
-              this.scrollTermBy('up');
-            }
-          });
+          queueMicrotask(() => this.scrollToBottom());
         },
         error: () => {
           /* mantém o pré-carregado */
@@ -2832,25 +2827,20 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * Botões ▲/▼: paginam o terminal. Subir estando AO VIVO entra no histórico
-   * (que tem o scrollback) já rolando pra cima — senão não há nada acima da
-   * tela visível pra mostrar.
+   * Botões ▲/▼: mandam evento de RODA DO MOUSE pro AGENTE, que redesenha o
+   * histórico no espelho — igual ao touchpad no Mac. (TUIs de tela alternada,
+   * ex.: Claude Code, guardam o scrollback dentro de si, não no tmux; por isso
+   * não dá pra rolar via tmux nem via o modo "Histórico".)
    */
   protected scrollTerm(dir: 'up' | 'down'): void {
-    if (dir === 'up' && !this.historyMode()) {
-      this.enterHistory(true);
+    const id = this.id();
+    if (!id) {
       return;
     }
-    this.scrollTermBy(dir);
-  }
-
-  private scrollTermBy(dir: 'up' | 'down'): void {
-    const el = this.termEl()?.nativeElement;
-    if (!el) {
-      return;
-    }
-    const page = Math.max(80, el.clientHeight * 0.85);
-    el.scrollBy({ top: dir === 'up' ? -page : page, behavior: 'smooth' });
+    this.api
+      .sendKey(id, dir === 'up' ? 'scroll-up' : 'scroll-down')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.refreshScreen(), error: () => {} });
   }
 
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */

@@ -179,4 +179,6 @@ export type TerminalKey =
   | 'escape'
   | 'tab'
   | 'backspace'
-  | 'ctrl-c';
+  | 'ctrl-c'
+  | 'scroll-up'
+  | 'scroll-down';

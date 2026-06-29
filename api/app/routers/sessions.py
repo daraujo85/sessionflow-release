@@ -138,6 +138,8 @@ ALLOWED_KEYS = frozenset(
         "tab",
         "backspace",
         "ctrl-c",
+        "scroll-up",
+        "scroll-down",
     }
 )
 
