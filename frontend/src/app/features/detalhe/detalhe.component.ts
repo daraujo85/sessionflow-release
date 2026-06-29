@@ -570,11 +570,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </div>
         }
 
-        @if (transcribing()) {
-          <!-- Feedback do "gap": áudio enviado, transcrição rolando no worker. -->
+        @if (actionHint(); as hint) {
+          <!-- Feedback do "gap": algo enviado (texto/anexo/áudio), aguardando
+               aparecer no terminal. -->
           <div class="transcribing" role="status" aria-live="polite">
             <span class="transcribing-spinner" aria-hidden="true"></span>
-            <span>Transcrevendo seu áudio…</span>
+            <span>{{ hint }}</span>
           </div>
         }
 
@@ -1845,12 +1846,13 @@ export class DetalheComponent implements AfterViewChecked {
   /** Arquivo/imagem sendo arrastado sobre o compositor (realça a área de drop). */
   protected readonly dragOver = signal<boolean>(false);
   /**
-   * Áudio gravado → enviado → AGUARDANDO transcrição. Cobre o "gap" entre o
-   * envio e o texto aparecer no terminal, pra o usuário saber que está rolando.
-   * Limpo quando a tela muda (texto injetado) ou por timeout de segurança.
+   * Rótulo do feedback de "ação em trânsito" (ou null = nada). Cobre o "gap"
+   * entre enviar algo (texto / anexo / áudio) e o efeito aparecer no terminal,
+   * pra o usuário saber que está indo. Limpo quando a tela muda (conteúdo
+   * chegou) ou por timeout de segurança.
    */
-  protected readonly transcribing = signal<boolean>(false);
-  private transcribeTimer: ReturnType<typeof setTimeout> | null = null;
+  protected readonly actionHint = signal<string | null>(null);
+  private hintTimer: ReturnType<typeof setTimeout> | null = null;
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -1979,8 +1981,8 @@ export class DetalheComponent implements AfterViewChecked {
       if (scr && scr.text !== this.screen()) {
         this.stickToBottom = this.isAtBottom();
         this.screen.set(scr.text);
-        // A tela mudou → o texto transcrito (ou a resposta) chegou: tira o aviso.
-        this.clearTranscribingHint();
+        // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
+        this.clearHint();
       }
     });
 
@@ -1998,8 +2000,8 @@ export class DetalheComponent implements AfterViewChecked {
       if (this.liveTimer) {
         clearTimeout(this.liveTimer);
       }
-      if (this.transcribeTimer) {
-        clearTimeout(this.transcribeTimer);
+      if (this.hintTimer) {
+        clearTimeout(this.hintTimer);
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
@@ -2346,10 +2348,11 @@ export class DetalheComponent implements AfterViewChecked {
     // → submeter é só um Enter. Limpa o estado local + buffer.
     if (this.liveMode()) {
       this.flushForward(); // garante que o último diff foi enviado
+      this.showHint('Enviando…');
       this.api
         .sendKey(id, 'enter')
         .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe({ next: () => this.refreshScreen(), error: () => {} });
+        .subscribe({ next: () => this.refreshScreen(), error: () => this.clearHint() });
       this.draft.set('');
       this.drafts.set(id, '');
       this.paneBuffer = '';
@@ -2362,6 +2365,7 @@ export class DetalheComponent implements AfterViewChecked {
     // Sem eco local: o espelho de tela mostra o que foi digitado na caixa do
     // agente no próximo poll (~1.2s).
     this.sending.set(true);
+    this.showHint('Enviando…');
     this.api
       .sendInput(this.id(), text)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2371,7 +2375,10 @@ export class DetalheComponent implements AfterViewChecked {
           this.drafts.set(id, '');
           this.sending.set(false);
         },
-        error: () => this.sending.set(false),
+        error: () => {
+          this.sending.set(false);
+          this.clearHint(); // falhou → tira o aviso na hora
+        },
       });
   }
 
@@ -2554,6 +2561,7 @@ export class DetalheComponent implements AfterViewChecked {
     }
     const caption = this.draft().trim();
     this.attaching.set(true);
+    this.showHint('Enviando anexo…');
     this.api
       .uploadFile(id, file, caption)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2567,7 +2575,10 @@ export class DetalheComponent implements AfterViewChecked {
           this.refreshScreen();
         },
         // Mantém o arquivo staged (e o texto) para o usuário tentar de novo.
-        error: () => this.attaching.set(false),
+        error: () => {
+          this.attaching.set(false);
+          this.clearHint(); // falhou → tira o aviso na hora
+        },
       });
   }
 
@@ -2608,33 +2619,33 @@ export class DetalheComponent implements AfterViewChecked {
    */
   protected onAudioTranscribing(active: boolean): void {
     if (active) {
-      this.startTranscribingHint();
+      this.showHint('Transcrevendo seu áudio…');
     }
   }
 
   /** Upload do áudio concluído — a transcrição segue no worker; mantém o aviso. */
   protected onAudioUploaded(): void {
-    this.startTranscribingHint();
+    this.showHint('Transcrevendo seu áudio…');
   }
 
-  private startTranscribingHint(): void {
-    this.transcribing.set(true);
-    if (this.transcribeTimer) {
-      clearTimeout(this.transcribeTimer);
+  /** Liga o feedback "em trânsito" com um rótulo, até a tela mudar (ou 40s). */
+  private showHint(label: string): void {
+    this.actionHint.set(label);
+    if (this.hintTimer) {
+      clearTimeout(this.hintTimer);
     }
-    // Rede de segurança: se a tela não mudar (ex.: transcrição vazia/erro), some
-    // sozinho em 40s pra não ficar girando pra sempre.
-    this.transcribeTimer = setTimeout(() => this.transcribing.set(false), 40000);
+    // Rede de segurança: se a tela não mudar (ex.: nada injetado), some em 40s.
+    this.hintTimer = setTimeout(() => this.actionHint.set(null), 40000);
   }
 
-  private clearTranscribingHint(): void {
-    if (!this.transcribing()) {
+  private clearHint(): void {
+    if (this.actionHint() === null) {
       return;
     }
-    this.transcribing.set(false);
-    if (this.transcribeTimer) {
-      clearTimeout(this.transcribeTimer);
-      this.transcribeTimer = null;
+    this.actionHint.set(null);
+    if (this.hintTimer) {
+      clearTimeout(this.hintTimer);
+      this.hintTimer = null;
     }
   }
 
@@ -2712,7 +2723,7 @@ export class DetalheComponent implements AfterViewChecked {
           // Captura ANTES do update: o usuário estava colado no fim?
           const next = resp.text ?? '';
           if (next !== this.screen()) {
-            this.clearTranscribingHint(); // texto chegou via poll → some o aviso
+            this.clearHint(); // conteúdo chegou via poll → some o aviso
           }
           this.stickToBottom = this.isAtBottom();
           this.screen.set(next);
