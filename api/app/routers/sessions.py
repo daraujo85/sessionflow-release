@@ -140,6 +140,7 @@ ALLOWED_KEYS = frozenset(
         "ctrl-c",
         "scroll-up",
         "scroll-down",
+        "scroll-bottom",
     }
 )
 

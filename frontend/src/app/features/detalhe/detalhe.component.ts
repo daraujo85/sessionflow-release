@@ -2960,6 +2960,8 @@ export class DetalheComponent implements AfterViewChecked {
   private exitHistory(): void {
     this.historyMode.set(false);
     this.stickToBottom = true;
+    this.showLivePill.set(false);
+    this.jumpAgentToBottom(); // o agente pode estar rolado → Ctrl+End pro fim
     this.refreshScreen(true); // força descer pro fim quando a tela nova chegar
   }
 
@@ -3133,7 +3135,22 @@ export class DetalheComponent implements AfterViewChecked {
       Math.min(1, Math.max(0, this.termScrollPos() + (dir === 'up' ? -step : step))),
     );
     this.flashScrollbar();
+    if (dir === 'up') {
+      this.showLivePill.set(true); // rolou o agente p/ cima → oferece "↓ ao vivo"
+    }
     this.scrollTerm(dir);
+  }
+
+  /** Manda o agente pular pro FIM (Ctrl+End) — ele guarda o próprio scroll. */
+  private jumpAgentToBottom(): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    this.api
+      .sendKey(id, 'scroll-bottom')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.refreshScreen(true), error: () => {} });
   }
 
   /**
@@ -3194,6 +3211,7 @@ export class DetalheComponent implements AfterViewChecked {
     this.scrollToBottom();
     this.showLivePill.set(false);
     this.termScrollPos.set(1); // barra fake volta pro fim (ao vivo)
+    this.jumpAgentToBottom(); // o agente pode estar rolado p/ cima → traz pro fim
   }
 
   /** Atualiza a pill ↓ ao vivo + a barra de scroll fake conforme o usuário rola. */

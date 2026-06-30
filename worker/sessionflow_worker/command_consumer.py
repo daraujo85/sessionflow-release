@@ -724,6 +724,11 @@ class CommandConsumer:
         if k in ("scroll-up", "scroll-down"):
             self._send_wheel(name, up=(k == "scroll-up"))
             return {"name": name, "key": k}
+        # "scroll-bottom" = pular pro fim (mais recente): manda Ctrl+End, que os
+        # TUIs (ex.: Claude Code) interpretam como "ir pro fim do histórico".
+        if k == "scroll-bottom":
+            self._send_ctrl_end(name)
+            return {"name": name, "key": k}
         tmux_key = _KEY_MAP.get(k)
         if tmux_key is None:
             raise CommandError(f"tecla não suportada: {key!r}")
@@ -845,6 +850,27 @@ class CommandConsumer:
         evita anexar um Enter (a própria tecla já é o evento desejado).
         """
         self._active_pane(name).send_keys(tmux_key, enter=False, literal=False)
+
+    def _send_ctrl_end(self, name: str) -> None:
+        """Manda Ctrl+End (CSI 1;5F) ao pane — "pular pro fim" nos TUIs.
+
+        Sequência xterm padrão ``ESC [ 1 ; 5 F``. Enviada como bytes crus via
+        ``tmux send-keys -H``. Best-effort.
+        """
+        # 1b=ESC 5b=[ 31=1 3b=; 35=5 46=F
+        seq = ["1b", "5b", "31", "3b", "35", "46"]
+        socket_name = getattr(self._server, "socket_name", None)
+        cmd = ["tmux"]
+        if socket_name and socket_name != "default":
+            cmd += ["-L", socket_name]
+        cmd += ["send-keys", "-t", name, "-H", *seq]
+        try:
+            subprocess.run(
+                cmd, check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            raise CommandError(f"falha ao ir pro fim: {exc}") from exc
 
     def _send_wheel(self, name: str, up: bool, count: int = 4) -> None:
         """Injeta ``count`` eventos de RODA DO MOUSE (SGR 1006) no pane.
