@@ -497,6 +497,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
       <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
       <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()"
            (wheel)="onTermWheel($event)"
+           (touchstart)="onTermTouchStart($event)"
+           (touchmove)="onTermTouchMove($event)"
            [style.fontSize.px]="termFont()">
         @if (historyMode()) {
           <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
@@ -1914,8 +1916,10 @@ export class DetalheComponent implements AfterViewChecked {
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
   /** Tamanho da fonte do terminal (px), ajustável por A−/A+ e persistido. */
   protected readonly termFont = signal<number>(readTermFont());
-  /** Throttle do scroll-pro-agente disparado pela roda do mouse (ms). */
+  /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
   private lastWheelAt = 0;
+  /** Y inicial do toque no terminal (p/ medir arrasto no limite — tablet). */
+  private touchStartY = 0;
   /** Últimas dimensões (cols×linhas) enviadas ao tmux — evita reenvio igual. */
   private lastCols = 0;
   private lastRows = 0;
@@ -2981,13 +2985,48 @@ export class DetalheComponent implements AfterViewChecked {
     if ((up && canScrollUp) || (!up && canScrollDown)) {
       return; // ainda dá pra rolar dentro do container → nativo
     }
-    // No limite → traz mais conteúdo do agente (throttle ~180ms).
+    this.agentScroll(up ? 'up' : 'down');
+  }
+
+  /** Início do toque no terminal — guarda o Y p/ medir o arrasto (tablet). */
+  protected onTermTouchStart(ev: TouchEvent): void {
+    this.touchStartY = ev.touches[0]?.clientY ?? 0;
+  }
+
+  /**
+   * Arrasto de toque NO LIMITE do terminal (tablet/celular): no topo arrastando
+   * pra baixo → traz conteúdo anterior (igual ▲); no fim arrastando pra cima →
+   * mais recente (▼). Como o `wheel` não dispara no toque, replicamos aqui.
+   */
+  protected onTermTouchMove(ev: TouchEvent): void {
+    if (this.historyMode()) {
+      return;
+    }
+    const el = this.termEl()?.nativeElement;
+    if (!el) {
+      return;
+    }
+    const y = ev.touches[0]?.clientY ?? 0;
+    const dy = y - this.touchStartY; // >0 = dedo descendo (revela conteúdo acima)
+    const atTop = el.scrollTop <= 0;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (atTop && dy > 24) {
+      this.touchStartY = y;
+      this.agentScroll('up');
+    } else if (atBottom && dy < -24) {
+      this.touchStartY = y;
+      this.agentScroll('down');
+    }
+  }
+
+  /** Manda o scroll pro agente (▲/▼) com throttle — compartilhado por wheel e toque. */
+  private agentScroll(dir: 'up' | 'down'): void {
     const now = Date.now();
     if (now - this.lastWheelAt < 180) {
       return;
     }
     this.lastWheelAt = now;
-    this.scrollTerm(up ? 'up' : 'down');
+    this.scrollTerm(dir);
   }
 
   protected scrollTerm(dir: 'up' | 'down'): void {
