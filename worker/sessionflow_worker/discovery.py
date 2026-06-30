@@ -73,6 +73,12 @@ class ReconcileReport:
     stopped: int = 0
 
 
+# Cooldown (s) anti-flap: janela mínima entre notificações da MESMA atenção pra
+# uma mesma sessão. Absorve a piscada idle↔ocupado do reflow do agente (resize)
+# sem suprimir conclusões genuínas mais espaçadas.
+_NOTIFY_COOLDOWN_S = 8.0
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -102,6 +108,10 @@ class Discovery:
         self._scr_sig: dict[str, int] = {}
         self._scr_since: dict[str, float] = {}
         self._scr_active: set[str] = set()
+        # Cooldown anti-flap: (atenção, instante monotonic) da última notificação
+        # por sessão. Evita re-notificar/re-falar a MESMA atenção em rajada quando
+        # a tela pisca idle↔ocupado (ex.: reflow do agente após um resize).
+        self._last_notified: dict[str, tuple[str, float]] = {}
 
     @property
     def collection(self) -> str:
@@ -347,6 +357,13 @@ class Discovery:
         if self._attn.get(name) == attention:
             return
         self._attn[name] = attention
+        # Anti-flap: se a MESMA atenção foi notificada há pouco (a tela piscou
+        # idle↔ocupado, ex.: reflow após resize), não re-notifica/re-fala.
+        if attention is not None:
+            prev = self._last_notified.get(name)
+            if prev and prev[0] == attention and (time.monotonic() - prev[1]) < _NOTIFY_COOLDOWN_S:
+                return
+            self._last_notified[name] = (attention, time.monotonic())
         title = desc = None
         if attention == "waiting":
             title = f"{name} aguarda você"

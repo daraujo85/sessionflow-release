@@ -499,6 +499,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
            (wheel)="onTermWheel($event)"
            (touchstart)="onTermTouchStart($event)"
            (touchmove)="onTermTouchMove($event)"
+           (mouseup)="onTermSelect()"
+           (touchend)="onTermSelect()"
            [style.fontSize.px]="termFont()">
         @if (historyMode()) {
           <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
@@ -506,6 +508,17 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <div class="term-msg">Conectando ao terminal…</div>
         } @else {
           <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
+        }
+
+        <!-- Toast "Copiado": confirma a cópia da seleção pro clipboard. -->
+        @if (copied()) {
+          <div class="term-copied" role="status" aria-live="polite">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 12l4 4 10-10" />
+            </svg>
+            Copiado
+          </div>
         }
 
         <!-- Barra de scroll FAKE: feedback visual ao rolar (o espelho ao vivo
@@ -1369,6 +1382,40 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .term::-webkit-scrollbar {
         display: none;
       }
+      /* Toast "Copiado" — canto inferior ESQUERDO (não colide com a live-pill). */
+      .term-copied {
+        position: sticky;
+        bottom: 12px;
+        float: left;
+        margin-left: 2px;
+        z-index: 5;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        color: #06231d;
+        font-size: 11.5px;
+        font-weight: 700;
+        font-family: inherit;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+        animation: term-copied-in 0.15s ease-out;
+      }
+      .term-copied svg {
+        flex: none;
+      }
+      @keyframes term-copied-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
       .live-pill {
         position: sticky;
         bottom: 12px;
@@ -1960,6 +2007,9 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly termScrollPos = signal<number>(1);
   protected readonly termScrollShow = signal<boolean>(false);
   private scrollbarTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Toast "Copiado" ao selecionar texto do terminal. */
+  protected readonly copied = signal<boolean>(false);
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
   /** Últimas dimensões (cols×linhas) enviadas ao tmux — evita reenvio igual. */
   private lastCols = 0;
   private lastRows = 0;
@@ -2132,6 +2182,9 @@ export class DetalheComponent implements AfterViewChecked {
       }
       if (this.scrollbarTimer) {
         clearTimeout(this.scrollbarTimer);
+      }
+      if (this.copyTimer) {
+        clearTimeout(this.copyTimer);
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
@@ -2860,7 +2913,7 @@ export class DetalheComponent implements AfterViewChecked {
    * Busca a tela visível atual do pane e SUBSTITUI o espelho. Best-effort:
    * ignora erros transitórios (mantém a última tela em tela).
    */
-  private refreshScreen(): void {
+  private refreshScreen(forceBottom = false): void {
     const id = this.id();
     if (!id) {
       return;
@@ -2870,13 +2923,18 @@ export class DetalheComponent implements AfterViewChecked {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (resp) => {
-          // Captura ANTES do update: o usuário estava colado no fim?
+          // Captura ANTES do update: o usuário estava colado no fim? (forceBottom
+          // ignora isso — ex.: ao voltar do histórico, sempre desce pro fim.)
           const next = resp.text ?? '';
           if (next !== this.screen()) {
             this.clearHint(); // conteúdo chegou via poll → some o aviso
           }
-          this.stickToBottom = this.isAtBottom();
+          this.stickToBottom = forceBottom || this.isAtBottom();
           this.screen.set(next);
+          if (forceBottom) {
+            this.termScrollPos.set(1);
+            queueMicrotask(() => this.scrollToBottom());
+          }
         },
         error: () => {
           /* poll é best-effort; ignora erro transitório */
@@ -2898,12 +2956,11 @@ export class DetalheComponent implements AfterViewChecked {
     }
   }
 
-  /** Volta ao espelho ao vivo: retoma o stick e desce. */
+  /** Volta ao espelho ao vivo: retoma o stick e desce pro fim (última msg). */
   private exitHistory(): void {
     this.historyMode.set(false);
     this.stickToBottom = true;
-    this.refreshScreen();
-    queueMicrotask(() => this.scrollToBottom());
+    this.refreshScreen(true); // força descer pro fim quando a tela nova chegar
   }
 
   /**
@@ -3077,6 +3134,38 @@ export class DetalheComponent implements AfterViewChecked {
     );
     this.flashScrollbar();
     this.scrollTerm(dir);
+  }
+
+  /**
+   * Selecionou texto no terminal → copia pro clipboard e avisa ("Copiado").
+   * Disparado no fim da seleção (mouseup/touchend). Ignora seleção vazia ou
+   * fora do terminal. Best-effort (clipboard exige contexto seguro + gesto).
+   */
+  protected onTermSelect(): void {
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
+    const text = sel?.toString() ?? '';
+    if (!text.trim()) {
+      return;
+    }
+    const el = this.termEl()?.nativeElement;
+    if (el && sel?.anchorNode && !el.contains(sel.anchorNode)) {
+      return; // seleção começou fora do terminal
+    }
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => this.flashCopied())
+      .catch(() => {
+        /* clipboard indisponível — silencioso */
+      });
+  }
+
+  /** Mostra o toast "Copiado" e agenda o sumiço. */
+  private flashCopied(): void {
+    this.copied.set(true);
+    if (this.copyTimer) {
+      clearTimeout(this.copyTimer);
+    }
+    this.copyTimer = setTimeout(() => this.copied.set(false), 1500);
   }
 
   /** Mostra a barra de scroll e agenda o auto-ocultar (estilo overlay). */
