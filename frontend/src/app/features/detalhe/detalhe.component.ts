@@ -2392,6 +2392,7 @@ export class DetalheComponent implements AfterViewChecked {
     if (this.liveMode()) {
       this.flushForward(); // garante que o último diff foi enviado
       this.showHint('Enviando…');
+      this.markWorkingLocal();
       this.api
         .sendKey(id, 'enter')
         .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2409,6 +2410,7 @@ export class DetalheComponent implements AfterViewChecked {
     // agente no próximo poll (~1.2s).
     this.sending.set(true);
     this.showHint('Enviando…');
+    this.markWorkingLocal();
     this.api
       .sendInput(this.id(), text)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2605,6 +2607,7 @@ export class DetalheComponent implements AfterViewChecked {
     const caption = this.draft().trim();
     this.attaching.set(true);
     this.showHint('Enviando anexo…');
+    this.markWorkingLocal();
     this.api
       .uploadFile(id, file, caption)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2634,10 +2637,25 @@ export class DetalheComponent implements AfterViewChecked {
     this.pendingFileUrl.set(null);
   }
 
+  /**
+   * Otimista: você respondeu → se a sessão AGUARDAVA por você, vira "rodando"
+   * na hora no detalhe (o worker confirma no Mongo; isto só tira o atraso).
+   */
+  private markWorkingLocal(): void {
+    const s = this.session();
+    if (s && (s.status === 'waiting_input' || s.status === 'waiting_external')) {
+      this.session.set({ ...s, status: 'running' });
+    }
+  }
+
   protected pressKey(key: TerminalKey): void {
     const id = this.id();
     if (!id) {
       return;
+    }
+    // Scroll não é resposta; as demais teclas (enter/setas num prompt) são.
+    if (key !== 'scroll-up' && key !== 'scroll-down') {
+      this.markWorkingLocal();
     }
     // Fire-and-forget: NÃO bloqueia os botões durante o round-trip (no celular
     // ele tem centenas de ms via túnel). Bloquear deixava o keypad "morto" e
@@ -2663,12 +2681,14 @@ export class DetalheComponent implements AfterViewChecked {
   protected onAudioTranscribing(active: boolean): void {
     if (active) {
       this.showHint('Transcrevendo seu áudio…');
+      this.markWorkingLocal(); // áudio enviado é resposta → inverte o fluxo
     }
   }
 
   /** Upload do áudio concluído — a transcrição segue no worker; mantém o aviso. */
   protected onAudioUploaded(): void {
     this.showHint('Transcrevendo seu áudio…');
+    this.markWorkingLocal();
   }
 
   /** Liga o feedback "em trânsito" com um rótulo, até a tela mudar (ou 40s). */

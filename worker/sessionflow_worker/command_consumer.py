@@ -660,6 +660,7 @@ class CommandConsumer:
             await self._sessions.update_one(
                 {"tmux_name": name}, {"$set": {"last_activity_at": _now()}}
             )
+            await self._mark_working(name)  # respondeu → agente trabalha
         return {"name": name}
 
     async def _handle_key(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -688,6 +689,7 @@ class CommandConsumer:
         if tmux_key is None:
             raise CommandError(f"tecla não suportada: {key!r}")
         self._send_key(name, tmux_key)
+        await self._mark_working(name)  # tecla num prompt TUI é resposta → trabalha
         return {"name": name, "key": key}
 
     async def _handle_file(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -716,6 +718,7 @@ class CommandConsumer:
         else:
             message = f"Arquivo anexado ({filename}): {path}"
         self._send_keys(name, message)
+        await self._mark_working(name)  # anexo é resposta → agente trabalha
         result: dict[str, Any] = {"name": name, "path": path, "filename": filename}
         upload_id = payload.get("upload_id")
         if upload_id is not None:
@@ -754,6 +757,7 @@ class CommandConsumer:
             raise CommandError("transcrição vazia: nada a injetar")
 
         self._send_keys(name, text)
+        await self._mark_working(name)  # áudio transcrito é resposta → trabalha
         result: dict[str, Any] = {"name": name, "text": text}
         upload_id = payload.get("upload_id")
         if upload_id is not None:
@@ -761,6 +765,31 @@ class CommandConsumer:
         return result
 
     # -- infra ------------------------------------------------------------
+
+    async def _mark_working(self, name: str) -> None:
+        """Usuário respondeu → se a sessão AGUARDAVA por ele, vira ``running`` na
+        hora (inverte o fluxo: agora o agente trabalha e o usuário é que espera).
+
+        Só mexe quando o status atual é de ESPERA pelo usuário
+        (``waiting_input``/``waiting_external``) — não atropela outros estados. O
+        discovery reconcilia depois com a tela real; isto só elimina o atraso até
+        lá. Best-effort: nunca levanta.
+        """
+        try:
+            await self._sessions.update_one(
+                {
+                    "tmux_name": name,
+                    "status": {
+                        "$in": [
+                            SessionState.WAITING_INPUT.value,
+                            SessionState.WAITING_EXTERNAL.value,
+                        ]
+                    },
+                },
+                {"$set": {"status": SessionState.RUNNING.value, "updated_at": _now()}},
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("mark_working falhou para %r", name, exc_info=True)
 
     def _send_keys(self, name: str, command: str, enter: bool = True) -> None:
         """Envia ``command`` (texto literal) ao pane ativo. ``enter`` anexa Enter.
