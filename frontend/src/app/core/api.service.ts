@@ -158,6 +158,11 @@ export class ApiService {
   }
 
   /** Envia uma tecla especial (up/down/enter/space/escape/tab…) p/ navegar TUI. */
+  /** Redimensiona o pane do tmux (colunas×linhas) p/ caber na área do cliente. */
+  resizeSession(id: string, cols: number, rows: number): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/resize`), { cols, rows });
+  }
+
   sendKey(id: string, key: TerminalKey): Observable<void> {
     return this.http.post<void>(this.url(`/sessions/${id}/key`), { key });
   }

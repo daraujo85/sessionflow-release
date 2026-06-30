@@ -106,6 +106,7 @@ _VALID_TYPES = frozenset(
         "audio",
         "file",
         "open_terminal",
+        "resize",
     }
 )
 
@@ -391,6 +392,8 @@ class CommandConsumer:
             return await self._handle_file(payload)
         if ctype == "open_terminal":
             return await self._handle_open_terminal(payload)
+        if ctype == "resize":
+            return await self._handle_resize(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -662,6 +665,42 @@ class CommandConsumer:
             )
             await self._mark_working(name)  # respondeu → agente trabalha
         return {"name": name}
+
+    async def _handle_resize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Redimensiona a janela do tmux (colunas×linhas) p/ caber na área do
+        cliente — o agente reflui e usa a largura toda (monitor grande etc.).
+
+        ``window-size manual`` (por-janela) faz o tamanho forçado valer mesmo sem
+        cliente anexado, sem afetar outras sessões. Best-effort.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("resize requer 'name'")
+        try:
+            cols = int(payload.get("cols", 0))
+            rows = int(payload.get("rows", 0))
+        except (TypeError, ValueError) as exc:
+            raise CommandError("resize requer cols/rows inteiros") from exc
+        cols = max(40, min(400, cols))
+        rows = max(10, min(200, rows))
+        socket_name = getattr(self._server, "socket_name", None)
+        base = ["tmux"]
+        if socket_name and socket_name != "default":
+            base += ["-L", socket_name]
+        try:
+            subprocess.run(
+                base + ["set-option", "-t", name, "-w", "window-size", "manual"],
+                check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                base + ["resize-window", "-t", name, "-x", str(cols), "-y", str(rows)],
+                check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            raise CommandError(f"falha ao redimensionar: {exc}") from exc
+        return {"name": name, "cols": cols, "rows": rows}
 
     async def _handle_key(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Envia uma TECLA ESPECIAL (seta/enter/espaço/esc/tab…) ao pane.

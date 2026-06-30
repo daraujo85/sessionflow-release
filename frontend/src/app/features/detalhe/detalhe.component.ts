@@ -1916,6 +1916,10 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly termFont = signal<number>(readTermFont());
   /** Throttle do scroll-pro-agente disparado pela roda do mouse (ms). */
   private lastWheelAt = 0;
+  /** Últimas dimensões (cols×linhas) enviadas ao tmux — evita reenvio igual. */
+  private lastCols = 0;
+  private lastRows = 0;
+  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -2062,13 +2066,25 @@ export class DetalheComponent implements AfterViewChecked {
       }
       this.loadTasks();
     }, 4000);
+
+    // Responsivo: ajusta o pane do tmux p/ caber na área do terminal (o agente
+    // reflui e usa a largura toda — monitor grande etc.). Inicial + a cada
+    // resize de janela (debounced em scheduleTermResize).
+    const onWinResize = () => this.scheduleTermResize();
+    window.addEventListener('resize', onWinResize);
+    this.scheduleTermResize();
+
     this.destroyRef.onDestroy(() => {
       clearInterval(poll);
+      window.removeEventListener('resize', onWinResize);
       if (this.liveTimer) {
         clearTimeout(this.liveTimer);
       }
       if (this.hintTimer) {
         clearTimeout(this.hintTimer);
+      }
+      if (this.resizeTimer) {
+        clearTimeout(this.resizeTimer);
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
@@ -2885,6 +2901,64 @@ export class DetalheComponent implements AfterViewChecked {
     } catch {
       /* storage indisponível — silencioso */
     }
+    // Fonte mudou → muda quantas colunas/linhas cabem → reajusta o pane.
+    this.scheduleTermResize();
+  }
+
+  /** Agenda (debounce 350ms) o ajuste do tamanho do pane à área do terminal. */
+  private scheduleTermResize(): void {
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+    }
+    this.resizeTimer = setTimeout(() => this.syncTermSize(), 350);
+  }
+
+  /**
+   * Mede quantas colunas/linhas cabem na área do terminal (fonte monoespaçada
+   * atual) e, se mudou, manda o tmux redimensionar — o agente reflui pra usar a
+   * largura toda. Best-effort.
+   */
+  private syncTermSize(): void {
+    const el = this.termEl()?.nativeElement;
+    const id = this.id();
+    if (!el || !id || this.historyMode()) {
+      return;
+    }
+    const cw = this.measureCharWidth();
+    if (!cw) {
+      return;
+    }
+    const lh = this.termFont() * 1.7; // line-height do .term
+    // padding do .term: 14px (vert) / 16px (horiz) → 32 / 28.
+    const cols = Math.max(40, Math.floor((el.clientWidth - 32) / cw));
+    const rows = Math.max(10, Math.floor((el.clientHeight - 28) / lh));
+    if (cols === this.lastCols && rows === this.lastRows) {
+      return;
+    }
+    this.lastCols = cols;
+    this.lastRows = rows;
+    this.api
+      .resizeSession(id, cols, rows)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.refreshScreen(), error: () => {} });
+  }
+
+  /** Largura de UM caractere na fonte monoespaçada atual do terminal (px). */
+  private measureCharWidth(): number {
+    const host = this.termEl()?.nativeElement;
+    if (!host) {
+      return 0;
+    }
+    const probe = document.createElement('span');
+    probe.className = 'mono';
+    probe.style.cssText =
+      'position:absolute;visibility:hidden;white-space:pre;pointer-events:none;';
+    probe.style.fontSize = `${this.termFont()}px`;
+    probe.textContent = '0'.repeat(100);
+    host.appendChild(probe);
+    const w = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+    return w;
   }
 
   /**

@@ -155,6 +155,18 @@ class SessionKey(BaseModel):
     key: str = Field(min_length=1)
 
 
+class SessionResize(BaseModel):
+    """Request body para redimensionar o pane do tmux (colunas×linhas).
+
+    O cliente informa quantas colunas/linhas cabem na sua área de terminal; o
+    worker força esse tamanho (``window-size manual``) e o agente reflui — assim
+    o terminal usa a largura toda em telas grandes.
+    """
+
+    cols: int = Field(ge=20, le=500)
+    rows: int = Field(ge=5, le=300)
+
+
 class SessionRename(BaseModel):
     """Request body for renaming a session (TMUX-10).
 
@@ -444,6 +456,23 @@ async def send_key(
     settings = request.app.state.settings
     command_id = await publish_command(
         settings, type="key", payload={"name": tmux_name, "key": key}
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+@router.post(
+    "/{session_id}/resize", response_model=SessionCreateAccepted, status_code=202
+)
+async def resize_session(
+    request: Request, session_id: str, body: SessionResize
+) -> SessionCreateAccepted:
+    """Redimensiona o pane do tmux p/ caber na área do cliente (reflow do agente)."""
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="resize",
+        payload={"name": tmux_name, "cols": body.cols, "rows": body.rows},
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
