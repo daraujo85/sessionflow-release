@@ -68,6 +68,7 @@ async def emit_event(
     exchange_name: str = rabbit.EXCHANGE_NAME,
     routing_key: str = rabbit.EVENTS_QUEUE,
     collection: str = EVENTS_COLLECTION,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persiste um evento no Mongo e (se houver ``channel``) o publica no Rabbit.
 
@@ -107,6 +108,11 @@ async def emit_event(
         "at": at,
         "seq": seq,
     }
+    # Campos extras opcionais (ex.: ``jarvis`` p/ o cliente decidir se toca o
+    # chime). Não sobrescreve os obrigatórios.
+    if extra:
+        for k, v in extra.items():
+            doc.setdefault(k, v)
 
     await coll.insert_one(doc)
 

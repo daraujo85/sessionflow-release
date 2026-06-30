@@ -82,6 +82,12 @@ export class EventCuesService {
         }
         this.seen.add(id);
       }
+      // Sessão com o alto-falante OFF (jarvis=false no evento) não toca chime —
+      // alinha com o botão de alto-falante por sessão. (undefined = não informado
+      // → mantém o comportamento padrão de tocar.)
+      if (frame.jarvis === false) {
+        return;
+      }
       const cue = classify(frame);
       if (!cue) {
         return;

@@ -79,6 +79,8 @@ export interface EventItem {
   title: string;
   desc: string;
   at: string;
+  /** Alto-falante da sessão ligado? Quando `false`, o cliente não toca o chime. */
+  jarvis?: boolean;
 }
 
 /** A notification has the same shape as an event item. */

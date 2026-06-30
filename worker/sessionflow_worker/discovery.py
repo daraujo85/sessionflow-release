@@ -364,20 +364,23 @@ class Discovery:
             if prev and prev[0] == attention and (time.monotonic() - prev[1]) < _NOTIFY_COOLDOWN_S:
                 return
             self._last_notified[name] = (attention, time.monotonic())
+        # Alto-falante da sessão (JARVIS global OU por-sessão): vai no evento p/
+        # o cliente NÃO tocar o chime quando o usuário mutou a sessão.
+        jv = await jarvis.is_enabled(self._db, name)
         title = desc = None
         if attention == "waiting":
             title = f"{name} aguarda você"
             desc = "A sessão está esperando sua resposta ou uma escolha."
             await self._emit(
                 type="attention", kind="attention",
-                session_id=name, title=title, desc=desc,
+                session_id=name, title=title, desc=desc, jarvis=jv,
             )
         elif attention == "idle":
             title = f"{name} concluiu"
             desc = "O agente terminou o bloco e está ocioso."
             await self._emit(
                 type="attention", kind="success",
-                session_id=name, title=title, desc=desc,
+                session_id=name, title=title, desc=desc, jarvis=jv,
             )
         # Web Push (app fechado): mesmo título/desc, link p/ a sessão.
         if title and desc:
@@ -463,8 +466,13 @@ class Discovery:
         session_id: str,
         title: str,
         desc: str,
+        jarvis: bool | None = None,
     ) -> None:
-        """Emite um evento (Mongo + Rabbit se houver channel). Best-effort."""
+        """Emite um evento (Mongo + Rabbit se houver channel). Best-effort.
+
+        ``jarvis`` (quando informado) viaja no evento p/ o cliente decidir se
+        toca o chime de notificação — sessão com o alto-falante OFF não soa.
+        """
         await emit_event(
             self._db,
             type=type,
@@ -474,6 +482,7 @@ class Discovery:
             desc=desc,
             channel=self._channel,
             collection=self._events_collection,
+            extra=None if jarvis is None else {"jarvis": jarvis},
         )
 
     # -- loop -------------------------------------------------------------
