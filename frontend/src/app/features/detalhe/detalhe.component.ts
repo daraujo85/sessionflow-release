@@ -466,6 +466,14 @@ import { ansiToHtml } from '../../shared/ansi-html';
           }
         </button>
 
+        <!-- Tamanho da fonte do terminal: A− / A+ (persistido por aparelho). -->
+        <div class="term-scroll">
+          <button type="button" class="term-scroll-btn term-font-btn" (click)="bumpFont(-1)"
+                  aria-label="Diminuir fonte" title="Diminuir fonte do terminal">A−</button>
+          <button type="button" class="term-scroll-btn term-font-btn" (click)="bumpFont(1)"
+                  aria-label="Aumentar fonte" title="Aumentar fonte do terminal">A+</button>
+        </div>
+
         <!-- Rolagem do scrollback: ▲ sobe (entra no histórico se estiver ao
              vivo, pois lá tem o histórico completo), ▼ desce. -->
         <div class="term-scroll">
@@ -487,7 +495,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
       </div>
 
       <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
-      <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()">
+      <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()"
+           [style.fontSize.px]="termFont()">
         @if (historyMode()) {
           <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
         } @else if (screen().length === 0) {
@@ -1306,6 +1315,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
         background: #1b2426;
         color: #e7eae9;
       }
+      .term-font-btn {
+        width: 32px;
+        font-size: 12px;
+        font-weight: 700;
+        font-family: inherit;
+      }
       .term-toggle {
         display: inline-flex;
         align-items: center;
@@ -1896,6 +1911,8 @@ export class DetalheComponent implements AfterViewChecked {
    */
   protected readonly actionHint = signal<string | null>(null);
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Tamanho da fonte do terminal (px), ajustável por A−/A+ e persistido. */
+  protected readonly termFont = signal<number>(readTermFont());
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -1929,7 +1946,9 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Espelho com cores: ANSI (SGR) → HTML seguro, confiável para [innerHTML]. */
   protected readonly screenHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.screen())),
+    this.sanitizer.bypassSecurityTrustHtml(
+      ansiToHtml(trimBlankEdges(this.screen())),
+    ),
   );
 
   /**
@@ -1941,7 +1960,9 @@ export class DetalheComponent implements AfterViewChecked {
   /** Texto do scrollback congelado (fonte do render no modo histórico). */
   protected readonly historyText = signal<string>('');
   protected readonly historyHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.historyText())),
+    this.sanitizer.bypassSecurityTrustHtml(
+      ansiToHtml(trimBlankEdges(this.historyText())),
+    ),
   );
   /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
@@ -2852,6 +2873,17 @@ export class DetalheComponent implements AfterViewChecked {
    * ex.: Claude Code, guardam o scrollback dentro de si, não no tmux; por isso
    * não dá pra rolar via tmux nem via o modo "Histórico".)
    */
+  /** Aumenta/diminui a fonte do terminal (clamp 9–22px) e persiste no aparelho. */
+  protected bumpFont(delta: number): void {
+    const next = Math.min(22, Math.max(9, Math.round((this.termFont() + delta) * 2) / 2));
+    this.termFont.set(next);
+    try {
+      localStorage.setItem('sf.term.font', String(next));
+    } catch {
+      /* storage indisponível — silencioso */
+    }
+  }
+
   protected scrollTerm(dir: 'up' | 'down'): void {
     const id = this.id();
     if (!id) {
@@ -2892,5 +2924,40 @@ export class DetalheComponent implements AfterViewChecked {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
+  }
+}
+
+/**
+ * Remove linhas EM BRANCO do topo e do fim do espelho — o capture-pane vem com
+ * linhas vazias preenchendo a altura do pane (o agente desenha o conteúdo só
+ * numa parte), o que deixava um vazio grande no terminal. Considera "branca" a
+ * linha vazia depois de tirar os códigos ANSI. As linhas internas são mantidas.
+ */
+function trimBlankEdges(text: string): string {
+  if (!text) {
+    return text;
+  }
+  const lines = text.split('\n');
+  // eslint-disable-next-line no-control-regex
+  const ansi = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  const isBlank = (l: string): boolean => l.replace(ansi, '').trim() === '';
+  let start = 0;
+  let end = lines.length;
+  while (start < end && isBlank(lines[start])) {
+    start++;
+  }
+  while (end > start && isBlank(lines[end - 1])) {
+    end--;
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+/** Lê a fonte do terminal salva (px), com fallback 12.5 e clamp 9–22. */
+function readTermFont(): number {
+  try {
+    const v = Number(localStorage.getItem('sf.term.font'));
+    return v >= 9 && v <= 22 ? v : 12.5;
+  } catch {
+    return 12.5;
   }
 }
