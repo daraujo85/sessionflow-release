@@ -508,6 +508,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
         }
 
+        <!-- Barra de scroll FAKE: feedback visual ao rolar (o espelho ao vivo
+             não tem overflow real). Some sozinha quando para. -->
+        <div class="term-scrollbar" [class.show]="termScrollShow()" aria-hidden="true">
+          <div class="term-scrollbar-thumb" [style.top.%]="termScrollPos() * 74"></div>
+        </div>
+
         <!-- Pill "↓ ao vivo": aparece no modo ao vivo quando o usuário rolou
              p/ cima; toca → snap pro fim e retoma o stick. -->
         @if (!historyMode() && showLivePill()) {
@@ -1357,6 +1363,11 @@ import { ansiToHtml } from '../../shared/ansi-html';
         padding: 14px 16px;
         font-size: 12.5px;
         line-height: 1.7;
+        /* Esconde a scrollbar nativa — usamos a fake (.term-scrollbar). */
+        scrollbar-width: none;
+      }
+      .term::-webkit-scrollbar {
+        display: none;
       }
       .live-pill {
         position: sticky;
@@ -1384,6 +1395,30 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .term-msg {
         color: #6b7280;
         font-size: 12px;
+      }
+      /* Barra de scroll fake (overlay à direita do terminal). */
+      .term-scrollbar {
+        position: absolute;
+        top: 6px;
+        bottom: 6px;
+        right: 3px;
+        width: 4px;
+        z-index: 4;
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+      }
+      .term-scrollbar.show {
+        opacity: 1;
+      }
+      .term-scrollbar-thumb {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 26%;
+        border-radius: 4px;
+        background: rgba(160, 170, 185, 0.45);
+        transition: top 0.12s ease;
       }
       .term-screen {
         margin: 0;
@@ -1920,6 +1955,11 @@ export class DetalheComponent implements AfterViewChecked {
   private lastWheelAt = 0;
   /** Y inicial do toque no terminal (p/ medir arrasto no limite — tablet). */
   private touchStartY = 0;
+  /** Barra de scroll FAKE: posição (0=topo, 1=fim) e visibilidade transitória.
+   * Dá feedback visual ao rolar (o espelho ao vivo não tem overflow real). */
+  protected readonly termScrollPos = signal<number>(1);
+  protected readonly termScrollShow = signal<boolean>(false);
+  private scrollbarTimer: ReturnType<typeof setTimeout> | null = null;
   /** Últimas dimensões (cols×linhas) enviadas ao tmux — evita reenvio igual. */
   private lastCols = 0;
   private lastRows = 0;
@@ -2089,6 +2129,9 @@ export class DetalheComponent implements AfterViewChecked {
       }
       if (this.resizeTimer) {
         clearTimeout(this.resizeTimer);
+      }
+      if (this.scrollbarTimer) {
+        clearTimeout(this.scrollbarTimer);
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
@@ -3026,7 +3069,23 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     this.lastWheelAt = now;
+    // Barra fake: o espelho ao vivo não tem overflow real, então "empurra" o
+    // thumb na direção pra dar feedback de que está rolando.
+    const step = 0.12;
+    this.termScrollPos.set(
+      Math.min(1, Math.max(0, this.termScrollPos() + (dir === 'up' ? -step : step))),
+    );
+    this.flashScrollbar();
     this.scrollTerm(dir);
+  }
+
+  /** Mostra a barra de scroll e agenda o auto-ocultar (estilo overlay). */
+  private flashScrollbar(): void {
+    this.termScrollShow.set(true);
+    if (this.scrollbarTimer) {
+      clearTimeout(this.scrollbarTimer);
+    }
+    this.scrollbarTimer = setTimeout(() => this.termScrollShow.set(false), 1400);
   }
 
   protected scrollTerm(dir: 'up' | 'down'): void {
@@ -3045,10 +3104,17 @@ export class DetalheComponent implements AfterViewChecked {
     this.stickToBottom = true;
     this.scrollToBottom();
     this.showLivePill.set(false);
+    this.termScrollPos.set(1); // barra fake volta pro fim (ao vivo)
   }
 
-  /** Atualiza a pill ↓ ao vivo conforme o usuário rola (só no modo ao vivo). */
+  /** Atualiza a pill ↓ ao vivo + a barra de scroll fake conforme o usuário rola. */
   protected onTermScroll(): void {
+    const el = this.termEl()?.nativeElement;
+    // Quando há overflow REAL, a barra fake reflete a posição real do scroll.
+    if (el && el.scrollHeight - el.clientHeight > 4) {
+      this.termScrollPos.set(el.scrollTop / (el.scrollHeight - el.clientHeight));
+      this.flashScrollbar();
+    }
     if (this.historyMode()) {
       return;
     }
@@ -3069,6 +3135,7 @@ export class DetalheComponent implements AfterViewChecked {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
+    this.termScrollPos.set(1); // no fim = ao vivo
   }
 }
 
