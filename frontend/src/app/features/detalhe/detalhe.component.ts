@@ -496,6 +496,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
       <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
       <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()"
+           (wheel)="onTermWheel($event)"
            [style.fontSize.px]="termFont()">
         @if (historyMode()) {
           <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
@@ -1913,6 +1914,8 @@ export class DetalheComponent implements AfterViewChecked {
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
   /** Tamanho da fonte do terminal (px), ajustável por A−/A+ e persistido. */
   protected readonly termFont = signal<number>(readTermFont());
+  /** Throttle do scroll-pro-agente disparado pela roda do mouse (ms). */
+  private lastWheelAt = 0;
   /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
   protected readonly pendingFile = signal<File | null>(null);
   /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
@@ -2882,6 +2885,35 @@ export class DetalheComponent implements AfterViewChecked {
     } catch {
       /* storage indisponível — silencioso */
     }
+  }
+
+  /**
+   * Scroll do mouse/touchpad SOBRE o terminal: enquanto o container pode rolar
+   * localmente naquela direção, deixa a rolagem nativa. Ao bater no LIMITE
+   * (topo/fim), manda o scroll pro AGENTE (igual aos botões ▲▼) — dá a sensação
+   * de scroll infinito, como num terminal de verdade. Throttle p/ não floodar.
+   */
+  protected onTermWheel(ev: WheelEvent): void {
+    if (this.historyMode()) {
+      return; // no histórico congelado, rolagem nativa basta
+    }
+    const el = this.termEl()?.nativeElement;
+    if (!el || Math.abs(ev.deltaY) < 1) {
+      return;
+    }
+    const up = ev.deltaY < 0;
+    const canScrollUp = el.scrollTop > 0;
+    const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    if ((up && canScrollUp) || (!up && canScrollDown)) {
+      return; // ainda dá pra rolar dentro do container → nativo
+    }
+    // No limite → traz mais conteúdo do agente (throttle ~180ms).
+    const now = Date.now();
+    if (now - this.lastWheelAt < 180) {
+      return;
+    }
+    this.lastWheelAt = now;
+    this.scrollTerm(up ? 'up' : 'down');
   }
 
   protected scrollTerm(dir: 'up' | 'down'): void {
