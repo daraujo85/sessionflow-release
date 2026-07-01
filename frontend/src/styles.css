@@ -110,6 +110,9 @@
 html,
 body {
   height: 100%;
+  /* PWA: impede o "puxar pra baixo = recarregar" (pull-to-refresh) e o
+     overscroll/bounce — comporta como app instalado. */
+  overscroll-behavior: none;
 }
 
 body {
@@ -123,6 +126,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* Trava o scroll da página em si (o conteúdo rola nos containers internos);
+     evita o gesto de refresh pegar em "qualquer lugar da página". */
+  overscroll-behavior: none;
 }
 
 h1, h2, h3, h4, h5, h6 {

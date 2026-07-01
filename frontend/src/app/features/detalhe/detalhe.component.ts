@@ -791,6 +791,33 @@ import { ansiToHtml } from '../../shared/ansi-html';
         flex-wrap: wrap;
         margin-left: auto;
       }
+      /* Mobile: a linha do status ocupa a largura toda (status à esquerda,
+         botões à direita, aproveitando o espaço vazio). Status trunca se longo
+         e os botões encolhem um tico p/ caberem numa linha só. */
+      @media (max-width: 700px) {
+        .hdr-controls {
+          flex-basis: 100%;
+          margin-left: 0;
+          flex-wrap: nowrap;
+        }
+        .status-pill {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .status-actions {
+          margin-left: auto;
+          gap: 6px;
+        }
+        .act {
+          padding: 6px 8px;
+        }
+        /* CC (tipo do agente) escondido no celular p/ status + botões caberem
+           numa linha só — o agente já aparece no avatar da lista de sessões. */
+        .hdr-controls .agent-badge {
+          display: none;
+        }
+      }
       .back {
         flex: none;
         display: flex;
