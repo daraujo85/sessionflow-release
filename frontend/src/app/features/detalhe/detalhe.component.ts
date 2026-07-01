@@ -449,8 +449,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 </button>
               }
             </div>
-            <ul class="tasks-list">
-              @for (t of filteredTasks(); track t.id) {
+            <ul class="tasks-list" (scroll)="onTasksScroll($event)">
+              @for (t of visibleTasks(); track t.id) {
                 <li class="tasks-item">
                   <span class="tasks-dot" [style.background]="taskColor(t.state)"></span>
                   <span class="tasks-item-title">{{ t.title }}</span>
@@ -458,6 +458,13 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 </li>
               } @empty {
                 <li class="tasks-empty">Nenhuma tarefa nesse status.</li>
+              }
+              @if (remainingTasks() > 0) {
+                <li class="tasks-more">
+                  <button type="button" class="tasks-more-btn" (click)="showMoreTasks()">
+                    Ver mais {{ remainingTasks() }}
+                  </button>
+                </li>
               }
             </ul>
           }
@@ -1375,6 +1382,25 @@ import { ansiToHtml } from '../../shared/ansi-html';
         white-space: nowrap;
         margin-top: 1px;
       }
+      .tasks-more {
+        list-style: none;
+        padding: 8px 0 2px;
+        text-align: center;
+      }
+      .tasks-more-btn {
+        background: transparent;
+        border: 1px solid #263038;
+        color: #9fb0ad;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .tasks-more-btn:hover {
+        color: #e7eae9;
+        border-color: #37464f;
+      }
       /* Barra do terminal: toggle ao vivo/histórico */
       .term-bar {
         flex: none;
@@ -1986,6 +2012,33 @@ export class DetalheComponent implements AfterViewChecked {
       ? this.tasks()
       : this.tasks().filter((t) => t.state === st);
   });
+  /** Quantas tarefas mostrar (infinite scroll): começa com um punhado e cresce. */
+  private static readonly TASKS_PAGE = 6;
+  protected readonly taskLimit = signal<number>(DetalheComponent.TASKS_PAGE);
+  /** Fatia visível da lista filtrada (o resto entra ao rolar / "Ver mais"). */
+  protected readonly visibleTasks = computed(() =>
+    this.filteredTasks().slice(0, this.taskLimit()),
+  );
+  /** Quantas ainda faltam além das visíveis (0 = tudo à mostra). */
+  protected readonly remainingTasks = computed(() =>
+    Math.max(0, this.filteredTasks().length - this.visibleTasks().length),
+  );
+
+  /** Carrega o próximo "lote" de tarefas (botão "Ver mais"). */
+  protected showMoreTasks(): void {
+    this.taskLimit.update((n) => n + DetalheComponent.TASKS_PAGE);
+  }
+
+  /** Ao rolar a lista perto do fim, carrega mais (infinite scroll). */
+  protected onTasksScroll(ev: Event): void {
+    if (this.remainingTasks() === 0) {
+      return;
+    }
+    const el = ev.target as HTMLElement;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 48) {
+      this.showMoreTasks();
+    }
+  }
   /** Limites recolhidos por padrão (só %); clique expande barra + reset. */
   protected readonly limitsExpanded = signal<boolean>(false);
   protected readonly tasksDoneCount = computed(
@@ -2147,6 +2200,13 @@ export class DetalheComponent implements AfterViewChecked {
     }
 
     this.sse.connect(); // idempotente — garante o canal p/ o push do espelho
+
+    // Ao trocar o filtro de tarefas, recomeça a paginação do topo (senão o
+    // "Ver mais 3" de um filtro vaza pro outro, mostrando itens demais/de menos).
+    effect(() => {
+      this.taskStatusFilter();
+      this.taskLimit.set(DetalheComponent.TASKS_PAGE);
+    });
 
     // id REATIVO: ao navegar /sessao/A -> /sessao/B o Angular REUSA este mesmo
     // componente, então ler só o snapshot deixa o id PRESO na sessão anterior —
@@ -3183,7 +3243,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Manda o scroll pro agente (▲/▼) com throttle — compartilhado por wheel e toque. */
   private agentScroll(dir: 'up' | 'down'): void {
     const now = Date.now();
-    if (now - this.lastWheelAt < 180) {
+    if (now - this.lastWheelAt < 80) {
       return;
     }
     this.lastWheelAt = now;
@@ -3244,8 +3304,31 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.api
       .sendKey(id, dir === 'up' ? 'scroll-up' : 'scroll-down')
+      // O agente NÃO redesenha na hora que o comando chega — leva algumas dezenas
+      // de ms. Um único refresh imediato pega a tela ANTIGA, e o próximo update só
+      // viria no push do worker (a cada ~1s), dando a sensação de "travado". Por
+      // isso disparamos um BURST curto de refreshes pra capturar o redraw cedo.
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: () => this.refreshScreen(), error: () => {} });
+      .subscribe({ next: () => this.refreshBurst(), error: () => {} });
+  }
+
+  /** Timers do burst de refresh pós-scroll — cancelados a cada novo scroll. */
+  private refreshBurstTimers: ReturnType<typeof setTimeout>[] = [];
+
+  /**
+   * Dispara vários {@link refreshScreen} escalonados após um scroll no agente,
+   * pra pegar o redraw assim que ele acontece (sem esperar o push de ~1s). Cancela
+   * o burst anterior — se o usuário rola em sequência, só o último importa.
+   */
+  private refreshBurst(): void {
+    for (const t of this.refreshBurstTimers) {
+      clearTimeout(t);
+    }
+    this.refreshBurstTimers = [];
+    this.refreshScreen(); // já: pode pegar a tela nova se o agente foi rápido
+    for (const delay of [90, 220, 400]) {
+      this.refreshBurstTimers.push(setTimeout(() => this.refreshScreen(), delay));
+    }
   }
 
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
