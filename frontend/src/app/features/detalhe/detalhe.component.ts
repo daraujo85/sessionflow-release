@@ -31,7 +31,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [FormsModule, AudioRecorderComponent],
   template: `
-    <section class="overlay">
+    <section class="overlay" [class.focus]="focusMode()">
       <!-- Header -->
       <header class="hdr">
         <div class="hdr-top">
@@ -129,6 +129,27 @@ import { ansiToHtml } from '../../shared/ansi-html';
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M11 5 6 9H2v6h4l5 4V5z" />
                   <path d="M22 9l-6 6M16 9l6 6" />
+                </svg>
+              }
+            </button>
+            <button
+              type="button"
+              class="act act--ghost"
+              [class.on]="focusMode()"
+              (click)="toggleFocus()"
+              [attr.aria-pressed]="focusMode()"
+              aria-label="Modo foco: recolhe Modelo e Tarefas p/ o terminal ocupar mais espaço"
+              [title]="focusMode() ? 'Mostrar Modelo e Tarefas' : 'Modo foco (mais espaço pro terminal)'"
+            >
+              @if (focusMode()) {
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9 3H5a2 2 0 0 0-2 2v4M15 3h4a2 2 0 0 1 2 2v4M9 21H5a2 2 0 0 1-2-2v-4M15 21h4a2 2 0 0 0 2-2v-4" />
+                </svg>
+              } @else {
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4" />
                 </svg>
               }
             </button>
@@ -992,6 +1013,11 @@ import { ansiToHtml } from '../../shared/ansi-html';
         border-bottom: 1px solid #20262a;
         background: #121614;
       }
+      /* Modo foco: esconde Modelo e Tarefas → terminal ocupa o espaço. */
+      .overlay.focus .metrics,
+      .overlay.focus .tasks {
+        display: none;
+      }
       .metrics-top {
         display: flex;
         align-items: center;
@@ -1042,6 +1068,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .metrics-ctx {
         text-align: right;
         flex: none;
+        margin-left: auto; /* joga o "Contexto usado" pra direita (junto do chevron) */
+        margin-right: 6px;
       }
       .metrics-ctx-pct {
         font-size: 19px;
@@ -1998,6 +2026,21 @@ export class DetalheComponent implements AfterViewChecked {
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
   /** Tamanho da fonte do terminal (px), ajustável por A−/A+ e persistido. */
   protected readonly termFont = signal<number>(readTermFont());
+  /** Modo foco: recolhe Modelo + Tarefas p/ o terminal ocupar mais espaço. */
+  protected readonly focusMode = signal<boolean>(readFocusMode());
+
+  /** Liga/desliga o modo foco (persistido) e reajusta o tamanho do pane. */
+  protected toggleFocus(): void {
+    const next = !this.focusMode();
+    this.focusMode.set(next);
+    try {
+      localStorage.setItem('sf.focus', next ? '1' : '0');
+    } catch {
+      /* storage indisponível — silencioso */
+    }
+    // Mudou a altura do terminal → reajusta linhas/colunas do pane.
+    this.scheduleTermResize();
+  }
   /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
   private lastWheelAt = 0;
   /** Y inicial do toque no terminal (p/ medir arrasto no limite — tablet). */
@@ -2778,12 +2821,24 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * Otimista: você respondeu → se a sessão AGUARDAVA por você, vira "rodando"
-   * na hora no detalhe (o worker confirma no Mongo; isto só tira o atraso).
+   * Otimista: você enviou algo → vira "rodando" no ato. Cobre tanto a sessão
+   * que AGUARDAVA você quanto a PARADA (o worker auto-retoma e injeta). O worker
+   * confirma no Mongo; isto só tira o atraso visual.
    */
   private markWorkingLocal(): void {
     const s = this.session();
-    if (s && (s.status === 'waiting_input' || s.status === 'waiting_external')) {
+    if (!s || s.status === 'running') {
+      return;
+    }
+    const revivable = [
+      'waiting_input',
+      'waiting_external',
+      'stopped',
+      'completed',
+      'error',
+      'detached',
+    ];
+    if (revivable.includes(s.status)) {
       this.session.set({ ...s, status: 'running' });
     }
   }
@@ -3269,6 +3324,15 @@ function trimBlankEdges(text: string): string {
     end--;
   }
   return lines.slice(start, end).join('\n');
+}
+
+/** Lê a preferência de modo foco (default desligado). */
+function readFocusMode(): boolean {
+  try {
+    return localStorage.getItem('sf.focus') === '1';
+  } catch {
+    return false;
+  }
 }
 
 /** Lê a fonte do terminal salva (px), com fallback 12.5 e clamp 9–22. */

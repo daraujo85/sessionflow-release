@@ -132,6 +132,12 @@
   line-height: 1;
 }
 
+/* Recolher menu: só faz sentido no desktop (sidebar). No mobile (bottom-nav)
+   fica escondido; o desktop reexibe na media query. */
+.sf-nav-collapse {
+  display: none;
+}
+
 /* ---- Floating action button ---- */
 .sf-fab {
   position: fixed;
@@ -297,6 +303,48 @@
     padding: var(--space-5) var(--space-3);
     border-top: none;
     border-right: 1px solid var(--border-default);
+    transition: width 0.18s ease, max-width 0.18s ease;
+  }
+  /* Botão recolher/expandir: só no desktop (aqui a nav é sidebar). */
+  .sf-nav-collapse {
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin-bottom: var(--space-2);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .sf-nav-collapse:hover {
+    color: var(--text-strong);
+  }
+
+  /* ----- Menu recolhido (só ícones) ----- */
+  .sf-shell--nav-collapsed:not(.sf-shell--login) {
+    padding-left: 64px;
+  }
+  .sf-shell--nav-collapsed .sf-nav {
+    width: 64px;
+    max-width: 64px;
+    padding: var(--space-5) var(--space-2);
+  }
+  .sf-shell--nav-collapsed .sf-nav::before {
+    display: none; /* esconde o "SessionFlow" */
+  }
+  .sf-shell--nav-collapsed .sf-nav-label {
+    display: none;
+  }
+  .sf-shell--nav-collapsed .sf-nav-item {
+    justify-content: center;
+    padding: 11px 0;
+  }
+  .sf-shell--nav-collapsed .sf-nav-collapse {
+    align-self: center;
   }
   .sf-nav::before {
     content: "SessionFlow";

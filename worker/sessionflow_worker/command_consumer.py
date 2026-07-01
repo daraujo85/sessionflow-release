@@ -43,6 +43,7 @@ Decisões de design
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -591,9 +592,13 @@ class CommandConsumer:
             )
             return {"name": name, "note": "resumed (already alive)"}
 
-        # Sessão MORTA (stopped): o tmux dela não existe mais. "Retomar" então
-        # RECRIA a sessão e relança o agente, reusando os parâmetros salvos no
-        # doc (work_dir / agent / model / effort) — é o que o usuário espera.
+        # Sessão MORTA (stopped): recria + relança o agente.
+        return await self._recreate_and_relaunch(name)
+
+    async def _recreate_and_relaunch(self, name: str) -> dict[str, Any]:
+        """Recria a sessão tmux morta e RELANÇA o agente, reusando os parâmetros
+        salvos no doc (work_dir / agent / model / effort). É o que "Retomar" faz.
+        """
         doc = await self._sessions.find_one({"tmux_name": name})
         if not doc:
             raise CommandError(f"não é possível retomar: sessão {name!r} desconhecida")
@@ -637,6 +642,33 @@ class CommandConsumer:
         )
         return {"name": name, "note": "recreated", "launch_cmd": launch_cmd}
 
+    async def _await_agent_ready(self, name: str, timeout: float = 20.0) -> None:
+        """Espera o agente (ex.: Claude Code) terminar de subir após um relaunch.
+
+        Poll de ``pane_current_command``: enquanto for um SHELL (zsh/bash/…), o
+        agente ainda não iniciou. Quando vira outro processo (ex.: ``node``),
+        dá um respiro extra p/ o TUI renderizar a caixa de input antes de a
+        gente injetar texto. Best-effort (não levanta; segue mesmo se estourar).
+        """
+        shells = {"zsh", "-zsh", "bash", "-bash", "sh", "-sh", "fish", "login", "tmux"}
+        socket_name = getattr(self._server, "socket_name", None)
+        base = ["tmux"]
+        if socket_name and socket_name != "default":
+            base += ["-L", socket_name]
+        cmd = base + ["display-message", "-p", "-t", name, "#{pane_current_command}"]
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                out = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=5,
+                ).stdout.strip().lower()
+            except Exception:  # noqa: BLE001
+                out = ""
+            if out and out not in shells:
+                await asyncio.sleep(2.5)  # respiro p/ o TUI ficar pronto
+                return
+            await asyncio.sleep(0.5)
+
     async def _handle_input(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Injeta texto remoto na sessão via send-keys (DASH-13).
 
@@ -655,6 +687,14 @@ class CommandConsumer:
         # pelo modo "ao vivo" (encaminha o que está sendo digitado p/ o CLI
         # mostrar o autocomplete, sem submeter).
         enter = payload.get("enter", True)
+        # Sessão PARADA? Mandar msg deve INICIAR e entregar a mensagem. O relaunch
+        # + espera do agente ficar pronto leva alguns segundos, então roda em
+        # BACKGROUND (não bloqueia o consumer) e injeta quando pronto. (Só p/
+        # submissão real; digitação ao vivo não ressuscita nada.)
+        if enter and not self._runtime.has_session(name):
+            await self._mark_working(name)  # UI já vira "rodando"
+            asyncio.create_task(self._resume_and_send(name, text))
+            return {"name": name, "note": "resuming"}
         self._send_keys(name, text, enter=bool(enter))
         # Submeter (enter) é INTERAÇÃO do usuário → marca atividade na hora (a
         # tela também mudaria em ~6s, mas isso deixa o "última atividade" imediato).
@@ -665,6 +705,21 @@ class CommandConsumer:
             )
             await self._mark_working(name)  # respondeu → agente trabalha
         return {"name": name}
+
+    async def _resume_and_send(self, name: str, text: str) -> None:
+        """Retoma a sessão parada, espera o agente subir e injeta a ``text``.
+
+        Roda em background (não bloqueia o consumer). Best-effort: nunca levanta.
+        """
+        try:
+            await self._recreate_and_relaunch(name)
+            await self._await_agent_ready(name)
+            self._send_keys(name, text, enter=True)
+            await self._sessions.update_one(
+                {"tmux_name": name}, {"$set": {"last_activity_at": _now()}}
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.warning("resume_and_send falhou para %r", name, exc_info=True)
 
     async def _handle_resize(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Redimensiona a janela do tmux (colunas×linhas) p/ caber na área do

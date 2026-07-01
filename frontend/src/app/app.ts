@@ -45,6 +45,19 @@ export class App {
   protected readonly title = signal('SessionFlow');
   /** True enquanto uma nova versão está sendo ativada (mostra o aviso). */
   protected readonly updating = signal(false);
+  /** Menu (sidebar no desktop) recolhido — só ícones. Persistido no aparelho. */
+  protected readonly navCollapsed = signal(readNavCollapsed());
+
+  /** Recolhe/expande o menu e persiste a preferência. */
+  protected toggleNav(): void {
+    const next = !this.navCollapsed();
+    this.navCollapsed.set(next);
+    try {
+      localStorage.setItem('sf.nav.collapsed', next ? '1' : '0');
+    } catch {
+      /* storage indisponível — silencioso */
+    }
+  }
   private readonly router = inject(Router);
   private readonly swUpdate = inject(SwUpdate, { optional: true });
   private readonly auth = inject(AuthService);
@@ -161,4 +174,13 @@ export class App {
   protected readonly showFab = computed(() =>
     !this.isOverlay() && ['inicio', 'sessoes'].includes(this.activeSegment()),
   );
+}
+
+/** Lê a preferência de menu recolhido (default expandido). */
+function readNavCollapsed(): boolean {
+  try {
+    return localStorage.getItem('sf.nav.collapsed') === '1';
+  } catch {
+    return false;
+  }
 }

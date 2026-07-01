@@ -5,7 +5,8 @@
   </div>
 }
 
-<div class="sf-shell" [class.sf-shell--overlay]="isOverlay()" [class.sf-shell--login]="isLogin()">
+<div class="sf-shell" [class.sf-shell--overlay]="isOverlay()" [class.sf-shell--login]="isLogin()"
+     [class.sf-shell--nav-collapsed]="navCollapsed()">
   <!-- Sem header global: cada tela renderiza o próprio topo (logo/título/sino),
        como no mockup. Evita sino/marca duplicados. -->
   <main class="sf-content" [@pageFade]="routeKey()">
@@ -23,6 +24,20 @@
 
   @if (!isOverlay()) {
     <nav class="sf-nav" aria-label="Navegação principal">
+      <!-- Recolher/expandir o menu (só aparece no desktop, onde a nav é sidebar). -->
+      <button
+        type="button"
+        class="sf-nav-collapse"
+        (click)="toggleNav()"
+        [attr.aria-pressed]="navCollapsed()"
+        [attr.aria-label]="navCollapsed() ? 'Expandir menu' : 'Recolher menu'"
+        [title]="navCollapsed() ? 'Expandir menu' : 'Recolher menu'"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path [attr.d]="navCollapsed() ? 'm9 18 6-6-6-6' : 'm15 18-6-6 6-6'" />
+        </svg>
+      </button>
       @for (item of navItems; track item.path) {
         <a
           class="sf-nav-item"
