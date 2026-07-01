@@ -73,15 +73,10 @@ import { ansiToHtml } from '../../shared/ansi-html';
             }
           </div>
 
-          <span
-            class="agent-badge"
-            [style.color]="agent().color"
-            [style.background]="agent().color + '22'"
-            >{{ agent().short }}</span
-          >
-        </div>
-
-        <div class="status-row">
+          <!-- Compacto: status + botões + badge sobem pra linha do topo (some a
+               linha de status separada → mais espaço). Em tela estreita quebra
+               pra baixo (flex-wrap). -->
+          <div class="hdr-controls">
           <span
             class="status-pill"
             [style.color]="statusMeta().color"
@@ -207,6 +202,13 @@ import { ansiToHtml } from '../../shared/ansi-html';
               </svg>
             </button>
           </span>
+          <span
+            class="agent-badge"
+            [style.color]="agent().color"
+            [style.background]="agent().color + '22'"
+            >{{ agent().short }}</span
+          >
+          </div>
         </div>
       </header>
 
@@ -777,6 +779,17 @@ import { ansiToHtml } from '../../shared/ansi-html';
         display: flex;
         align-items: center;
         gap: 10px;
+        flex-wrap: wrap;
+        row-gap: 10px;
+      }
+      /* Grupo status + botões + badge: à direita na mesma linha (tela larga);
+         quebra pra baixo como bloco em tela estreita. */
+      .hdr-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-left: auto;
       }
       .back {
         flex: none;
@@ -792,7 +805,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         padding: 0;
       }
       .hdr-info {
-        flex: 1;
+        flex: 1 1 200px;
         min-width: 0;
       }
       .hdr-title {
