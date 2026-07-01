@@ -326,6 +326,20 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         }
       }
 
+      <!-- Recarregar / limpar cache (pull-to-refresh está desabilitado no app) -->
+      <button type="button" class="sf-install" (click)="reloadApp()" [disabled]="reloading()">
+        <span class="sf-install-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" />
+          </svg>
+        </span>
+        <span class="sf-install-body">
+          <span class="sf-install-title">{{ reloading() ? 'Atualizando…' : 'Recarregar app' }}</span>
+          <span class="sf-install-sub">Limpa o cache e baixa a versão mais nova</span>
+        </span>
+      </button>
+
       <!-- Logout -->
       <div class="sf-logout" (click)="logout()">Sair</div>
     </section>
@@ -1096,6 +1110,35 @@ export class PerfilComponent implements OnInit, OnDestroy {
       body: 'Notificação de teste ✅ — está funcionando!',
       tag: 'sf-test',
     });
+  }
+
+  /** Em progresso o "recarregar app" (evita clique duplo). */
+  protected readonly reloading = signal(false);
+
+  /**
+   * Limpa o cache do PWA (Service Worker + Cache Storage) e recarrega — força
+   * baixar a versão mais nova. Necessário porque o pull-to-refresh está
+   * desabilitado (comportamento de app instalado).
+   */
+  async reloadApp(): Promise<void> {
+    if (this.reloading()) {
+      return;
+    }
+    this.reloading.set(true);
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch {
+      /* best-effort — recarrega mesmo se limpar falhar */
+    }
+    // `location.reload()` após limpar o SW/caches busca tudo fresco do servidor.
+    location.reload();
   }
 
   /** Encerra a sessão e volta para o login. */
