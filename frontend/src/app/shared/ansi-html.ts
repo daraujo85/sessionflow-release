@@ -175,13 +175,68 @@ function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
-// CSI SGR: ESC [ <params> m
-const SGR_RE = /\x1b\[([0-9;]*)m/g;
+/** Escape p/ valor de atributo (href) — inclui aspas. */
+function escapeAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, '&quot;');
+}
+
+/** Só http/https viram link (a saída do agente é não confiável — sem javascript:). */
+function safeHref(url: string): string | null {
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
+/** Monta um `<a>` clicável a partir de uma URL (crua) e um label (já escapado). */
+function anchor(rawUrl: string, safeLabel: string): string {
+  const href = safeHref(rawUrl);
+  if (!href) {
+    return safeLabel;
+  }
+  return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="term-link">${safeLabel}</a>`;
+}
 
 /**
- * Converte uma string com escapes SGR em HTML seguro (texto escapado +
- * `<span style>` para cor/atributo). Sequências não-SGR já vêm removidas pelo
- * Worker; qualquer ESC residual é escapado como texto.
+ * URL http(s) em texto JÁ ESCAPADO. Como `<`/`>` viraram `&lt;`/`&gt;`, o texto
+ * não tem mais `<`/`>` literais; paramos em espaço, aspas e crase. `&` aparece
+ * como `&amp;` (parte válida da query) — o browser decodifica no clique.
+ */
+const URL_RE = /https?:\/\/[^\s"'`]+/g;
+
+/**
+ * Envolve URLs em `<a>` clicável (abre em nova aba). Recebe e devolve HTML já
+ * escapado — não é reintroduzida marcação insegura: o href reusa a URL escapada
+ * (`&amp;` é a forma correta em atributo) e não há aspas na captura.
+ */
+function linkify(escaped: string): string {
+  return escaped.replace(URL_RE, (match) => {
+    // Tira pontuação/fecha-parênteses finais que quase nunca fazem parte da URL
+    // (ex.: "veja https://x/y." ou "(https://x/y)").
+    const trail = match.match(/(?:&gt;|&lt;|[).,;:!?\]])+$/);
+    let url = match;
+    let tail = '';
+    if (trail) {
+      tail = trail[0];
+      url = match.slice(0, match.length - tail.length);
+    }
+    if (!url) {
+      return match;
+    }
+    return (
+      `<a href="${url}" target="_blank" rel="noopener noreferrer" class="term-link">${url}</a>` +
+      tail
+    );
+  });
+}
+
+// Tokens preservados pelo Worker: SGR (cor) e hyperlink OSC 8. Alternância:
+//   grupo 1 → params SGR;  grupo 2 → URI do OSC 8 (vazia = fecha o link).
+// CSI SGR: ESC [ <params> m   |   OSC 8: ESC ] 8 ; params ; URI ST
+const TOKEN_RE = /\x1b\[([0-9;]*)m|\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+
+/**
+ * Converte uma string com escapes SGR/OSC8 em HTML seguro: texto escapado,
+ * `<span style>` para cor/atributo e `<a>` clicável para URLs (visíveis ou via
+ * hyperlink OSC 8). Sequências não preservadas já vêm removidas pelo Worker;
+ * qualquer ESC residual é escapado como texto.
  */
 export function ansiToHtml(input: string): string {
   if (!input) {
@@ -190,19 +245,29 @@ export function ansiToHtml(input: string): string {
   const st = emptyState();
   let out = '';
   let last = 0;
-  SGR_RE.lastIndex = 0;
+  // URL do hyperlink OSC 8 corrente (null = fora de link). Enquanto ativo, o
+  // texto vira o LABEL do link (não re-linkificamos URLs soltas dentro dele).
+  let link: string | null = null;
+  TOKEN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   const flush = (text: string) => {
     if (!text) return;
     const style = styleFor(st);
-    const safe = escapeHtml(text);
+    const escaped = escapeHtml(text);
+    const safe = link !== null ? anchor(link, escaped) : linkify(escaped);
     out += style ? `<span style="${style}">${safe}</span>` : safe;
   };
-  while ((m = SGR_RE.exec(input)) !== null) {
+  while ((m = TOKEN_RE.exec(input)) !== null) {
     flush(input.slice(last, m.index));
-    const params = m[1] === '' ? [0] : m[1].split(';').map((x) => parseInt(x, 10) || 0);
-    applySgr(params, st);
-    last = SGR_RE.lastIndex;
+    if (m[1] !== undefined) {
+      // SGR (cor/atributo).
+      const params = m[1] === '' ? [0] : m[1].split(';').map((x) => parseInt(x, 10) || 0);
+      applySgr(params, st);
+    } else {
+      // OSC 8: URI vazia fecha o link; caso contrário, abre com essa URL.
+      link = m[2] ? m[2] : null;
+    }
+    last = TOKEN_RE.lastIndex;
   }
   flush(input.slice(last));
   return out;

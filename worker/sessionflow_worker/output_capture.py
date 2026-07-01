@@ -137,18 +137,27 @@ def strip_ansi(text: str) -> str:
     return _C0_CONTROL_RE.sub("", text)
 
 
-# Sequências SGR (cor/atributo): ``ESC [ <params> m``. São as ÚNICAS que
-# queremos PRESERVAR no espelho da tela (para o frontend colorir) — todo o
-# resto de escape/controle continua sendo removido.
+# Sequências SGR (cor/atributo): ``ESC [ <params> m``. Preservadas no espelho
+# da tela (para o frontend colorir) — todo o resto de escape/controle é removido.
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# Hyperlinks OSC 8: ``ESC ] 8 ; params ; URI ST`` (abre) e ``ESC ] 8 ; ; ST``
+# (fecha), com ST = BEL (\x07) ou ``ESC \``. Também PRESERVADOS para o frontend
+# transformar em ``<a>`` clicável (ex.: o "ressalvas-preview" do Claude Code, que
+# de outra forma perderia a URL). ``[^\x1b\x07]*`` cobre ``params;URI``.
+_OSC8_RE = re.compile(r"\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)")
+
+# Combinado: o que queremos MANTER no espelho (cor + hyperlink).
+_KEEP_RE = re.compile(f"{_SGR_RE.pattern}|{_OSC8_RE.pattern}")
 
 
 def clean_screen_keep_color(text: str) -> str:
-    """Como ``strip_ansi``, mas mantém os códigos de cor/atributo (SGR).
+    """Como ``strip_ansi``, mas mantém cor/atributo (SGR) e hyperlinks (OSC 8).
 
     Usado no espelho da tela (``capture-pane -e``) para reproduzir as cores do
-    terminal real. Protege os SGR com sentinelas, aplica a limpeza normal
-    (cursor, OSC, bracketed-paste, C0) e os restaura ao final.
+    terminal real e manter os links clicáveis. Protege SGR/OSC8 com sentinelas,
+    aplica a limpeza normal (cursor, OSC de título, bracketed-paste, C0) e os
+    restaura ao final.
     """
     protected: list[str] = []
     sent_open = chr(0xE000)
@@ -159,7 +168,7 @@ def clean_screen_keep_color(text: str) -> str:
         # Sentinela em área de uso privado do Unicode — sobrevive ao strip_ansi.
         return f"{len(protected) - 1}"
 
-    text = _SGR_RE.sub(_protect, text)
+    text = _KEEP_RE.sub(_protect, text)
     text = strip_ansi(text)
     return re.sub(
         r"(\d+)", lambda m: protected[int(m.group(1))], text

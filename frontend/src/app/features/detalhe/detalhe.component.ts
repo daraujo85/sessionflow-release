@@ -1543,6 +1543,16 @@ import { ansiToHtml } from '../../shared/ansi-html';
         font-size: inherit;
         line-height: inherit;
       }
+      /* URLs clicáveis dentro do espelho do terminal */
+      .term-screen .term-link {
+        color: #60a5fa;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+      .term-screen .term-link:hover {
+        color: #93c5fd;
+      }
 
       /* Input bar */
       .keypad {
