@@ -83,7 +83,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
             [style.background]="statusMeta().dot + '1f'"
           >
             <span class="status-dot" [style.background]="statusMeta().dot"></span>
-            {{ statusMeta().label }}
+            <span class="status-label">{{ statusMeta().label }}</span>
           </span>
 
           <span class="status-actions">
@@ -800,12 +800,20 @@ import { ansiToHtml } from '../../shared/ansi-html';
           margin-left: 0;
           flex-wrap: nowrap;
         }
+        /* Status ENCOLHE (trunca com "…") → os botões nunca são cortados. */
         .status-pill {
+          flex: 0 1 auto;
           min-width: 0;
           overflow: hidden;
+        }
+        .status-label {
+          overflow: hidden;
           text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
         }
         .status-actions {
+          flex: none;
           margin-left: auto;
           gap: 6px;
         }
