@@ -38,6 +38,8 @@ EVENT_TYPES = frozenset(
         # Pede atenção do usuário: aguardando resposta/decisão, ou bloco
         # concluído/ocioso. Frontend trata como notificação (sino + sistema).
         "attention",
+        # Uma TAREFA (marco) da sessão passou pra "done" — vitória: som + destaque.
+        "task_done",
     }
 )
 

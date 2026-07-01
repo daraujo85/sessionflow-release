@@ -47,9 +47,10 @@ from dotenv import load_dotenv
 from libtmux.exc import LibTmuxException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import dir_scanner
+from sessionflow_worker import dir_scanner, jarvis
 from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
+from sessionflow_worker.events import emit_event
 from sessionflow_worker.model_discovery import (
     cache_is_fresh,
     discover_all_data,
@@ -350,7 +351,9 @@ MILESTONES_INTERVAL = 6.0
 
 
 async def milestones_loop(
-    db: AsyncIOMotorDatabase, interval: float = MILESTONES_INTERVAL
+    db: AsyncIOMotorDatabase,
+    channel=None,
+    interval: float = MILESTONES_INTERVAL,
 ) -> None:
     """Sincroniza os MARCOS (``.sessionflow/milestones.json``) das sessões ativas.
 
@@ -378,9 +381,25 @@ async def milestones_loop(
                 sid = s.get("tmux_name") or str(s.get("_id"))
                 wd = s.get("work_dir", "")
                 try:
-                    await sync_session(
+                    newly_done = await sync_session(
                         db, sid, wd, session_name=sid, allow_shared=wd_counts.get(wd, 0) <= 1
                     )
+                    # Tarefa(s) recém-concluída(s) → evento "task_done" (som de
+                    # vitória + destaque no card). Respeita o alto-falante da
+                    # sessão (jarvis) p/ o cliente decidir tocar o som.
+                    if newly_done and channel is not None:
+                        jv = await jarvis.is_enabled(db, sid)
+                        for mdone in newly_done:
+                            await emit_event(
+                                db,
+                                type="task_done",
+                                kind="success",
+                                session_id=sid,
+                                title=f"Tarefa concluída: {mdone['title']}",
+                                desc="O agente marcou uma tarefa como concluída.",
+                                channel=channel,
+                                extra={"jarvis": jv, "task": True},
+                            )
                 except Exception:  # noqa: BLE001 - marco nunca derruba o loop
                     logger.debug("milestones sync falhou p/ %r", sid, exc_info=True)
         except Exception:  # noqa: BLE001
@@ -457,7 +476,7 @@ async def _build_and_run(stop: asyncio.Event) -> None:
         asyncio.create_task(model_discovery_loop(db), name="model_discovery"),
         asyncio.create_task(usage_loop(db), name="usage_loop"),
         asyncio.create_task(heartbeat_loop(db), name="heartbeat"),
-        asyncio.create_task(milestones_loop(db), name="milestones"),
+        asyncio.create_task(milestones_loop(db, channel=channel), name="milestones"),
         asyncio.create_task(consumer_watchdog(), name="consumer_watchdog"),
         asyncio.create_task(_stopper(), name="stopper"),
     ]

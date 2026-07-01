@@ -9,7 +9,7 @@ export type CueMode = 'off' | 'chime' | 'voice';
 const STORAGE_KEY = 'sf.cues.mode';
 
 /** Categoria de cue derivada do evento de ciclo de vida da sessão. */
-type CueKind = 'created' | 'completed' | 'attention' | 'stopped' | 'error';
+type CueKind = 'created' | 'completed' | 'attention' | 'stopped' | 'error' | 'task_done';
 
 /** Frases curtas (PT-BR) faladas no modo "voice", por categoria de cue. */
 const PHRASES: Record<CueKind, string> = {
@@ -18,6 +18,7 @@ const PHRASES: Record<CueKind, string> = {
   attention: 'Aguardando sua resposta',
   stopped: 'Sessão encerrada',
   error: 'Erro na sessão',
+  task_done: 'Tarefa concluída',
 };
 
 /**
@@ -166,6 +167,13 @@ export class EventCuesService {
     const now = ctx.currentTime;
 
     switch (cue) {
+      case 'task_done':
+        // Arpejo de VITÓRIA (C-E-G-C) — tarefa concluída de fato.
+        this.tone(523.25, now, 0.12, 'triangle'); // C5
+        this.tone(659.25, now + 0.1, 0.12, 'triangle'); // E5
+        this.tone(783.99, now + 0.2, 0.12, 'triangle'); // G5
+        this.tone(1046.5, now + 0.3, 0.22, 'triangle'); // C6
+        break;
       case 'completed':
         // 2 notas ASCENDENTES — agradável (concluído).
         this.tone(659.25, now, 0.16, 'sine'); // E5
@@ -243,6 +251,9 @@ function classify(e: EventItem): CueKind | null {
   const type = (e.type || '').toLowerCase();
   const kind = (e.kind || '').toLowerCase();
 
+  if (type === 'task_done') {
+    return 'task_done';
+  }
   if (type === 'completed' || kind === 'success') {
     return 'completed';
   }

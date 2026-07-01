@@ -158,6 +158,7 @@ const FILTERS: readonly FilterChip[] = [
                 class="sf-card"
                 [class.is-dragging]="dragId() === s.id"
                 [class.is-waiting]="s.status === 'waiting_input'"
+                [class.sf-flash]="taskFlash(s)"
                 [style.transform]="'translateX(' + offset(s.id) + 'px)'"
                 (click)="onCardClick(s, $event)"
                 (pointerdown)="onPointerDown(s, $event)"
@@ -531,6 +532,20 @@ const FILTERS: readonly FilterChip[] = [
         background: #1b1710;
         animation: sf-wait-glow 2.1s ease-in-out infinite;
       }
+      /* Tarefa concluída: destaque verde pulsante por alguns segundos. */
+      .sf-card.sf-flash {
+        border-color: #1f7a5c;
+        animation: sf-task-glow 1s ease-in-out 3;
+      }
+      @keyframes sf-task-glow {
+        0%,
+        100% {
+          box-shadow: 0 0 0 1px rgba(0, 228, 180, 0.25);
+        }
+        50% {
+          box-shadow: 0 0 18px 2px rgba(0, 228, 180, 0.55);
+        }
+      }
       @keyframes sf-wait-glow {
         0%,
         100% {
@@ -746,6 +761,11 @@ export class SessoesComponent {
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
   protected isSpeaking(s: Session): boolean {
     return !!s.tmux_name && this.jarvis.speakingSessionId() === s.tmux_name;
+  }
+
+  /** True por alguns segundos após ESTA sessão concluir uma tarefa → destaca. */
+  protected taskFlash(s: Session): boolean {
+    return !!s.tmux_name && this.sse.taskDoneFlash() === s.tmux_name;
   }
   private readonly destroyRef = inject(DestroyRef);
 

@@ -70,6 +70,10 @@ export class SseService {
   readonly outputLines = signal<SseOutputLine[]>([]);
   /** Rolling buffer of notification-kind events. */
   readonly notifications = signal<EventItem[]>([]);
+  /** tmux_name da sessão que ACABOU de concluir uma tarefa — p/ destacar o card
+   * na Home/Sessões por alguns segundos. Limpo por timer. */
+  readonly taskDoneFlash = signal<string | null>(null);
+  private taskFlashTimer: ReturnType<typeof setTimeout> | null = null;
   /** Último espelho de tela por sessão (tmux_name) — empurrado pelo worker. */
   readonly screens = signal<Record<string, { text: string; at: string }>>({});
   /**
@@ -220,6 +224,14 @@ export class SseService {
 
     // Structured event.
     this.events.update((list) => push(list, frame));
+    // Tarefa concluída → destaca o card da sessão por alguns segundos.
+    if (frame.type === 'task_done' && frame.session_id) {
+      this.taskDoneFlash.set(frame.session_id);
+      if (this.taskFlashTimer) {
+        clearTimeout(this.taskFlashTimer);
+      }
+      this.taskFlashTimer = setTimeout(() => this.taskDoneFlash.set(null), 5000);
+    }
     // Eventos que pedem atenção do usuário também alimentam as notificações.
     if (
       frame.type === 'notification' ||

@@ -159,14 +159,18 @@ async def sync_session(
     session_name: str | None = None,
     allow_shared: bool = True,
     collection: str = TASKS_COLLECTION,
-) -> int:
+) -> list[dict[str, str]]:
     """Reflete os marcos da sessão na coleção ``tasks``.
 
     Lê o arquivo namespaced ``.sessionflow/milestones.<session_name>.json``
     (fallback no genérico quando ``allow_shared``). Idempotente: upsert por
     (session_id, milestone_id); só bump de ``updated_at`` quando muda. Marcos
     ausentes (ou arquivo inexistente) são podados — limpa duplicatas antigas.
-    Retorna nº de marcos.
+
+    Retorna a lista de marcos que ACABARAM de virar "done" nesta passada (só os
+    que existiam antes num estado diferente) — o caller usa p/ emitir o evento de
+    "tarefa concluída" (som de vitória + destaque). Não dispara na 1ª aparição
+    já-done (evita falsa vitória ao importar o arquivo).
     """
     items = read_milestones(work_dir, session_name or session_id, allow_shared)
     # Arquivo ausente → trata como vazio p/ PODAR tasks órfãs desta sessão.
@@ -176,6 +180,7 @@ async def sync_session(
     coll = db[collection]
     now = datetime.now(timezone.utc)
     seen: list[str] = []
+    newly_done: list[dict[str, str]] = []
     for m in items:
         seen.append(m["mid"])
         key = {"session_id": session_id, "milestone_id": m["mid"], "source": MILESTONE_SOURCE}
@@ -185,6 +190,12 @@ async def sync_session(
             or existing.get("title") != m["title"]
             or existing.get("state") != m["state"]
         )
+        if (
+            existing is not None
+            and existing.get("state") != "done"
+            and m["state"] == "done"
+        ):
+            newly_done.append({"mid": m["mid"], "title": m["title"]})
         set_fields: dict[str, Any] = {**key, "title": m["title"], "state": m["state"]}
         if changed:
             set_fields["updated_at"] = now
@@ -198,4 +209,4 @@ async def sync_session(
             "milestone_id": {"$nin": seen},
         }
     )
-    return len(items)
+    return newly_done
