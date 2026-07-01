@@ -73,6 +73,8 @@ export class SseService {
   /** tmux_name da sessão que ACABOU de concluir uma tarefa — p/ destacar o card
    * na Home/Sessões por alguns segundos. Limpo por timer. */
   readonly taskDoneFlash = signal<string | null>(null);
+  /** Toast de "tarefa concluída" (título + sessão) p/ a Home. Limpo por timer. */
+  readonly taskDoneToast = signal<{ title: string; session: string } | null>(null);
   private taskFlashTimer: ReturnType<typeof setTimeout> | null = null;
   /** Último espelho de tela por sessão (tmux_name) — empurrado pelo worker. */
   readonly screens = signal<Record<string, { text: string; at: string }>>({});
@@ -224,13 +226,19 @@ export class SseService {
 
     // Structured event.
     this.events.update((list) => push(list, frame));
-    // Tarefa concluída → destaca o card da sessão por alguns segundos.
+    // Tarefa concluída → destaca o card da sessão + toast na Home.
     if (frame.type === 'task_done' && frame.session_id) {
       this.taskDoneFlash.set(frame.session_id);
+      // Título do marco (tira o prefixo "Tarefa concluída: " do título do evento).
+      const t = (frame.title || 'Tarefa concluída').replace(/^Tarefa conclu[ií]da:\s*/i, '');
+      this.taskDoneToast.set({ title: t, session: frame.session_id });
       if (this.taskFlashTimer) {
         clearTimeout(this.taskFlashTimer);
       }
-      this.taskFlashTimer = setTimeout(() => this.taskDoneFlash.set(null), 5000);
+      this.taskFlashTimer = setTimeout(() => {
+        this.taskDoneFlash.set(null);
+        this.taskDoneToast.set(null);
+      }, 5000);
     }
     // Eventos que pedem atenção do usuário também alimentam as notificações.
     if (

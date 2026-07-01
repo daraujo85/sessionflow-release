@@ -33,6 +33,16 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="sf-inicio">
+      <!-- Toast de "tarefa concluída" 🎉 (some sozinho). -->
+      @if (sse.taskDoneToast(); as t) {
+        <div class="sf-task-toast" role="status" aria-live="polite">
+          <span class="sf-task-toast-emoji" aria-hidden="true">🎉</span>
+          <span class="sf-task-toast-body">
+            <span class="sf-task-toast-title">Tarefa concluída</span>
+            <span class="sf-task-toast-sub">{{ t.title }} · {{ t.session }}</span>
+          </span>
+        </div>
+      }
       <!-- Header -->
       <header class="sf-header">
         <div class="sf-brand">
@@ -467,6 +477,54 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         background: #1b1710;
         animation: sf-wait-glow 2.1s ease-in-out infinite;
       }
+      /* Toast "tarefa concluída" 🎉 — banner fixo no topo, some sozinho. */
+      .sf-task-toast {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 12px);
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        max-width: calc(100vw - 24px);
+        padding: 10px 16px;
+        border-radius: 14px;
+        background: linear-gradient(150deg, #14b88f, #00926f);
+        color: #04140f;
+        box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.6);
+        animation: sf-task-toast-in 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .sf-task-toast-emoji {
+        font-size: 20px;
+        flex: none;
+      }
+      .sf-task-toast-body {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .sf-task-toast-title {
+        font-weight: 800;
+        font-size: 13.5px;
+      }
+      .sf-task-toast-sub {
+        font-size: 12px;
+        opacity: 0.85;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      @keyframes sf-task-toast-in {
+        from {
+          opacity: 0;
+          transform: translate(-50%, -8px);
+        }
+        to {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+      }
       /* Tarefa concluída: destaque verde pulsante por alguns segundos. */
       .sf-card.sf-flash {
         border-color: #1f7a5c;
@@ -860,7 +918,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
 })
 export class InicioComponent implements OnInit {
   private readonly api = inject(ApiService);
-  private readonly sse = inject(SseService);
+  protected readonly sse = inject(SseService);
   private readonly jarvis = inject(JarvisAudioService);
   private readonly router = inject(Router);
 
