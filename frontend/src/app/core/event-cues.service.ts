@@ -83,12 +83,9 @@ export class EventCuesService {
         }
         this.seen.add(id);
       }
-      // Sessão com o alto-falante OFF (jarvis=false no evento) não toca chime —
-      // alinha com o botão de alto-falante por sessão. (undefined = não informado
-      // → mantém o comportamento padrão de tocar.)
-      if (frame.jarvis === false) {
-        return;
-      }
+      // "Som de notificação" é um controle INDEPENDENTE do JARVIS (voz por
+      // sessão): quem manda aqui é só o `mode` (off/chime/voice). Assim o
+      // comportamento é previsível — sem cruzar com o alto-falante da sessão.
       const cue = classify(frame);
       if (!cue) {
         return;

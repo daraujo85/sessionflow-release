@@ -269,9 +269,14 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               }
             </span>
             <span class="sf-setting-label">
-              {{ s.title }}
-              @if (s.soon) {
-                <span class="sf-tag">em breve</span>
+              <span class="sf-setting-title">
+                {{ s.title }}
+                @if (s.soon) {
+                  <span class="sf-tag">em breve</span>
+                }
+              </span>
+              @if (s.sub) {
+                <span class="sf-setting-sub">{{ s.sub }}</span>
               }
             </span>
 
@@ -608,12 +613,24 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       }
       .sf-setting-label {
         flex: 1;
+        min-width: 0;
         font-size: 15px;
         font-weight: 500;
         color: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .sf-setting-title {
         display: inline-flex;
         align-items: center;
         gap: 8px;
+      }
+      .sf-setting-sub {
+        font-size: 12px;
+        font-weight: 400;
+        color: #7a8090;
+        line-height: 1.35;
       }
       .sf-tag {
         font-size: 10px;
@@ -853,7 +870,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
     {
       key: 'jarvis',
       kind: 'toggle',
-      title: 'JARVIS (voz) em todas as sessões',
+      title: 'JARVIS — resumo falado',
+      sub: 'Lê um resumo do que a sessão fez. Liga p/ TODAS aqui; por sessão, no botão 🔊 dela.',
       value: this.jarvisAll(),
     },
     {
@@ -865,7 +883,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
     {
       key: 'cues',
       kind: 'value',
-      title: 'Avisos de evento',
+      title: 'Som de notificação',
+      sub: 'Aviso curto quando algo acontece (início/fim/tarefa). Toque um bip, Voz uma frase, ou Desligado.',
       display: cueLabel(this.cues.mode()),
     },
     {
@@ -1186,6 +1205,8 @@ interface SettingRow {
   key: 'push' | 'realtime' | 'dark' | 'lang' | 'milestones' | 'jarvis' | 'cues';
   kind: 'toggle' | 'value';
   title: string;
+  /** Linha de apoio (explica o que o item faz). */
+  sub?: string;
   /** Toggle state (toggle rows only). */
   value?: boolean;
   /** Read-only display text (value rows only). */
