@@ -95,6 +95,9 @@ async def send_to_all(
         "icon": _ICON,
         "badge": _BADGE,
         "tag": url or title,
+        # Padrão de vibração (ms): buzz-pausa-buzz. Honrado pelo Android quando a
+        # notificação aparece com o app fechado/em segundo plano; iOS ignora.
+        "vibrate": [120, 60, 120],
     }
     if url:
         notification["data"] = {

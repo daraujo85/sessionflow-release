@@ -6,6 +6,9 @@ import { ApiService } from './api.service';
 /** Estados possíveis da permissão de notificação do navegador. */
 export type NotifyPermission = 'default' | 'granted' | 'denied' | 'unsupported';
 
+/** Padrão de vibração (ms): buzz-pausa-buzz. Android honra; iOS ignora. */
+const VIBRATE_PATTERN: number[] = [120, 60, 120];
+
 /**
  * Notificações do SISTEMA (Android/desktop) via Notifications API + Service
  * Worker. Funciona com o PWA aberto OU em segundo plano (processo vivo) — SEM
@@ -88,6 +91,14 @@ export class NotifyService {
     if (this.permission() !== 'granted') {
       return;
     }
+    // Haptics: vibra o aparelho na hora (app em foreground). Android suporta;
+    // iOS Safari/PWA ignora silenciosamente. O mesmo padrão também vai nas
+    // opções da notificação (abaixo) p/ vibrar quando disparada pelo SW.
+    try {
+      navigator.vibrate?.(VIBRATE_PATTERN);
+    } catch {
+      /* sem suporte a vibração — silencioso */
+    }
     const { url, ...rest } = options;
     // `onActionClick` é entendido pelo Service Worker do Angular (ngsw): ao
     // clicar, foca/abre o app e navega para a URL da sessão.
@@ -97,11 +108,13 @@ export class NotifyService {
         default: { operation: 'navigateLastFocusedOrOpen', url },
       };
     }
-    const opts: NotificationOptions = {
+    const opts: NotificationOptions & { vibrate?: number[] } = {
       icon: 'icons/icon-192x192-v2.png',
       // Badge = ícone monocromático da barra de status (Android usa só o alfa);
       // o ícone cheio aqui virava quadrado branco.
       badge: 'icons/badge-96.png',
+      // Vibração ao exibir (Android; iOS ignora).
+      vibrate: VIBRATE_PATTERN,
       ...rest,
       data,
     };
