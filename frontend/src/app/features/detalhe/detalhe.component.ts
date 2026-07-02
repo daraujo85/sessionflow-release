@@ -534,6 +534,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
            [style.fontSize.px]="termFont()">
         @if (historyMode()) {
           <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
+        } @else if (bufMode()) {
+          <pre class="term-screen" [innerHTML]="bufHtml()"></pre>
         } @else if (screen().length === 0) {
           <div class="term-msg">Conectando ao terminal…</div>
         } @else {
@@ -553,7 +555,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
         <!-- Pill "↓ ao vivo": aparece no modo ao vivo quando o usuário rolou
              p/ cima; toca → snap pro fim e retoma o stick. -->
-        @if (!historyMode() && showLivePill()) {
+        @if (!historyMode() && (bufMode() || showLivePill())) {
           <button type="button" class="live-pill" (click)="snapToLive()" aria-label="Ir para o fim (ao vivo)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2199,6 +2201,33 @@ export class DetalheComponent implements AfterViewChecked {
   /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
 
+  /**
+   * Modo BUFFER: rolagem LISA do histórico. Como os TUIs alt-screen (Claude
+   * Code) guardam o scrollback dentro do próprio agente (não no tmux), montamos
+   * um buffer COSTURANDO os frames capturados: a cada "página" pra cima pedimos
+   * o redraw ao agente, capturamos e prependamos só as linhas novas (detectando
+   * o overlap). O usuário rola nativo dentro do buffer (sem round-trip por
+   * linha); só ao chegar no topo buscamos mais. Sai pela pill "↓ ao vivo".
+   */
+  protected readonly bufMode = signal<boolean>(false);
+  /** Texto acumulado (colorido) do buffer de scrollback. */
+  protected readonly bufText = signal<string>('');
+  protected readonly bufHtml = computed<SafeHtml>(() =>
+    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.bufText())),
+  );
+  /** Linhas acumuladas (mais antigas no topo). */
+  private bufLines: string[] = [];
+  /** Guard: uma busca de "mais histórico" em andamento. */
+  private bufBusy = false;
+  /** True quando não há mais histórico a revelar (chegou no topo). */
+  private bufExhausted = false;
+  /** Frames vazios seguidos (redraw lento vs. topo real) — esgota após 2. */
+  private bufEmptyStreak = 0;
+  /** True enquanto ajustamos scrollTop programaticamente (ignora onTermScroll). */
+  private bufAdjusting = false;
+  /** Teto de linhas no buffer (evita crescer sem limite). */
+  private static readonly BUF_MAX_LINES = 5000;
+
   protected readonly canSend = computed(
     () =>
       (this.draft().trim().length > 0 || !!this.pendingFile()) &&
@@ -2276,9 +2305,9 @@ export class DetalheComponent implements AfterViewChecked {
         return;
       }
       const scr = this.sse.screens()[tn];
-      // No modo histórico o terminal fica congelado — não aplicamos frames novos
-      // (mas continuamos lendo o signal p/ não desinscrever o effect).
-      if (this.historyMode()) {
+      // Nos modos histórico/buffer o terminal fica congelado — não aplicamos
+      // frames novos (mas continuamos lendo o signal p/ não desinscrever o effect).
+      if (this.historyMode() || this.bufMode()) {
         return;
       }
       if (scr && scr.text !== this.screen()) {
@@ -2292,8 +2321,8 @@ export class DetalheComponent implements AfterViewChecked {
     // Fallback: se o SSE cair, um poll lento (4s) garante que a tela não trava.
     // Aproveita p/ atualizar as tarefas (worker sincroniza ~6s).
     const poll = setInterval(() => {
-      // No modo histórico o terminal está congelado — só atualiza tarefas.
-      if (!this.historyMode()) {
+      // Nos modos histórico/buffer o terminal está congelado — só atualiza tarefas.
+      if (!this.historyMode() && !this.bufMode()) {
         this.refreshScreen();
       }
       this.loadTasks();
@@ -2334,6 +2363,9 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   ngAfterViewChecked(): void {
+    if (this.bufMode()) {
+      return; // buffer controla o próprio scroll (não gruda no fim)
+    }
     const text = this.screen();
     if (text !== this.lastRenderedScreen) {
       this.lastRenderedScreen = text;
@@ -3197,7 +3229,7 @@ export class DetalheComponent implements AfterViewChecked {
   private syncTermSize(): void {
     const el = this.termEl()?.nativeElement;
     const id = this.id();
-    if (!el || !id || this.historyMode()) {
+    if (!el || !id || this.historyMode() || this.bufMode()) {
       return;
     }
     const cw = this.measureCharWidth();
@@ -3255,12 +3287,25 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     const up = ev.deltaY < 0;
+    if (this.bufMode()) {
+      // Buffer: rolagem nativa; no TOPO buscando pra cima → carrega mais história.
+      if (up && el.scrollTop <= 4) {
+        this.loadMoreUp();
+      }
+      return;
+    }
     const canScrollUp = el.scrollTop > 0;
     const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
     if ((up && canScrollUp) || (!up && canScrollDown)) {
       return; // ainda dá pra rolar dentro do container → nativo
     }
-    this.agentScroll(up ? 'up' : 'down');
+    // Ao vivo: subir no limite ENTRA no buffer de scrollback (rolagem lisa);
+    // descer no limite continua mandando o agente pro fim.
+    if (up) {
+      this.enterBuffer();
+    } else {
+      this.agentScroll('down');
+    }
   }
 
   /** Início do toque no terminal — guarda o Y p/ medir o arrasto (tablet). */
@@ -3285,9 +3330,17 @@ export class DetalheComponent implements AfterViewChecked {
     const dy = y - this.touchStartY; // >0 = dedo descendo (revela conteúdo acima)
     const atTop = el.scrollTop <= 0;
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (this.bufMode()) {
+      // Buffer rola nativo; no TOPO puxando pra baixo → carrega mais história.
+      if (atTop && dy > 20) {
+        this.touchStartY = y;
+        this.loadMoreUp();
+      }
+      return;
+    }
     if (atTop && dy > 24) {
       this.touchStartY = y;
-      this.agentScroll('up');
+      this.enterBuffer(); // subir no fim → buffer de scrollback (rolagem lisa)
     } else if (atBottom && dy < -24) {
       this.touchStartY = y;
       this.agentScroll('down');
@@ -3387,15 +3440,137 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
   protected snapToLive(): void {
+    if (this.bufMode()) {
+      this.exitBuffer(); // sai do buffer de scrollback e volta ao espelho ao vivo
+      return;
+    }
     this.stickToBottom = true;
     this.scrollToBottom();
     this.showLivePill.set(false);
     this.jumpAgentToBottom(); // o agente pode estar rolado p/ cima → traz pro fim
   }
 
+  /**
+   * ENTRA no buffer de scrollback: semeia com a tela ao vivo, congela e busca a
+   * primeira página pra cima. A partir daí a rolagem é NATIVA (lisa) e só pede
+   * mais história ao chegar no topo. Sai pela pill "↓ ao vivo" ({@link snapToLive}).
+   */
+  private enterBuffer(): void {
+    const cur = this.screen();
+    if (!cur || this.bufMode()) {
+      return;
+    }
+    this.bufLines = cur.replace(/\s+$/, '').split('\n');
+    this.bufText.set(this.bufLines.join('\n'));
+    this.bufExhausted = false;
+    this.bufEmptyStreak = 0;
+    this.bufBusy = false;
+    this.bufMode.set(true);
+    this.showLivePill.set(true);
+    // Desce pro fim (contínuo com o ao vivo) e já traz uma página de história.
+    this.bufAdjusting = true;
+    queueMicrotask(() => {
+      this.scrollToBottom();
+      this.bufAdjusting = false;
+      this.loadMoreUp();
+    });
+  }
+
+  /**
+   * Busca a próxima "página" de história: pede o scroll pro agente (redraw),
+   * captura a tela e PREPENDA só as linhas novas (costura por overlap). Preserva
+   * a posição de leitura (o conteúdo cresce acima). Marca esgotado se não houver
+   * overlap/linhas novas.
+   */
+  private loadMoreUp(): void {
+    const id = this.id();
+    if (this.bufBusy || this.bufExhausted || !this.bufMode() || !id) {
+      return;
+    }
+    if (this.bufLines.length >= DetalheComponent.BUF_MAX_LINES) {
+      this.bufExhausted = true;
+      return;
+    }
+    this.bufBusy = true;
+    const el = this.termEl()?.nativeElement;
+    const beforeH = el?.scrollHeight ?? 0;
+    const beforeTop = el?.scrollTop ?? 0;
+    this.api
+      .sendKey(id, 'scroll-up')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          // O agente leva algumas dezenas de ms p/ redesenhar após o scroll.
+          setTimeout(() => {
+            this.api
+              .getScreen(id)
+              .pipe(takeUntilDestroyed(this.destroyRef))
+              .subscribe({
+                next: (resp) => {
+                  const frame = (resp.text ?? '').split('\n');
+                  const added = stitchScrollback(this.bufLines, frame);
+                  if (!added || added.length === 0) {
+                    // Pode ser o topo real OU um redraw lento (frame ainda igual).
+                    // Só esgota após 2 vazios seguidos p/ não parar cedo demais.
+                    this.bufEmptyStreak++;
+                    if (this.bufEmptyStreak >= 2) {
+                      this.bufExhausted = true;
+                    }
+                  } else {
+                    this.bufEmptyStreak = 0;
+                    this.bufLines = [...added, ...this.bufLines];
+                    this.bufText.set(this.bufLines.join('\n'));
+                    // Mantém a leitura no mesmo ponto (cresceu no topo).
+                    this.bufAdjusting = true;
+                    queueMicrotask(() => {
+                      const el2 = this.termEl()?.nativeElement;
+                      if (el2) {
+                        el2.scrollTop = beforeTop + (el2.scrollHeight - beforeH);
+                      }
+                      this.bufAdjusting = false;
+                    });
+                  }
+                  this.bufBusy = false;
+                },
+                error: () => {
+                  this.bufBusy = false;
+                },
+              });
+          }, 170);
+        },
+        error: () => {
+          this.bufBusy = false;
+        },
+      });
+  }
+
+  /** SAI do buffer: volta ao espelho ao vivo e manda o agente pro fim. */
+  private exitBuffer(): void {
+    this.bufMode.set(false);
+    this.bufLines = [];
+    this.bufText.set('');
+    this.bufExhausted = false;
+    this.bufEmptyStreak = 0;
+    this.bufBusy = false;
+    this.showLivePill.set(false);
+    this.stickToBottom = true;
+    this.jumpAgentToBottom(); // Ctrl+End no agente + refreshScreen(true)
+  }
+
   /** Atualiza a pill ↓ ao vivo conforme o usuário rola (só no modo ao vivo). */
   protected onTermScroll(): void {
     if (this.historyMode()) {
+      return;
+    }
+    if (this.bufMode()) {
+      // Rolagem nativa dentro do buffer: perto do topo, busca mais histórico.
+      if (this.bufAdjusting) {
+        return; // ajuste programático de scrollTop — não dispara load
+      }
+      const el = this.termEl()?.nativeElement;
+      if (el && el.scrollTop <= 40) {
+        this.loadMoreUp();
+      }
       return;
     }
     this.showLivePill.set(!this.isAtBottom());
@@ -3441,6 +3616,45 @@ function trimBlankEdges(text: string): string {
     end--;
   }
   return lines.slice(start, end).join('\n');
+}
+
+/**
+ * Costura um frame recém-capturado (após rolar o agente pra cima) no topo do
+ * buffer de scrollback, retornando SÓ as linhas NOVAS (mais antigas) a prepender.
+ *
+ * Após um scroll-up, o frame contém algumas linhas novas no topo seguidas de um
+ * trecho que COINCIDE com o começo atual do buffer. Achamos esse overlap (um
+ * "run" de ≥4 linhas iguais, com ≥2 não-vazias, p/ não casar em linhas em branco)
+ * e devolvemos o prefixo do frame antes dele. Sem overlap (topo atingido ou tela
+ * mudou) → `null`, e quem chama marca esgotado (evita duplicar conteúdo).
+ *
+ * O casamento ignora cor (SGR) e espaços à direita — o buffer guarda a versão
+ * colorida original.
+ */
+function stitchScrollback(buffer: string[], frame: string[]): string[] | null {
+  // eslint-disable-next-line no-control-regex
+  const sgr = /\x1b\[[0-9;]*m/g;
+  const norm = (s: string): string => s.replace(sgr, '').replace(/\s+$/, '');
+  const bn = buffer.map(norm);
+  const fn = frame.map(norm);
+  for (let k = 0; k < fn.length; k++) {
+    let match = 0;
+    let nonblank = 0;
+    while (
+      k + match < fn.length &&
+      match < bn.length &&
+      fn[k + match] === bn[match]
+    ) {
+      if (fn[k + match] !== '') {
+        nonblank++;
+      }
+      match++;
+    }
+    if (match >= 4 && nonblank >= 2) {
+      return frame.slice(0, k); // linhas novas (mais antigas) a prepender
+    }
+  }
+  return null; // sem overlap
 }
 
 /** Lê a preferência de modo foco (default desligado). */
