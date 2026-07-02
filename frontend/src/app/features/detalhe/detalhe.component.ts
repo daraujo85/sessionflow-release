@@ -2463,13 +2463,30 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     this.acting.set(true);
+    // Otimista: MANTÉM a sessão atual (com o display_name!) e só marca "rodando".
+    // NÃO usamos a resposta do /resume — ela é um {command_id, status:"accepted"},
+    // não um Session; setá-la zerava display_name/tmux_name e o cabeçalho caía no
+    // id (a "hash", exigindo voltar ao Início e reentrar). O worker recria a tmux
+    // em background; recarregamos o doc real e a tela do agente quando reaparece.
+    this.markWorkingLocal();
     this.api
       .resumeSession(this.id())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (s) => {
-          this.session.set(s);
+        next: () => {
           this.acting.set(false);
+          this.stickToBottom = true;
+          this.refreshScreen(true);
+          // A sessão volta em background (recreate + agente subir): re-sincroniza
+          // status/métricas e a tela em 2 tempos, sem precisar sair da tela.
+          setTimeout(() => {
+            this.loadSession();
+            this.refreshScreen(true);
+          }, 1500);
+          setTimeout(() => {
+            this.loadSession();
+            this.refreshScreen(true);
+          }, 4000);
         },
         error: () => this.acting.set(false),
       });

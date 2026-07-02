@@ -112,8 +112,13 @@ export class ApiService {
     });
   }
 
-  resumeSession(id: string): Observable<Session> {
-    return this.http.post<Session>(this.url(`/sessions/${id}/resume`), {});
+  /**
+   * Retoma uma sessão parada/detached. O backend responde 202 com
+   * `{command_id, status:"accepted"}` (NÃO um Session — o worker recria a tmux
+   * em background). Por isso o retorno é `void`: quem chama recarrega o doc real.
+   */
+  resumeSession(id: string): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/resume`), {});
   }
 
   /** Abre a sessão num Terminal do Mac (tmux attach) — uso lado a lado. */
