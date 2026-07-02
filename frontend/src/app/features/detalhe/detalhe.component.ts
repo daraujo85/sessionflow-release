@@ -3477,10 +3477,14 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * Busca a próxima "página" de história: pede o scroll pro agente (redraw),
-   * captura a tela e PREPENDA só as linhas novas (costura por overlap). Preserva
-   * a posição de leitura (o conteúdo cresce acima). Marca esgotado se não houver
-   * overlap/linhas novas.
+   * Busca a próxima "página" de história: pede o scroll pro agente e PREPENDA só
+   * as linhas novas (costura por overlap), preservando a posição de leitura.
+   *
+   * IMPORTANTE: `getScreen` NÃO captura na hora — lê o espelho que o worker grava
+   * no ciclo dele (~1s). Além disso o `scroll-up` vai por fila (assíncrono). Por
+   * isso, após mandar o scroll, fazemos POLL do `getScreen` até a tela refletir o
+   * novo conteúdo (ou desistir). É o que faltava — antes capturávamos cedo demais
+   * e o frame vinha igual (nada a prepender).
    */
   private loadMoreUp(): void {
     const id = this.id();
@@ -3499,49 +3503,76 @@ export class DetalheComponent implements AfterViewChecked {
       .sendKey(id, 'scroll-up')
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: () => {
-          // O agente leva algumas dezenas de ms p/ redesenhar após o scroll.
-          setTimeout(() => {
-            this.api
-              .getScreen(id)
-              .pipe(takeUntilDestroyed(this.destroyRef))
-              .subscribe({
-                next: (resp) => {
-                  const frame = (resp.text ?? '').split('\n');
-                  const added = stitchScrollback(this.bufLines, frame);
-                  if (!added || added.length === 0) {
-                    // Pode ser o topo real OU um redraw lento (frame ainda igual).
-                    // Só esgota após 2 vazios seguidos p/ não parar cedo demais.
-                    this.bufEmptyStreak++;
-                    if (this.bufEmptyStreak >= 2) {
-                      this.bufExhausted = true;
-                    }
-                  } else {
-                    this.bufEmptyStreak = 0;
-                    this.bufLines = [...added, ...this.bufLines];
-                    this.bufText.set(this.bufLines.join('\n'));
-                    // Mantém a leitura no mesmo ponto (cresceu no topo).
-                    this.bufAdjusting = true;
-                    queueMicrotask(() => {
-                      const el2 = this.termEl()?.nativeElement;
-                      if (el2) {
-                        el2.scrollTop = beforeTop + (el2.scrollHeight - beforeH);
-                      }
-                      this.bufAdjusting = false;
-                    });
-                  }
-                  this.bufBusy = false;
-                },
-                error: () => {
-                  this.bufBusy = false;
-                },
-              });
-          }, 170);
-        },
+        next: () => this.captureMoreUp(id, beforeH, beforeTop, 0),
         error: () => {
           this.bufBusy = false;
         },
       });
+  }
+
+  /** Nº de tentativas de captura pós-scroll (worker grava a cada ~1s). */
+  private static readonly BUF_CAPTURE_TRIES = 5;
+
+  /**
+   * Poll do espelho após um scroll-up: tenta costurar; se o frame ainda não
+   * mudou (worker não gravou ainda), espera e tenta de novo até
+   * {@link BUF_CAPTURE_TRIES}. Só então conta como "vazio".
+   */
+  private captureMoreUp(
+    id: string,
+    beforeH: number,
+    beforeTop: number,
+    attempt: number,
+  ): void {
+    if (!this.bufMode()) {
+      this.bufBusy = false;
+      return;
+    }
+    setTimeout(() => {
+      this.api
+        .getScreen(id)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({
+          next: (resp) => {
+            const frame = (resp.text ?? '').split('\n');
+            const added = stitchScrollback(this.bufLines, frame);
+            if (added && added.length > 0) {
+              this.bufEmptyStreak = 0;
+              this.bufLines = [...added, ...this.bufLines];
+              if (this.bufLines.length > DetalheComponent.BUF_MAX_LINES) {
+                this.bufLines = this.bufLines.slice(
+                  0,
+                  DetalheComponent.BUF_MAX_LINES,
+                );
+              }
+              this.bufText.set(this.bufLines.join('\n'));
+              // Mantém a leitura no mesmo ponto (o conteúdo cresceu no topo).
+              this.bufAdjusting = true;
+              queueMicrotask(() => {
+                const el2 = this.termEl()?.nativeElement;
+                if (el2) {
+                  el2.scrollTop = beforeTop + (el2.scrollHeight - beforeH);
+                }
+                this.bufAdjusting = false;
+              });
+              this.bufBusy = false;
+            } else if (attempt + 1 < DetalheComponent.BUF_CAPTURE_TRIES) {
+              // Tela ainda não refletiu o scroll — espera o próximo ciclo do worker.
+              this.captureMoreUp(id, beforeH, beforeTop, attempt + 1);
+            } else {
+              // Topo real ou sem mudança após ~2,5s: conta vazio (esgota em 2).
+              this.bufEmptyStreak++;
+              if (this.bufEmptyStreak >= 2) {
+                this.bufExhausted = true;
+              }
+              this.bufBusy = false;
+            }
+          },
+          error: () => {
+            this.bufBusy = false;
+          },
+        });
+    }, 500);
   }
 
   /** SAI do buffer: volta ao espelho ao vivo e manda o agente pro fim. */
