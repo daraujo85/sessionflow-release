@@ -709,6 +709,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         }
 
         <input
+          #msgInput
           class="text-input mono"
           type="text"
           [placeholder]="pendingFile() ? 'Escreva algo sobre o anexo (opcional)…' : (liveMode() ? 'Digite — ao vivo no terminal…' : 'Enviar comando ao terminal…')"
@@ -2004,6 +2005,7 @@ export class DetalheComponent implements AfterViewChecked {
 
   private readonly termEl = viewChild<ElementRef<HTMLDivElement>>('term');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
+  private readonly msgInput = viewChild<ElementRef<HTMLInputElement>>('msgInput');
 
   /** Session id from the route (`sessao/:id`). */
   protected readonly id = signal<string>(
@@ -2282,10 +2284,16 @@ export class DetalheComponent implements AfterViewChecked {
         this.screen.set('');
         this.tasks.set([]);
         this.historyMode.set(false);
+        this.bufMode.set(false);
+        this.bufLines = [];
+        this.bufText.set('');
         this.liveMode.set(false);
         this.draft.set(this.drafts.get(sid));
         this.loadSession();
         this.refreshScreen();
+        // Ao abrir a sessão, foca o campo de mensagem (pronto pra digitar). Em
+        // celular o teclado só abre com gesto — aqui é best-effort e não incomoda.
+        this.focusMessageInput();
         // Ao ABRIR a sessão, instrui (1x) a trabalhar em tarefas/marcos. O
         // server é idempotente e respeita o toggle global.
         if (sid) {
@@ -3622,6 +3630,28 @@ export class DetalheComponent implements AfterViewChecked {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
+  }
+
+  /**
+   * Foca o campo de mensagem ao abrir a sessão (pronto pra digitar). Tenta em
+   * 2 tempos porque o input pode não estar renderizado no instante da navegação.
+   * Best-effort: em celular o teclado só sobe com gesto do usuário — não força
+   * nada nem incomoda; no desktop/tablet já deixa o cursor lá.
+   */
+  private focusMessageInput(): void {
+    const tryFocus = () => {
+      const el = this.msgInput()?.nativeElement;
+      if (el && !el.disabled) {
+        el.focus();
+        return true;
+      }
+      return false;
+    };
+    queueMicrotask(() => {
+      if (!tryFocus()) {
+        setTimeout(tryFocus, 250);
+      }
+    });
   }
 }
 
