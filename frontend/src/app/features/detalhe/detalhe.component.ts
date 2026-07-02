@@ -803,9 +803,9 @@ import { ansiToHtml } from '../../shared/ansi-html';
         .hdr-controls {
           flex-basis: 100%;
           margin-left: 0;
-          flex-wrap: nowrap;
+          flex-wrap: wrap;
         }
-        /* Status ENCOLHE (trunca com "…") → os botões nunca são cortados. */
+        /* Status ENCOLHE (trunca com "…") → sobra espaço pros botões. */
         .status-pill {
           flex: 0 1 auto;
           min-width: 0;
@@ -817,10 +817,15 @@ import { ansiToHtml } from '../../shared/ansi-html';
           white-space: nowrap;
           min-width: 0;
         }
+        /* Os botões PODEM QUEBRAR pra uma 2ª linha (alinhados à direita) em vez
+           de transbordar e cortar a lixeira. Cresce pra ocupar o espaço restante
+           ao lado do status. */
         .status-actions {
-          flex: none;
+          flex: 1 1 auto;
           margin-left: auto;
           gap: 6px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
         }
         .act {
           padding: 6px 8px;
@@ -1057,6 +1062,14 @@ import { ansiToHtml } from '../../shared/ansi-html';
         color: #38bdf8;
         border-color: #1e3a44;
         background: #0e2730;
+      }
+      /* Estado ATIVO dos botões ghost (foco ligado, painel de compartilhar
+         aberto): destaca em verde-água p/ ficar claro que já foi acionado —
+         clicar de novo desliga (o ícone também alterna expandir/recolher). */
+      .act--ghost.on {
+        color: #34d399;
+        border-color: #1f3d33;
+        background: #0f2620;
       }
 
       /* Bloco de métricas */
