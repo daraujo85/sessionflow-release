@@ -3510,8 +3510,9 @@ export class DetalheComponent implements AfterViewChecked {
       });
   }
 
-  /** Nº de tentativas de captura pós-scroll (worker grava a cada ~1s). */
-  private static readonly BUF_CAPTURE_TRIES = 5;
+  /** Nº de tentativas de captura pós-scroll (worker grava a cada ~0,6-1s +
+   * latência da fila; ~10×500ms ≈ 5s de janela p/ o espelho refletir). */
+  private static readonly BUF_CAPTURE_TRIES = 10;
 
   /**
    * Poll do espelho após um scroll-up: tenta costurar; se o frame ainda não
