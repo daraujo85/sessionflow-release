@@ -766,8 +766,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
         color: #f4f5f7;
       }
       .mono {
+        /* Fontes de SÍMBOLOS no fim da pilha: quando a mono não tem o glyph
+           (ex.: ▶▶ do "bypass permissions" do Claude Code), o navegador
+           substitui só aquele caractere em vez de mostrar tofu (▯). */
         font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
-          Menlo, Consolas, monospace;
+          Menlo, Consolas, 'Noto Sans Symbols', 'Noto Sans Symbols 2',
+          'Segoe UI Symbol', 'Apple Color Emoji', 'Noto Color Emoji', monospace;
       }
 
       /* Header */
@@ -2288,6 +2292,13 @@ export class DetalheComponent implements AfterViewChecked {
     const onWinResize = () => this.scheduleTermResize();
     window.addEventListener('resize', onWinResize);
     this.scheduleTermResize();
+    // A 'JetBrains Mono' vem do Google Fonts (async). Se medirmos ANTES de ela
+    // carregar, o char-width sai com a métrica da fonte de fallback → o nº de
+    // colunas erra: às vezes o pane fica mais largo que a tela (barra de status
+    // do tmux quebra) ou mais estreito (espaço sem aproveitar à direita). Ao
+    // terminar de carregar as fontes, re-medimos com a métrica final.
+    const fonts = (document as unknown as { fonts?: { ready?: Promise<unknown> } }).fonts;
+    fonts?.ready?.then(() => this.scheduleTermResize()).catch(() => {});
 
     this.destroyRef.onDestroy(() => {
       clearInterval(poll);
@@ -3165,7 +3176,10 @@ export class DetalheComponent implements AfterViewChecked {
     }
     const lh = this.termFont() * 1.7; // line-height do .term
     // padding do .term: 14px (vert) / 16px (horiz) → 32 / 28.
-    const cols = Math.max(40, Math.floor((el.clientWidth - 32) / cw));
+    // Mínimo baixo (20): num celular com fonte grande, forçar 40 colunas deixa
+    // o pane MAIS LARGO que a tela → as linhas re-quebram e a barra de status do
+    // tmux fica feia em 2 linhas. Deixar casar com o que realmente cabe evita isso.
+    const cols = Math.max(20, Math.floor((el.clientWidth - 32) / cw));
     const rows = Math.max(10, Math.floor((el.clientHeight - 28) / lh));
     if (cols === this.lastCols && rows === this.lastRows) {
       return;
