@@ -306,6 +306,12 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           Testar notificação
         </button>
       }
+      <button type="button" class="sf-test-notif" (click)="testVibrate()">
+        Testar vibração 📳
+      </button>
+      @if (vibeMsg()) {
+        <p class="sf-vibe-msg">{{ vibeMsg() }}</p>
+      }
 
       <!-- Instalar como app (PWA) -->
       @if (canInstall()) {
@@ -691,6 +697,12 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-size: 13.5px;
         font-weight: 600;
         cursor: pointer;
+      }
+      .sf-vibe-msg {
+        margin: 8px 2px 0;
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: #9fb0ad;
       }
 
       /* Instalar como app */
@@ -1129,6 +1141,30 @@ export class PerfilComponent implements OnInit, OnDestroy {
       body: 'Notificação de teste ✅ — está funcionando!',
       tag: 'sf-test',
     });
+  }
+
+  /** Mensagem de resultado do teste de vibração (diagnóstico). */
+  protected readonly vibeMsg = signal<string>('');
+
+  /**
+   * Testa a Vibration API DIRETO (dentro do gesto do clique — requisito do
+   * Android/Chrome), separado da notificação, e mostra o resultado. Isola se o
+   * problema é a vibração em si (não suportada / bloqueada / silencioso) ou o
+   * caminho da notificação.
+   */
+  testVibrate(): void {
+    const nav = navigator as Navigator & { vibrate?: (p: number | number[]) => boolean };
+    if (typeof nav.vibrate !== 'function') {
+      this.vibeMsg.set('❌ Este navegador não suporta vibração (ex.: iOS/Safari).');
+      return;
+    }
+    // Padrão longo e forte p/ ser fácil de sentir no teste.
+    const ok = nav.vibrate([400, 120, 400]);
+    this.vibeMsg.set(
+      ok
+        ? '📳 Comando enviado. Se não sentiu: veja o modo silencioso/Não Perturbe e a vibração do canal de notificações do app nas configs do Android.'
+        : '⚠️ O navegador recusou a vibração (silencioso/economia de bateria ou sem interação recente).',
+    );
   }
 
   /** Em progresso o "recarregar app" (evita clique duplo). */

@@ -6,8 +6,9 @@ import { ApiService } from './api.service';
 /** Estados possíveis da permissão de notificação do navegador. */
 export type NotifyPermission = 'default' | 'granted' | 'denied' | 'unsupported';
 
-/** Padrão de vibração (ms): buzz-pausa-buzz. Android honra; iOS ignora. */
-const VIBRATE_PATTERN: number[] = [120, 60, 120];
+/** Padrão de vibração (ms): buzz-pausa-buzz forte o bastante p/ sentir. Android
+ * honra; iOS ignora. */
+const VIBRATE_PATTERN: number[] = [300, 120, 300];
 
 /**
  * Notificações do SISTEMA (Android/desktop) via Notifications API + Service
