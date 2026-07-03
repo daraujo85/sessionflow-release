@@ -542,6 +542,11 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
         }
 
+        <!-- Buffer de scrollback: indicador de "carregando histórico". -->
+        @if (bufMode() && bufLoading()) {
+          <div class="buf-loading" role="status" aria-live="polite">carregando histórico…</div>
+        }
+
         <!-- Toast "Copiado": confirma a cópia da seleção pro clipboard. -->
         @if (copied()) {
           <div class="term-copied" role="status" aria-live="polite">
@@ -1494,6 +1499,23 @@ import { ansiToHtml } from '../../shared/ansi-html';
         line-height: 1.7;
       }
       /* Toast "Copiado" — canto inferior ESQUERDO (não colide com a live-pill). */
+      .buf-loading {
+        position: sticky;
+        top: 6px;
+        z-index: 6;
+        display: block;
+        width: fit-content;
+        margin: 0 auto;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: rgba(20, 26, 24, 0.92);
+        border: 1px solid #263038;
+        color: #9fb0ad;
+        font-size: 11.5px;
+        font-weight: 600;
+        font-family: inherit;
+        pointer-events: none;
+      }
       .term-copied {
         position: sticky;
         bottom: 12px;
@@ -2215,8 +2237,12 @@ export class DetalheComponent implements AfterViewChecked {
   /** Texto acumulado (colorido) do buffer de scrollback. */
   protected readonly bufText = signal<string>('');
   protected readonly bufHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(this.bufText())),
+    this.sanitizer.bypassSecurityTrustHtml(
+      ansiToHtml(trimBlankEdges(this.bufText())),
+    ),
   );
+  /** True enquanto busca a próxima leva de histórico (mostra "carregando…"). */
+  protected readonly bufLoading = signal<boolean>(false);
   /** Linhas acumuladas (mais antigas no topo). */
   private bufLines: string[] = [];
   /** Guard: uma busca de "mais histórico" em andamento. */
@@ -3480,7 +3506,7 @@ export class DetalheComponent implements AfterViewChecked {
     queueMicrotask(() => {
       this.scrollToBottom();
       this.bufAdjusting = false;
-      this.loadMoreUp();
+      this.loadMoreUp(true); // 1ª leva revela o topo (mostra o histórico surgindo)
     });
   }
 
@@ -3494,7 +3520,7 @@ export class DetalheComponent implements AfterViewChecked {
    * novo conteúdo (ou desistir). É o que faltava — antes capturávamos cedo demais
    * e o frame vinha igual (nada a prepender).
    */
-  private loadMoreUp(): void {
+  private loadMoreUp(revealTop = false): void {
     const id = this.id();
     if (this.bufBusy || this.bufExhausted || !this.bufMode() || !id) {
       return;
@@ -3504,6 +3530,7 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     this.bufBusy = true;
+    this.bufLoading.set(true);
     const el = this.termEl()?.nativeElement;
     const beforeH = el?.scrollHeight ?? 0;
     const beforeTop = el?.scrollTop ?? 0;
@@ -3511,9 +3538,10 @@ export class DetalheComponent implements AfterViewChecked {
       .sendKey(id, 'scroll-up')
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: () => this.captureMoreUp(id, beforeH, beforeTop, 0),
+        next: () => this.captureMoreUp(id, beforeH, beforeTop, 0, revealTop),
         error: () => {
           this.bufBusy = false;
+          this.bufLoading.set(false);
         },
       });
   }
@@ -3532,9 +3560,11 @@ export class DetalheComponent implements AfterViewChecked {
     beforeH: number,
     beforeTop: number,
     attempt: number,
+    revealTop: boolean,
   ): void {
     if (!this.bufMode()) {
       this.bufBusy = false;
+      this.bufLoading.set(false);
       return;
     }
     setTimeout(() => {
@@ -3555,30 +3585,37 @@ export class DetalheComponent implements AfterViewChecked {
                 );
               }
               this.bufText.set(this.bufLines.join('\n'));
-              // Mantém a leitura no mesmo ponto (o conteúdo cresceu no topo).
               this.bufAdjusting = true;
               queueMicrotask(() => {
                 const el2 = this.termEl()?.nativeElement;
                 if (el2) {
-                  el2.scrollTop = beforeTop + (el2.scrollHeight - beforeH);
+                  // 1ª leva (ao ENTRAR): revela o topo p/ o usuário VER o conteúdo
+                  // antigo aparecer (senão carrega acima da dobra e parece travado).
+                  // Demais levas: preserva a posição de leitura (cresceu no topo).
+                  el2.scrollTop = revealTop
+                    ? 0
+                    : beforeTop + (el2.scrollHeight - beforeH);
                 }
                 this.bufAdjusting = false;
               });
               this.bufBusy = false;
+              this.bufLoading.set(false);
             } else if (attempt + 1 < DetalheComponent.BUF_CAPTURE_TRIES) {
               // Tela ainda não refletiu o scroll — espera o próximo ciclo do worker.
-              this.captureMoreUp(id, beforeH, beforeTop, attempt + 1);
+              this.captureMoreUp(id, beforeH, beforeTop, attempt + 1, revealTop);
             } else {
-              // Topo real ou sem mudança após ~2,5s: conta vazio (esgota em 2).
+              // Topo real ou sem mudança após ~5s: conta vazio (esgota em 2).
               this.bufEmptyStreak++;
               if (this.bufEmptyStreak >= 2) {
                 this.bufExhausted = true;
               }
               this.bufBusy = false;
+              this.bufLoading.set(false);
             }
           },
           error: () => {
             this.bufBusy = false;
+            this.bufLoading.set(false);
           },
         });
     }, 500);
@@ -3592,6 +3629,7 @@ export class DetalheComponent implements AfterViewChecked {
     this.bufExhausted = false;
     this.bufEmptyStreak = 0;
     this.bufBusy = false;
+    this.bufLoading.set(false);
     this.showLivePill.set(false);
     this.stickToBottom = true;
     this.jumpAgentToBottom(); // Ctrl+End no agente + refreshScreen(true)
