@@ -750,6 +750,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
               <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
             </svg>
           </button>
+          @if (canScreenshot) {
+            <button
+              type="button"
+              class="attach"
+              (click)="takeShot()"
+              aria-label="Capturar área da tela e anexar"
+              title="Recortar um pedaço da tela e anexar (não vai pra galeria)"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
+                <rect x="8.5" y="8.5" width="7" height="7" rx="1" />
+              </svg>
+            </button>
+          }
           <sf-audio-recorder
             class="mic"
             [sessionId]="id()"
@@ -802,6 +817,43 @@ import { ansiToHtml } from '../../shared/ansi-html';
         </button>
         </div>
       </footer>
+
+      <!-- Overlay de RECORTE do screenshot: arraste pra selecionar a área. A
+           imagem fica só em memória (nunca vai pra galeria). -->
+      @if (shotOpen()) {
+        <div class="shot-overlay">
+          <div class="shot-canvas">
+            <img
+              #shotImg
+              class="shot-img"
+              [src]="shotImgUrl()"
+              draggable="false"
+              (pointerdown)="shotDown($event)"
+              (pointermove)="shotMove($event)"
+              (pointerup)="shotUp()"
+              alt="Captura da tela"
+            />
+            @if (shotSel(); as s) {
+              <div
+                class="shot-rect"
+                [style.left.px]="s.x"
+                [style.top.px]="s.y"
+                [style.width.px]="s.w"
+                [style.height.px]="s.h"
+              ></div>
+            }
+          </div>
+          <div class="shot-bar">
+            <span class="shot-tip">Arraste para selecionar a área</span>
+            <span class="shot-acts">
+              <button type="button" class="shot-btn" (click)="cancelShot()">Cancelar</button>
+              <button type="button" class="shot-btn shot-btn--primary" [disabled]="!shotHasSel()" (click)="confirmShot()">
+                Anexar recorte
+              </button>
+            </span>
+          </div>
+        </div>
+      }
     </section>
   `,
   styles: [
@@ -997,6 +1049,78 @@ import { ansiToHtml } from '../../shared/ansi-html';
         color: #06231d;
       }
       .rename-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      /* Overlay de recorte do screenshot */
+      .shot-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        background: rgba(6, 8, 9, 0.92);
+      }
+      .shot-canvas {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        overflow: hidden;
+      }
+      .shot-img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        user-select: none;
+        touch-action: none;
+        cursor: crosshair;
+        border: 1px solid #263038;
+      }
+      .shot-rect {
+        position: absolute;
+        border: 2px solid #2cecc4;
+        background: rgba(44, 236, 196, 0.14);
+        pointer-events: none;
+      }
+      .shot-bar {
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+        background: #0e1113;
+        border-top: 1px solid #20262a;
+      }
+      .shot-tip {
+        font-size: 12.5px;
+        color: #9fb0ad;
+      }
+      .shot-acts {
+        display: flex;
+        gap: 8px;
+      }
+      .shot-btn {
+        appearance: none;
+        background: transparent;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        color: #c9cdd6;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      .shot-btn--primary {
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        border-color: transparent;
+        color: #06231d;
+      }
+      .shot-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
@@ -2159,6 +2283,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly termEl = viewChild<ElementRef<HTMLDivElement>>('term');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgInput = viewChild<ElementRef<HTMLInputElement>>('msgInput');
+  private readonly shotImg = viewChild<ElementRef<HTMLImageElement>>('shotImg');
 
   /** Session id from the route (`sessao/:id`). */
   protected readonly id = signal<string>(
@@ -2361,6 +2486,20 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly renameTech = signal<string>('');
   protected readonly renameDisp = signal<string>('');
   protected readonly renaming = signal<boolean>(false);
+
+  /** Captura de tela (só onde o navegador suporta — desktop/Mac). */
+  protected readonly canScreenshot =
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getDisplayMedia;
+  protected readonly shotOpen = signal<boolean>(false);
+  protected readonly shotImgUrl = signal<string>('');
+  protected readonly shotSel = signal<{ x: number; y: number; w: number; h: number } | null>(null);
+  protected readonly shotHasSel = computed(() => {
+    const s = this.shotSel();
+    return !!s && s.w >= 4 && s.h >= 4;
+  });
+  private shotCanvas: HTMLCanvasElement | null = null;
+  private shotStart: { x: number; y: number } | null = null;
 
   /**
    * Modo BUFFER: rolagem LISA do histórico. Como os TUIs alt-screen (Claude
@@ -3153,6 +3292,135 @@ export class DetalheComponent implements AfterViewChecked {
         return;
       }
     }
+  }
+
+  /**
+   * Captura a tela (getDisplayMedia), tira UM frame e abre o overlay de recorte.
+   * A imagem fica só em memória — nunca vai pra galeria do aparelho. Desktop/Mac.
+   */
+  protected async takeShot(): Promise<void> {
+    const md = navigator.mediaDevices;
+    if (!md?.getDisplayMedia) {
+      return;
+    }
+    let stream: MediaStream | null = null;
+    try {
+      stream = await md.getDisplayMedia({ video: true, audio: false });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      // Espera as dimensões reais do vídeo chegarem.
+      for (let i = 0; i < 20 && !video.videoWidth; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const w = video.videoWidth || 1280;
+      const h = video.videoHeight || 720;
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, w, h);
+      this.shotCanvas = canvas;
+      this.shotImgUrl.set(canvas.toDataURL('image/png'));
+      this.shotSel.set(null);
+      this.shotStart = null;
+      this.shotOpen.set(true);
+    } catch {
+      /* usuário cancelou o compartilhamento ou negou — silencioso */
+    } finally {
+      stream?.getTracks().forEach((t) => t.stop()); // encerra a captura já no 1º frame
+    }
+  }
+
+  /** Início do arrasto de seleção sobre a captura. */
+  protected shotDown(ev: PointerEvent): void {
+    const img = this.shotImg()?.nativeElement;
+    if (!img) {
+      return;
+    }
+    const r = img.getBoundingClientRect();
+    this.shotStart = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    this.shotSel.set({ x: this.shotStart.x, y: this.shotStart.y, w: 0, h: 0 });
+    try {
+      img.setPointerCapture(ev.pointerId);
+    } catch {
+      /* sem captura de ponteiro — segue */
+    }
+  }
+
+  /** Atualiza o retângulo de seleção conforme arrasta. */
+  protected shotMove(ev: PointerEvent): void {
+    if (!this.shotStart) {
+      return;
+    }
+    const img = this.shotImg()?.nativeElement;
+    if (!img) {
+      return;
+    }
+    const r = img.getBoundingClientRect();
+    const cx = Math.max(0, Math.min(ev.clientX - r.left, r.width));
+    const cy = Math.max(0, Math.min(ev.clientY - r.top, r.height));
+    this.shotSel.set({
+      x: Math.min(this.shotStart.x, cx),
+      y: Math.min(this.shotStart.y, cy),
+      w: Math.abs(cx - this.shotStart.x),
+      h: Math.abs(cy - this.shotStart.y),
+    });
+  }
+
+  /** Fim do arrasto de seleção. */
+  protected shotUp(): void {
+    this.shotStart = null;
+  }
+
+  /** Recorta a área selecionada → File PNG → anexa (staged). */
+  protected confirmShot(): void {
+    const sel = this.shotSel();
+    const src = this.shotCanvas;
+    const img = this.shotImg()?.nativeElement;
+    if (!sel || !src || !img || sel.w < 4 || sel.h < 4) {
+      return;
+    }
+    // Mapeia coords exibidas → coords reais da imagem capturada.
+    const scaleX = src.width / img.clientWidth;
+    const scaleY = src.height / img.clientHeight;
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(sel.w * scaleX));
+    out.height = Math.max(1, Math.round(sel.h * scaleY));
+    out
+      .getContext('2d')
+      ?.drawImage(
+        src,
+        sel.x * scaleX,
+        sel.y * scaleY,
+        sel.w * scaleX,
+        sel.h * scaleY,
+        0,
+        0,
+        out.width,
+        out.height,
+      );
+    out.toBlob((blob) => {
+      if (blob) {
+        const file = new File([blob], `recorte-${Date.now()}.png`, {
+          type: 'image/png',
+        });
+        this.stageFile(file);
+      }
+      this.closeShot();
+    }, 'image/png');
+  }
+
+  protected cancelShot(): void {
+    this.closeShot();
+  }
+
+  private closeShot(): void {
+    this.shotOpen.set(false);
+    this.shotSel.set(null);
+    this.shotStart = null;
+    this.shotCanvas = null;
+    this.shotImgUrl.set('');
   }
 
   /** Arrastou um arquivo sobre o compositor: realça a área e aceita o drop. */
