@@ -3333,25 +3333,13 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     const up = ev.deltaY < 0;
-    if (this.bufMode()) {
-      // Buffer: rolagem nativa; no TOPO buscando pra cima → carrega mais história.
-      if (up && el.scrollTop <= 4) {
-        this.loadMoreUp();
-      }
-      return;
-    }
     const canScrollUp = el.scrollTop > 0;
     const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
     if ((up && canScrollUp) || (!up && canScrollDown)) {
       return; // ainda dá pra rolar dentro do container → nativo
     }
-    // Ao vivo: subir no limite ENTRA no buffer de scrollback (rolagem lisa);
-    // descer no limite continua mandando o agente pro fim.
-    if (up) {
-      this.enterBuffer();
-    } else {
-      this.agentScroll('down');
-    }
+    // No limite: manda o scroll pro agente (ele guarda o próprio scrollback).
+    this.agentScroll(up ? 'up' : 'down');
   }
 
   /** Início do toque no terminal — guarda o Y p/ medir o arrasto (tablet). */
@@ -3376,17 +3364,9 @@ export class DetalheComponent implements AfterViewChecked {
     const dy = y - this.touchStartY; // >0 = dedo descendo (revela conteúdo acima)
     const atTop = el.scrollTop <= 0;
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    if (this.bufMode()) {
-      // Buffer rola nativo; no TOPO puxando pra baixo → carrega mais história.
-      if (atTop && dy > 20) {
-        this.touchStartY = y;
-        this.loadMoreUp();
-      }
-      return;
-    }
     if (atTop && dy > 24) {
       this.touchStartY = y;
-      this.enterBuffer(); // subir no fim → buffer de scrollback (rolagem lisa)
+      this.agentScroll('up');
     } else if (atBottom && dy < -24) {
       this.touchStartY = y;
       this.agentScroll('down');
@@ -3479,7 +3459,9 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.refreshBurstTimers = [];
     this.refreshScreen(); // já: pode pegar a tela nova se o agente foi rápido
-    for (const delay of [90, 220, 400]) {
+    // O comando de scroll vai por fila e o espelho só é regravado no ciclo do
+    // worker (~0,6s). Cobrimos até ~2,5s p/ o conteúdo novo aparecer com certeza.
+    for (const delay of [250, 600, 1000, 1600, 2400]) {
       this.refreshBurstTimers.push(setTimeout(() => this.refreshScreen(), delay));
     }
   }
