@@ -63,7 +63,18 @@ import { ansiToHtml } from '../../shared/ansi-html';
           }
 
           <div class="hdr-info">
-            <div class="hdr-title">{{ displayName() }}</div>
+            <div class="hdr-title">
+              <span class="hdr-name">{{ displayName() }}</span>
+              @if (!guest()) {
+                <button type="button" class="hdr-rename" (click)="openRename()"
+                        aria-label="Renomear sessão" title="Renomear (nome técnico + nome falado)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                  </svg>
+                </button>
+              }
+            </div>
             <div class="mono hdr-dir">{{ session()?.work_dir || '—' }}</div>
             @if (activeTask()) {
               <div class="hdr-task">
@@ -240,6 +251,32 @@ import { ansiToHtml } from '../../shared/ansi-html';
               </button>
             </div>
           }
+        </section>
+      }
+
+      <!-- Painel "Renomear": nome técnico (tmux/Claude Code) + nome falado (TTS) -->
+      @if (renameOpen() && !guest()) {
+        <section class="rename" aria-label="Renomear sessão">
+          <label class="rename-field">
+            <span class="rename-lbl">Nome (tmux / Claude Code)</span>
+            <input class="rename-input mono" type="text" [ngModel]="renameTech()"
+                   (ngModelChange)="renameTech.set($event)" placeholder="ex: garagem-codigo"
+                   autocomplete="off" spellcheck="false" />
+            <span class="rename-hint">Técnico: só letras/números/-/_ (espaços viram "-").</span>
+          </label>
+          <label class="rename-field">
+            <span class="rename-lbl">Nome falado (app e voz)</span>
+            <input class="rename-input" type="text" [ngModel]="renameDisp()"
+                   (ngModelChange)="renameDisp.set($event)" placeholder="ex: Garagem do Código"
+                   autocomplete="off" />
+            <span class="rename-hint">Livre (acentos/espaços). Usado no app e no TTS.</span>
+          </label>
+          <div class="rename-acts">
+            <button type="button" class="rename-btn" [disabled]="renaming()" (click)="closeRename()">Cancelar</button>
+            <button type="button" class="rename-btn rename-btn--primary" [disabled]="renaming()" (click)="saveRename()">
+              {{ renaming() ? 'Salvando…' : 'Salvar' }}
+            </button>
+          </div>
         </section>
       }
 
@@ -729,6 +766,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
           autocomplete="off"
           [ngModel]="draft()"
           (ngModelChange)="onDraftChange($event)"
+          (paste)="onPaste($event)"
           (keydown.enter)="send()"
           (focus)="inputFocused.set(true)"
           (blur)="inputFocused.set(false)"
@@ -870,12 +908,97 @@ import { ansiToHtml } from '../../shared/ansi-html';
         min-width: 0;
       }
       .hdr-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
         font-size: 17px;
         font-weight: 700;
         color: #f4f5f7;
+      }
+      .hdr-name {
+        min-width: 0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      .hdr-rename {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px;
+        background: transparent;
+        border: 1px solid #283230;
+        border-radius: 8px;
+        color: #8a90a0;
+        cursor: pointer;
+      }
+      .hdr-rename:hover {
+        color: #e7eae9;
+        border-color: #37464f;
+      }
+      /* Painel Renomear */
+      .rename {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #20262a;
+        background: #121614;
+      }
+      .rename-field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .rename-lbl {
+        font-size: 12px;
+        font-weight: 700;
+        color: #c9cdd6;
+      }
+      .rename-input {
+        appearance: none;
+        background: #0e1113;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        color: #f4f5f7;
+        font-size: 14px;
+        padding: 9px 11px;
+        outline: none;
+      }
+      .rename-input:focus {
+        border-color: #2cecc4;
+      }
+      .rename-hint {
+        font-size: 11px;
+        color: #7a8090;
+      }
+      .rename-acts {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .rename-btn {
+        appearance: none;
+        background: transparent;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        color: #c9cdd6;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      .rename-btn--primary {
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        border-color: transparent;
+        color: #06231d;
+      }
+      .rename-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
       .hdr-dir {
         font-size: 12px;
@@ -2233,6 +2356,12 @@ export class DetalheComponent implements AfterViewChecked {
   /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
 
+  /** Painel de renomear (nome técnico do tmux + nome falado/exibição). */
+  protected readonly renameOpen = signal<boolean>(false);
+  protected readonly renameTech = signal<string>('');
+  protected readonly renameDisp = signal<string>('');
+  protected readonly renaming = signal<boolean>(false);
+
   /**
    * Modo BUFFER: rolagem LISA do histórico. Como os TUIs alt-screen (Claude
    * Code) guardam o scrollback dentro do próprio agente (não no tmux), montamos
@@ -2380,6 +2509,17 @@ export class DetalheComponent implements AfterViewChecked {
     const onWinResize = () => this.scheduleTermResize();
     window.addEventListener('resize', onWinResize);
     this.scheduleTermResize();
+    // Ao VOLTAR o app pra frente (ex.: depois de usar "abrir no Mac", que deixa a
+    // janela do tmux grande), reassume o tamanho mobile. Zera lastCols p/ furar o
+    // guard de "não mudou" (o tamanho real pode ter sido alterado por fora).
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        this.lastCols = 0;
+        this.lastRows = 0;
+        this.scheduleTermResize();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     // A 'JetBrains Mono' vem do Google Fonts (async). Se medirmos ANTES de ela
     // carregar, o char-width sai com a métrica da fonte de fallback → o nº de
     // colunas erra: às vezes o pane fica mais largo que a tela (barra de status
@@ -2391,6 +2531,7 @@ export class DetalheComponent implements AfterViewChecked {
     this.destroyRef.onDestroy(() => {
       clearInterval(poll);
       window.removeEventListener('resize', onWinResize);
+      document.removeEventListener('visibilitychange', onVisible);
       if (this.liveTimer) {
         clearTimeout(this.liveTimer);
       }
@@ -2546,6 +2687,63 @@ export class DetalheComponent implements AfterViewChecked {
       this.location.back();
     } else {
       void this.router.navigate(['/inicio']);
+    }
+  }
+
+  /** Abre o painel de renomear, pré-preenchendo com os nomes atuais. */
+  protected openRename(): void {
+    const s = this.session();
+    this.renameTech.set(s?.tmux_name ?? '');
+    this.renameDisp.set(s?.display_name ?? '');
+    this.renameOpen.set(true);
+  }
+
+  protected closeRename(): void {
+    this.renameOpen.set(false);
+  }
+
+  /**
+   * Salva os nomes: display_name (app+TTS, direto) e/ou o nome técnico do tmux
+   * (via worker). Recarrega o doc depois (o rename técnico é assíncrono).
+   */
+  protected saveRename(): void {
+    const id = this.id();
+    const s = this.session();
+    if (!id || !s || this.renaming()) {
+      return;
+    }
+    const tech = this.renameTech().trim();
+    const disp = this.renameDisp().trim();
+    const techChanged = !!tech && tech !== (s.tmux_name ?? '');
+    const dispChanged = disp !== (s.display_name ?? '');
+    if (!techChanged && !dispChanged) {
+      this.renameOpen.set(false);
+      return;
+    }
+    this.renaming.set(true);
+    const finish = () => {
+      this.renaming.set(false);
+      this.renameOpen.set(false);
+      this.loadSession();
+      setTimeout(() => this.loadSession(), 1500); // pega o rename do worker (fila)
+    };
+    const doTech = () => {
+      if (!techChanged) {
+        finish();
+        return;
+      }
+      this.api
+        .renameSession(id, tech)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: finish, error: () => this.renaming.set(false) });
+    };
+    if (dispChanged) {
+      this.api
+        .setDisplayName(id, disp)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: doTech, error: () => this.renaming.set(false) });
+    } else {
+      doTech();
     }
   }
 
@@ -2928,6 +3126,32 @@ export class DetalheComponent implements AfterViewChecked {
       this.pendingFileUrl.set(URL.createObjectURL(file));
     } else {
       this.pendingFileUrl.set(null);
+    }
+  }
+
+  /**
+   * Colar (Cmd/Ctrl+V) com IMAGEM na área de transferência → anexa como se fosse
+   * arrastada (preview + você adiciona uma legenda e envia). Ignora colagem de
+   * texto (deixa o comportamento normal do input).
+   */
+  protected onPaste(event: ClipboardEvent): void {
+    const items = event.clipboardData?.items;
+    if (!items) {
+      return;
+    }
+    for (const it of Array.from(items)) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const file = it.getAsFile();
+        if (file) {
+          event.preventDefault();
+          // Clipboard costuma vir sem nome → dá um p/ o upload/legenda.
+          const named = file.name
+            ? file
+            : new File([file], `colado-${Date.now()}.png`, { type: file.type });
+          this.stageFile(named);
+        }
+        return;
+      }
     }
   }
 

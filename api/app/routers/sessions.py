@@ -10,6 +10,7 @@ Session documents are serialized from Mongo: ``_id`` (ObjectId) -> ``id``
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -395,12 +396,39 @@ async def set_jarvis(
     return {"jarvis": body.jarvis}
 
 
+class SessionDisplayName(BaseModel):
+    """Nome de EXIBIÇÃO/FALADO (livre: acentos, espaços) usado no app e no TTS.
+
+    Separado do ``tmux_name`` (técnico, muda no tmux/Claude Code via PATCH).
+    Vazio/None limpa o display_name (volta a usar o nome técnico).
+    """
+
+    display_name: str | None = None
+
+
+@router.put("/{session_id}/display-name", status_code=200)
+async def set_display_name(
+    request: Request, session_id: str, body: SessionDisplayName
+) -> dict:
+    """Define o nome de exibição/falado da sessão (não mexe no tmux)."""
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    name = (body.display_name or "").strip()[:80] or None
+    await db[settings.sessions_collection].update_one(
+        {"tmux_name": tmux_name}, {"$set": {"display_name": name}}
+    )
+    return {"display_name": name}
+
+
 @router.patch("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
 async def rename_session(
     request: Request, session_id: str, body: SessionRename
 ) -> SessionCreateAccepted:
     """Rename a session's tmux session (TMUX-10)."""
-    new_name = (body.resolved_name or "").strip()
+    raw = (body.resolved_name or "").strip()
+    # tmux não aceita bem ``.``/``:``/espaços no nome da sessão → vira slug técnico.
+    new_name = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:60]
     if not new_name:
         raise HTTPException(status_code=422, detail="new name must not be empty")
 

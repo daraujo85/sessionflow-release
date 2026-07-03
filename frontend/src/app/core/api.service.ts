@@ -106,10 +106,26 @@ export class ApiService {
     });
   }
 
-  renameSession(id: string, displayName: string): Observable<Session> {
-    return this.http.patch<Session>(this.url(`/sessions/${id}`), {
-      display_name: displayName,
+  /**
+   * Renomeia o nome TÉCNICO (tmux/Claude Code). 202 aceito — o worker renomeia
+   * a sessão em background; recarregue o doc depois. O nome é "slugificado" no
+   * servidor (tmux não aceita espaços/pontos).
+   */
+  renameSession(id: string, newName: string): Observable<void> {
+    return this.http.patch<void>(this.url(`/sessions/${id}`), {
+      new_name: newName,
     });
+  }
+
+  /** Define o nome de EXIBIÇÃO/FALADO (app + TTS). Não mexe no tmux. */
+  setDisplayName(
+    id: string,
+    displayName: string,
+  ): Observable<{ display_name: string | null }> {
+    return this.http.put<{ display_name: string | null }>(
+      this.url(`/sessions/${id}/display-name`),
+      { display_name: displayName },
+    );
   }
 
   /**

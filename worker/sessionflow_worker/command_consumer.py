@@ -275,9 +275,23 @@ class CommandConsumer:
 
         # Monta ``tmux [-L socket] attach -t <name>`` com o MESMO socket do server.
         socket_name = getattr(self._server, "socket_name", None)
-        parts = ["tmux"]
+        base = ["tmux"]
         if socket_name and socket_name != "default":
-            parts += ["-L", socket_name]
+            base += ["-L", socket_name]
+        # O app fixa a janela em ``window-size manual`` (tamanho do celular). Ao
+        # anexar no Terminal grande do Mac isso deixa o conteúdo num quadradinho
+        # com o resto vazio. Voltamos p/ ``largest`` → a janela passa a seguir o
+        # MAIOR cliente anexado (o Terminal do Mac) e preenche a tela. Quando o
+        # celular reabre a sessão, o app reassume o ``manual`` no tamanho mobile.
+        try:
+            subprocess.run(
+                base + ["set-option", "-t", name, "-w", "window-size", "largest"],
+                check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        parts = list(base)
         parts += ["attach", "-t", name]
         # shlex.quote usa aspas SIMPLES p/ nomes com espaço (ex. "3 2 1 BANK"),
         # então a string não tem aspas duplas → segura dentro do AppleScript.
@@ -565,15 +579,11 @@ class CommandConsumer:
         self._runtime.rename_session(old, new)
 
         # Preserva o _id: update por tmux_name antigo, sem recriar documento.
+        # NÃO mexe em display_name: o nome "falado/exibição" é editado à parte
+        # (endpoint próprio) e pode diferir do nome técnico do tmux.
         await self._sessions.update_one(
             {"tmux_name": old},
-            {
-                "$set": {
-                    "tmux_name": new,
-                    "display_name": new,
-                    "updated_at": _now(),
-                }
-            },
+            {"$set": {"tmux_name": new, "updated_at": _now()}},
         )
         return {"old": old, "new": new}
 

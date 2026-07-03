@@ -276,6 +276,23 @@ async def _speakable_name(name: str) -> str:
     return label
 
 
+async def _display_name(db: AsyncIOMotorDatabase, name: str) -> str:
+    """Nome de EXIBIÇÃO/FALADO definido pelo usuário (livre) — '' se não houver."""
+    try:
+        doc = await db[SESSIONS_COLLECTION].find_one(
+            {"tmux_name": name}, projection={"display_name": 1}
+        )
+        return ((doc or {}).get("display_name") or "").strip()
+    except Exception:  # noqa: BLE001 - best-effort
+        return ""
+
+
+async def _tts_label(db: AsyncIOMotorDatabase, name: str) -> str:
+    """Nome pro TTS: prefere o display_name do usuário (fala natural); senão gera
+    um falável a partir do nome técnico do tmux."""
+    return await _display_name(db, name) or await _speakable_name(name)
+
+
 # --- Síntese de voz ----------------------------------------------------------
 
 
@@ -424,7 +441,7 @@ async def maybe_speak(
         # (ex.: "sessionflow" → "session flow"), pausa, e então o resumo — assim,
         # com várias sessões falando, dá pra saber de quem é. O ponto é interno
         # → vira pausa no TTS (não a palavra "ponto").
-        label = await _speakable_name(name)
+        label = await _tts_label(db, name)
         spoken = _clean_for_speech(f"Sessão {label}. {summary}" if label else summary)
         audio = await _synth(spoken)
         if audio is None:
