@@ -844,9 +844,10 @@ import { ansiToHtml } from '../../shared/ansi-html';
             }
           </div>
           <div class="shot-bar">
-            <span class="shot-tip">Arraste para selecionar a área</span>
+            <span class="shot-tip">Arraste para recortar, ou anexe tudo</span>
             <span class="shot-acts">
               <button type="button" class="shot-btn" (click)="cancelShot()">Cancelar</button>
+              <button type="button" class="shot-btn" (click)="confirmShotFull()">Anexar tudo</button>
               <button type="button" class="shot-btn shot-btn--primary" [disabled]="!shotHasSel()" (click)="confirmShot()">
                 Anexar recorte
               </button>
@@ -3406,6 +3407,22 @@ export class DetalheComponent implements AfterViewChecked {
           type: 'image/png',
         });
         this.stageFile(file);
+      }
+      this.closeShot();
+    }, 'image/png');
+  }
+
+  /** Anexa a captura INTEIRA (aba/janela/tela toda), sem exigir recorte. */
+  protected confirmShotFull(): void {
+    const src = this.shotCanvas;
+    if (!src) {
+      return;
+    }
+    src.toBlob((blob) => {
+      if (blob) {
+        this.stageFile(
+          new File([blob], `captura-${Date.now()}.png`, { type: 'image/png' }),
+        );
       }
       this.closeShot();
     }, 'image/png');
