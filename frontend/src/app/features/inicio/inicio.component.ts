@@ -324,6 +324,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             </div>
             </div>
           }
+          @if (remainingTasks() > 0) {
+            <button type="button" class="sf-task-more" (click)="showMoreTasks()">
+              Ver mais {{ remainingTasks() }}
+            </button>
+          }
         </div>
       } @else {
         <p class="sf-empty">
@@ -899,6 +904,24 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         margin: 0;
         padding: 4px 2px;
       }
+      .sf-task-more {
+        display: block;
+        width: fit-content;
+        margin: 12px auto 2px;
+        padding: 8px 18px;
+        background: transparent;
+        border: 1px solid #263038;
+        border-radius: 999px;
+        color: #9fb0ad;
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .sf-task-more:hover {
+        color: #e7eae9;
+        border-color: #37464f;
+      }
 
       /* Respect reduced-motion: disable entrance + press feedback. */
       @media (prefers-reduced-motion: reduce) {
@@ -995,14 +1018,62 @@ export class InicioComponent implements OnInit {
     return [...set].sort();
   });
 
-  readonly recentTasks = computed(() => {
+  /** Tamanho do "lote" carregado a cada avanço do infinite scroll. */
+  private static readonly TASKS_PAGE = 10;
+  /** Limite atual; null = mostrar só as de HOJE (default). */
+  readonly taskLimit = signal<number | null>(null);
+
+  /** Tarefas filtradas (status/sessão) e ordenadas por mais recentes primeiro. */
+  readonly filteredTasks = computed(() => {
     const st = this.taskStatus();
     const ses = this.taskSession();
-    return this.tasks().filter(
-      (t) =>
-        (st === 'all' || t.state === st) && (!ses || t.session_id === ses),
-    );
+    return this.tasks()
+      .filter(
+        (t) =>
+          (st === 'all' || t.state === st) && (!ses || t.session_id === ses),
+      )
+      .slice()
+      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''));
   });
+
+  /**
+   * Tarefas exibidas: por padrão só as de HOJE; se não houver nenhuma hoje,
+   * mostra um primeiro lote (p/ não ficar vazio). Ao rolar/"ver mais", o
+   * {@link taskLimit} cresce e passa a incluir as mais antigas.
+   */
+  readonly recentTasks = computed(() => {
+    const all = this.filteredTasks();
+    const limit = this.taskLimit();
+    if (limit === null) {
+      const today = all.filter((t) => isToday(t.updated_at));
+      return today.length > 0 ? today : all.slice(0, InicioComponent.TASKS_PAGE);
+    }
+    return all.slice(0, limit);
+  });
+
+  /** Quantas tarefas ainda faltam além das visíveis (0 = tudo à mostra). */
+  readonly remainingTasks = computed(() =>
+    Math.max(0, this.filteredTasks().length - this.recentTasks().length),
+  );
+
+  /** Carrega o próximo lote (botão "Ver mais" / infinite scroll). */
+  showMoreTasks(): void {
+    if (this.remainingTasks() === 0) {
+      return;
+    }
+    this.taskLimit.set(this.recentTasks().length + InicioComponent.TASKS_PAGE);
+  }
+
+  /** Ao rolar a página perto do fim da lista, carrega mais (infinite scroll). */
+  onTasksScroll(): void {
+    if (this.remainingTasks() === 0) {
+      return;
+    }
+    const doc = document.documentElement;
+    if (doc.scrollHeight - doc.scrollTop - doc.clientHeight < 240) {
+      this.showMoreTasks();
+    }
+  }
 
   /** Tracks how many SSE events we have already reacted to. */
   private lastEventCount = 0;
@@ -1018,6 +1089,12 @@ export class InicioComponent implements OnInit {
         this.reloadSessions();
         this.reloadTasks();
       }
+    });
+    // Trocar filtro/sessão volta a mostrar só as de hoje (reseta a paginação).
+    effect(() => {
+      this.taskStatus();
+      this.taskSession();
+      this.taskLimit.set(null);
     });
   }
 
@@ -1036,11 +1113,15 @@ export class InicioComponent implements OnInit {
       this.reloadSessions();
       this.reloadTasks();
     }, InicioComponent.POLL_MS);
+    // Infinite scroll da lista de tarefas: carrega mais ao chegar perto do fim.
+    const onScroll = () => this.onTasksScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
     this.destroyRef.onDestroy(() => {
       if (this.pollHandle !== null) {
         clearInterval(this.pollHandle);
         this.pollHandle = null;
       }
+      window.removeEventListener('scroll', onScroll);
     });
   }
 
@@ -1424,4 +1505,21 @@ export class InicioComponent implements OnInit {
     }
     return `color-mix(in srgb, ${color} 16%, transparent)`;
   }
+}
+
+/** True se o ISO cai no dia de HOJE (fuso local). Sem data → false. */
+function isToday(iso: string | null | undefined): boolean {
+  if (!iso) {
+    return false;
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return false;
+  }
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
 }

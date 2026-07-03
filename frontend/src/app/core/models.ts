@@ -98,6 +98,8 @@ export interface Task {
   session_id: string;
   title: string;
   state: TaskState;
+  /** ISO da última mudança do marco (para ordenar/filtrar "do dia"). */
+  updated_at?: string | null;
 }
 
 /** Estado do link compartilhável de uma sessão (efêmero, escopado). */

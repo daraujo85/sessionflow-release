@@ -705,7 +705,10 @@ class CommandConsumer:
             await self._mark_working(name)  # UI já vira "rodando"
             asyncio.create_task(self._resume_and_send(name, text))
             return {"name": name, "note": "resuming"}
-        self._send_keys(name, text, enter=bool(enter))
+        if enter:
+            await self._type_and_submit(name, text)
+        else:
+            self._send_keys(name, text, enter=False)
         # Submeter (enter) é INTERAÇÃO do usuário → marca atividade na hora (a
         # tela também mudaria em ~6s, mas isso deixa o "última atividade" imediato).
         # Digitação ao vivo (enter=False) é transitória, não conta.
@@ -724,7 +727,7 @@ class CommandConsumer:
         try:
             await self._recreate_and_relaunch(name)
             await self._await_agent_ready(name)
-            self._send_keys(name, text, enter=True)
+            await self._type_and_submit(name, text)
             await self._sessions.update_one(
                 {"tmux_name": name}, {"$set": {"last_activity_at": _now()}}
             )
@@ -907,6 +910,20 @@ class CommandConsumer:
         tecla); ``enter=False`` no modo ao vivo (sem submeter).
         """
         self._active_pane(name).send_keys(command, enter=enter, literal=True)
+
+    async def _type_and_submit(self, name: str, text: str) -> None:
+        """Digita ``text`` e SUBMETE com um Enter SEPARADO (após uma pausa).
+
+        Por que não mandar texto+Enter juntos: TUIs com *bracketed paste* (ex.:
+        Claude Code) englobam o Enter grudado no paste como uma quebra de linha —
+        o texto fica no input e NÃO envia (o usuário precisava dar Enter à mão).
+        Enviando o texto, esperando o paste "fechar" e então mandando o Enter como
+        evento próprio, a submissão acontece de forma confiável.
+        """
+        self._send_keys(name, text, enter=False)
+        # Pausa proporcional ao tamanho (paste maior demora mais a assentar).
+        await asyncio.sleep(min(0.6, 0.12 + len(text) / 4000))
+        self._send_key(name, "Enter")
 
     def _send_key(self, name: str, tmux_key: str) -> None:
         """Envia uma tecla nomeada do tmux (ex.: ``Up``, ``Enter``) SEM Enter.
