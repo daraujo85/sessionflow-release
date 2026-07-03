@@ -927,7 +927,7 @@ class CommandConsumer:
         except Exception as exc:  # noqa: BLE001 - best-effort
             raise CommandError(f"falha ao ir pro fim: {exc}") from exc
 
-    def _send_wheel(self, name: str, up: bool, count: int = 7) -> None:
+    def _send_wheel(self, name: str, up: bool, count: int = 4) -> None:
         """Injeta ``count`` eventos de RODA DO MOUSE (SGR 1006) no pane.
 
         Sequência: ``ESC [ < <btn> ; <col> ; <row> M`` com btn 64 (cima) / 65

@@ -543,8 +543,16 @@ import { ansiToHtml } from '../../shared/ansi-html';
         }
 
         <!-- Buffer de scrollback: indicador de "carregando histórico". -->
-        @if (bufMode() && bufLoading()) {
-          <div class="buf-loading" role="status" aria-live="polite">carregando histórico…</div>
+        @if (bufMode()) {
+          <div class="buf-loading" role="status" aria-live="polite">
+            @if (bufLoading()) {
+              carregando histórico… ({{ bufCount() }})
+            } @else if (bufExhaustedUi()) {
+              início do histórico · {{ bufCount() }} linhas
+            } @else {
+              histórico · {{ bufCount() }} linhas · role p/ cima
+            }
+          </div>
         }
 
         <!-- Toast "Copiado": confirma a cópia da seleção pro clipboard. -->
@@ -2243,6 +2251,10 @@ export class DetalheComponent implements AfterViewChecked {
   );
   /** True enquanto busca a próxima leva de histórico (mostra "carregando…"). */
   protected readonly bufLoading = signal<boolean>(false);
+  /** Nº de linhas no buffer (diagnóstico visível no indicador). */
+  protected readonly bufCount = signal<number>(0);
+  /** Espelho de {@link bufExhausted} p/ o template (topo do histórico atingido). */
+  protected readonly bufExhaustedUi = signal<boolean>(false);
   /** Linhas acumuladas (mais antigas no topo). */
   private bufLines: string[] = [];
   /** Guard: uma busca de "mais histórico" em andamento. */
@@ -3496,7 +3508,9 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.bufLines = cur.replace(/\s+$/, '').split('\n');
     this.bufText.set(this.bufLines.join('\n'));
+    this.bufCount.set(this.bufLines.length);
     this.bufExhausted = false;
+    this.bufExhaustedUi.set(false);
     this.bufEmptyStreak = 0;
     this.bufBusy = false;
     this.bufMode.set(true);
@@ -3585,6 +3599,7 @@ export class DetalheComponent implements AfterViewChecked {
                 );
               }
               this.bufText.set(this.bufLines.join('\n'));
+              this.bufCount.set(this.bufLines.length);
               this.bufAdjusting = true;
               queueMicrotask(() => {
                 const el2 = this.termEl()?.nativeElement;
@@ -3608,6 +3623,7 @@ export class DetalheComponent implements AfterViewChecked {
               this.bufEmptyStreak++;
               if (this.bufEmptyStreak >= 2) {
                 this.bufExhausted = true;
+                this.bufExhaustedUi.set(true);
               }
               this.bufBusy = false;
               this.bufLoading.set(false);
@@ -3626,7 +3642,9 @@ export class DetalheComponent implements AfterViewChecked {
     this.bufMode.set(false);
     this.bufLines = [];
     this.bufText.set('');
+    this.bufCount.set(0);
     this.bufExhausted = false;
+    this.bufExhaustedUi.set(false);
     this.bufEmptyStreak = 0;
     this.bufBusy = false;
     this.bufLoading.set(false);
@@ -3739,18 +3757,21 @@ function stitchScrollback(buffer: string[], frame: string[]): string[] | null {
   const fn = frame.map(norm);
   for (let k = 0; k < fn.length; k++) {
     let match = 0;
-    let nonblank = 0;
+    let substantial = 0; // linhas casadas "distintivas" (≥6 chars) — âncora forte
     while (
       k + match < fn.length &&
       match < bn.length &&
       fn[k + match] === bn[match]
     ) {
-      if (fn[k + match] !== '') {
-        nonblank++;
+      if (fn[k + match].length >= 6) {
+        substantial++;
       }
       match++;
     }
-    if (match >= 4 && nonblank >= 2) {
+    // Aceita overlap MENOR (panes de celular são baixos, o passo do scroll pode
+    // deixar poucas linhas em comum), desde que ancore em algo distintivo:
+    // ≥3 linhas casadas com ≥1 substancial, OU ≥2 substanciais (bem seguro).
+    if ((match >= 3 && substantial >= 1) || substantial >= 2) {
       return frame.slice(0, k); // linhas novas (mais antigas) a prepender
     }
   }
