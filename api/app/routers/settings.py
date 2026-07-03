@@ -27,10 +27,16 @@ def milestones_instruction(session: str) -> str:
         '"status":"todo|doing|blocked|done"}]}, criando e atualizando o status '
         "conforme avança. O SessionFlow lê esse arquivo para mostrar suas tarefas. "
         f"Use EXATAMENTE esse nome de arquivo (milestones.{session}.json). "
-        "Mantenha de 3 a 8 itens e não remova os concluídos. "
         "IMPORTANTE: assim que TERMINAR uma tarefa, marque-a como \"done\" na hora "
         "(não deixe em \"doing\"); tenha no máximo UMA tarefa em \"doing\" por vez. "
-        "Marcar \"done\" é o que sinaliza a conclusão pro usuário (som + destaque)."
+        "Marcar \"done\" é o que sinaliza a conclusão pro usuário (som + destaque). "
+        "MANTENHA O PAINEL ENXUTO E CONFIÁVEL (faça faxina sempre): a lista deve "
+        "refletir o estado REAL do trabalho — no máximo ~8 itens focados no que "
+        "está vivo/recente. NÃO acumule histórico: quando um marco ficar obsoleto "
+        "ou for superado, REMOVA-o; não mantenha várias linhas 'done' sobre o mesmo "
+        "ticket/feature (colapse em UMA). Antes de mudar um status, confira o "
+        "estado real (o que de fato foi concluído). Poucos itens verdadeiros valem "
+        "mais que uma lista longa e desatualizada."
     )
 
 
