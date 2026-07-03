@@ -47,6 +47,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -134,6 +135,14 @@ def _clean_for_speech(text: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Anti-repetição do JARVIS: último resumo falado por sessão + quando (monotonic).
+# Se a detecção de "waiting" re-dispara (pisca após o anti-flap) ou a sessão volta
+# a aguardar o MESMO texto, não repetimos a fala dentro dessa janela — evita o
+# "fala a mesma coisa de novo tempo depois". Reseta no restart do worker.
+_LAST_SPOKEN: dict[str, tuple[str, float]] = {}
+_SPEAK_DEDUP_S = 150.0
 
 
 # --- HTTP helpers (urllib em executor; sem dependência nova) -----------------
@@ -404,6 +413,13 @@ async def maybe_speak(
         if not await is_enabled(db, name):
             return
         summary = _clean_for_speech(await _summary(screen_text, title, desc))
+        # Dedupe por conteúdo+tempo: se o MESMO resumo foi falado há pouco pra esta
+        # sessão, não repete (economiza TTS e evita a fala duplicada "de novo").
+        prev = _LAST_SPOKEN.get(name)
+        if prev and prev[0] == summary and (time.monotonic() - prev[1]) < _SPEAK_DEDUP_S:
+            logger.debug("jarvis: resumo repetido em %r — pulando", name)
+            return
+        _LAST_SPOKEN[name] = (summary, time.monotonic())
         # Anuncia a sessão no INÍCIO, com um nome FALÁVEL gerado pelo modelo
         # (ex.: "sessionflow" → "session flow"), pausa, e então o resumo — assim,
         # com várias sessões falando, dá pra saber de quem é. O ponto é interno

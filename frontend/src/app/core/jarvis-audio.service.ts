@@ -40,6 +40,10 @@ export class JarvisAudioService {
   private suppressed = false;
   private pending: JarvisAudioFrame | null = null;
   private lastAt: string | null = null;
+  /** Reforço anti-repetição: último TEXTO falado + quando (ms). Pega casos de
+   * reconexão do SSE reentregando um frame com `at` diferente mas mesmo conteúdo. */
+  private lastText: string | null = null;
+  private lastTextAt = 0;
   private started = false;
 
   /** Liga o pipeline: efeito no signal de SSE + desbloqueio por gesto. */
@@ -91,6 +95,17 @@ export class JarvisAudioService {
         return;
       }
       this.lastAt = frame.at ?? null;
+      // Dedup por CONTEÚDO+tempo: se o mesmo texto foi falado há < 150s (ex.:
+      // reconexão do SSE ou re-detecção de "waiting"), não repete.
+      const text = (frame.text || frame.title || '').trim();
+      const now = Date.now();
+      if (text && text === this.lastText && now - this.lastTextAt < 150_000) {
+        return;
+      }
+      if (text) {
+        this.lastText = text;
+        this.lastTextAt = now;
+      }
       if (!this.enabled()) {
         return;
       }
