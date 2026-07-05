@@ -137,6 +137,62 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# --- Guard de recursos (não iniciar sessão sem CPU/memória) ------------------
+
+# Limiares (env-configuráveis). Defaults conservadores p/ o host do worker.
+_MIN_FREE_MB = float(os.environ.get("SESSIONFLOW_MIN_FREE_MB", "1024"))
+_MAX_LOAD_PER_CORE = float(os.environ.get("SESSIONFLOW_MAX_LOAD_PER_CORE", "6"))
+
+
+def _available_mem_mb() -> float | None:
+    """RAM disponível em MB (macOS via ``vm_stat``). ``None`` se indisponível."""
+    try:
+        out = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=3
+        ).stdout
+        page = 4096
+        m = re.search(r"page size of (\d+) bytes", out)
+        if m:
+            page = int(m.group(1))
+        free_pages = 0
+        for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+            mm = re.search(rf"{key}:\s+(\d+)\.", out)
+            if mm:
+                free_pages += int(mm.group(1))
+        return free_pages * page / (1024 * 1024)
+    except Exception:  # noqa: BLE001 - best-effort; sem métrica, não bloqueia
+        return None
+
+
+def _load_per_core() -> float | None:
+    """Load average de 1min por núcleo (``None`` se indisponível)."""
+    try:
+        return os.getloadavg()[0] / (os.cpu_count() or 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resource_block_reason() -> str | None:
+    """Motivo p/ RECUSAR iniciar uma sessão agora, ou ``None`` se há folga.
+
+    Fail-open: métrica indisponível não bloqueia. Checa memória livre e carga
+    de CPU contra os limiares configuráveis.
+    """
+    mem = _available_mem_mb()
+    if mem is not None and mem < _MIN_FREE_MB:
+        return (
+            f"memória insuficiente pra iniciar ({int(mem)} MB livres < "
+            f"{int(_MIN_FREE_MB)} MB). Pare/elimine sessões e tente de novo."
+        )
+    load = _load_per_core()
+    if load is not None and load > _MAX_LOAD_PER_CORE:
+        return (
+            f"CPU sobrecarregada pra iniciar (carga {load:.1f}/núcleo > "
+            f"{_MAX_LOAD_PER_CORE:.0f}). Aguarde baixar e tente de novo."
+        )
+    return None
+
+
 def _command_age_s(command: dict[str, Any]) -> float | None:
     """Idade do comando em segundos a partir de ``requested_at`` (ISO-8601).
 
@@ -435,6 +491,11 @@ class CommandConsumer:
         if self._runtime.has_session(name):
             raise CommandError(f"sessão tmux {name!r} já existe")
 
+        # Não inicia se o host não tem CPU/memória sobrando (evita derrubar tudo).
+        reason = _resource_block_reason()
+        if reason:
+            raise CommandError(reason)
+
         # new_session valida work_dir inexistente e nome inválido (erro tipado).
         info = self._runtime.new_session(name, work_dir)
 
@@ -615,6 +676,10 @@ class CommandConsumer:
         work_dir = doc.get("work_dir")
         if not work_dir:
             raise CommandError(f"não é possível retomar {name!r}: sem work_dir salvo")
+        # Mesmo guard do create: não ressuscita agente sem CPU/memória sobrando.
+        reason = _resource_block_reason()
+        if reason:
+            raise CommandError(reason)
 
         agent_type = _coerce_agent_type(doc.get("agent_type"))
         model = doc.get("model")

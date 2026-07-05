@@ -590,15 +590,20 @@ class OutputCapture:
         capturado (tela visível).
         """
         text = self.capture_screen(tmux_name)
-        scrollback = self.capture_scrollback(tmux_name)
         now = _now()
+        # NÃO capturamos o scrollback (2000 linhas coloridas) a CADA ciclo: era um
+        # capture-pane pesado, síncrono, por sessão — atrasava o ciclo ao vivo (e o
+        # push SSE junto), deixando o espelho lento. O scrollback é útil só sob
+        # demanda (modo Histórico) e é inútil em TUIs alt-screen (o tmux não guarda
+        # histórico deles). Guardamos ``scrollback = text`` (barato); o Histórico
+        # cai no texto visível, que é o que já valia p/ esses agentes.
         await self._db[collection].update_one(
             {"tmux_name": tmux_name},
             {
                 "$set": {
                     "tmux_name": tmux_name,
                     "text": text,
-                    "scrollback": scrollback,
+                    "scrollback": text,
                     "at": now,
                 }
             },
