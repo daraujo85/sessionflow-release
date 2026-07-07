@@ -1189,11 +1189,28 @@ export class SessoesComponent {
             (s.display_name ?? '').toLowerCase().includes(q),
         )
       : byFilter;
-    // Favoritas primeiro (mantém a ordem original dentro de cada grupo).
-    return [...filtered].sort(
-      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
-    );
+    // Favoritas primeiro; dentro de cada grupo, por ÚLTIMO USO (mais recente no
+    // topo) — assim a sessão que você acabou de parar fica à mão, sem sumir lá
+    // embaixo por ordem alfabética.
+    return [...filtered].sort((a, b) => {
+      const fav = (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0);
+      if (fav !== 0) {
+        return fav;
+      }
+      return this.lastUsedTs(b) - this.lastUsedTs(a);
+    });
   });
+
+  /** Timestamp (ms) do último uso da sessão p/ ordenação. Usa a última atividade
+   * REAL (tela mudou/input); cai p/ updated/created. Ausente/ inválido → 0. */
+  private lastUsedTs(s: Session): number {
+    const iso =
+      s.last_activity_at ??
+      (s['updated_at'] as string | undefined) ??
+      (s['created_at'] as string | undefined);
+    const t = iso ? Date.parse(iso) : 0;
+    return Number.isNaN(t) ? 0 : t;
+  }
 
   // ── Swipe-to-delete (iOS style) ─────────────────────────────────────────
   /** Limites do arrasto. Aberto = -88px; gatilho de snap = -72px. */
