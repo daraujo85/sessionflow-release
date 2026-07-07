@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -90,6 +91,33 @@ _AGENT_NAME_RE = re.compile(r'Agent\s+"([^"]{1,60})"')
 _AGENT_DONE_RE = re.compile(r"finished|done|conclu", re.IGNORECASE)
 
 
+# --- Auto-continue em erro de API transitório --------------------------------
+
+# Banner de erro que o agente mostra e depois PARA no prompt esperando input.
+# Cobre o "API Error: Server error mid-response..." do Claude Code e variantes
+# transitórias comuns. Anda anexado a "API Error" p/ evitar falso-positivo.
+_API_ERROR_RE = re.compile(
+    r"API Error|Server error mid-response|overloaded_error|Overloaded|"
+    r"Request timed out|internal server error",
+    re.IGNORECASE,
+)
+# Liga/desliga o auto-continue (env). Default ligado.
+_AUTOCONTINUE_ON = os.environ.get("SESSIONFLOW_AUTOCONTINUE", "1") not in ("0", "false", "no")
+# Máx. de continues automáticos SEGUIDOS antes de desistir e avisar o usuário.
+_MAX_AUTOCONTINUE = 4
+# Tempo (s) que a tela com erro precisa ficar ESTÁVEL antes de mandar continue
+# (garante que o agente parou de fato, não está mid-stream).
+_AUTOCONT_STABLE_S = 6.0
+
+
+def _screen_has_api_error(text: str) -> bool:
+    """True se as últimas linhas da tela mostram um erro de API transitório."""
+    if not text:
+        return False
+    tail = "\n".join(text.split("\n")[-15:])
+    return bool(_API_ERROR_RE.search(tail))
+
+
 def derive_subagents(text: str) -> tuple[int, list[str]]:
     """Extrai (qtd, nomes) de sub-agents RODANDO a partir da tela visível.
 
@@ -150,6 +178,10 @@ class Discovery:
         # por sessão. Evita re-notificar/re-falar a MESMA atenção em rajada quando
         # a tela pisca idle↔ocupado (ex.: reflow do agente após um resize).
         self._last_notified: dict[str, tuple[str, float]] = {}
+        # Auto-continue em erro de API: estado por sessão (assinatura da tela com
+        # erro, desde quando estável, quantos continues seguidos, último frame já
+        # tratado). Ver _maybe_auto_continue.
+        self._autocont: dict[str, dict] = {}
 
     @property
     def collection(self) -> str:
@@ -281,6 +313,8 @@ class Discovery:
                 attention = "idle"
             activity = derive_activity(screen_text, info.agent_type, attention)
             subagents, subagent_names = derive_subagents(screen_text)
+            # Erro de API transitório com o agente parado → manda "continue".
+            await self._maybe_auto_continue(info, screen_text, screen_sig)
 
         set_fields = {
             "tmux_name": info.name,
@@ -384,6 +418,76 @@ class Discovery:
         if name not in self._scr_active:
             return False
         return (now - self._scr_since.get(name, now)) >= IDLE_SECONDS
+
+    async def _maybe_auto_continue(
+        self, info: SessionInfo, screen_text: str, screen_sig: str
+    ) -> None:
+        """Se a tela mostra um erro de API e o agente PAROU no prompt, manda
+        "continue" automaticamente pra ele retomar — com trava anti-loop.
+
+        Só age quando o frame COM erro fica estável por {@link _AUTOCONT_STABLE_S}
+        (agente parado, não mid-stream). Limita a {@link _MAX_AUTOCONTINUE}
+        continues seguidos; ao esgotar, avisa o usuário e para. O contador zera
+        quando a sessão volta a progredir sem erro.
+        """
+        if not _AUTOCONTINUE_ON:
+            return
+        name = info.name
+        st = self._autocont.setdefault(
+            name, {"sig": None, "since": 0.0, "count": 0, "done_sig": None}
+        )
+        now = time.monotonic()
+
+        if not _screen_has_api_error(screen_text):
+            # Sem erro: se a tela mudou (progresso real), zera o contador.
+            if st["sig"] != screen_sig:
+                st["count"] = 0
+            st["sig"] = screen_sig
+            st["since"] = now
+            return
+
+        # Há erro na tela. Rastreia estabilidade do frame com erro.
+        if st["sig"] != screen_sig:
+            st["sig"] = screen_sig
+            st["since"] = now
+            return  # frame ainda mudando → espera estabilizar
+        if now - st["since"] < _AUTOCONT_STABLE_S:
+            return  # estável há pouco tempo → aguarda
+        if st["done_sig"] == screen_sig:
+            return  # este frame parado já foi tratado
+
+        st["done_sig"] = screen_sig
+        if st["count"] >= _MAX_AUTOCONTINUE:
+            # Esgotou: avisa o usuário (1x por frame) e para de tentar.
+            jv = await jarvis.is_enabled(self._db, name)
+            await self._emit(
+                type="attention", kind="attention", session_id=name,
+                title=f"{name}: erro de API persistente",
+                desc="Tentei continuar automaticamente algumas vezes e o erro "
+                     "voltou — precisa de você.",
+                jarvis=jv,
+            )
+            return
+
+        st["count"] += 1
+        await self._send_continue(name)
+        logger.info("auto-continue #%d enviado p/ %r (erro de API)", st["count"], name)
+
+    async def _send_continue(self, name: str) -> None:
+        """Digita 'continue' e submete com Enter SEPARADO (bracketed-paste-safe)."""
+        try:
+            session = self._tmux.server.sessions.get(session_name=name, default=None)
+            if session is None:
+                return
+            window = session.active_window
+            pane = window.active_pane if window else None
+            if pane is None:
+                return
+            pane.send_keys("continue", enter=False, literal=True)
+            await asyncio.sleep(0.15)  # deixa o paste fechar antes do Enter
+            pane.send_keys("Enter", enter=False, literal=False)
+        except Exception:  # noqa: BLE001 - best-effort; nunca derruba o ciclo
+            logger.debug("auto-continue: falha ao enviar p/ %r", name, exc_info=True)
 
     async def _maybe_notify_attention(
         self, info: SessionInfo, attention: str | None
