@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""sf — delega tarefas pesadas a workers filhos do SessionFlow em OUTROS
+provedores (gemini/codex/opencode/claude) e colhe só o RESULTADO, sem poluir a
+janela de contexto do chefe.
+
+Modelo "delega-e-revisa": o filho roda autônomo (yolo) e, ao terminar, escreve
+um resumo objetivo num arquivo de HANDOFF. O chefe lê só esse arquivo.
+
+Comandos:
+  sf delegate --provider gemini|codex|opencode|claude [--model M] [--effort E] \
+              [--dir DIR] --task "TEXTO" [--name NOME]
+  sf check <name-ou-id> [--dir DIR]
+
+Sem dependências externas (usa só a stdlib: urllib). Lê email/senha/porta do
+.env do SessionFlow.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import string
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+# Caminho fixo do .env do projeto SessionFlow (fonte das credenciais/porta).
+ENV_PATH = "/Users/diegoaraujo/Documents/projects/sessionflow/.env"
+
+PROVIDERS = ("gemini", "codex", "opencode", "claude")
+
+
+# --------------------------------------------------------------------------- #
+# .env / config
+# --------------------------------------------------------------------------- #
+def load_env(path=ENV_PATH):
+    """Lê chaves simples KEY=VALUE de um .env (ignora comentários/linhas vazias)."""
+    env = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                env[key.strip()] = val.strip()
+    except FileNotFoundError:
+        die(f"não encontrei o .env do SessionFlow em {path}")
+    return env
+
+
+def api_base(env):
+    port = env.get("API_HOST_PORT", "8000")
+    return f"http://127.0.0.1:{port}"
+
+
+# --------------------------------------------------------------------------- #
+# HTTP helpers (urllib)
+# --------------------------------------------------------------------------- #
+def _request(method, url, token=None, body=None, timeout=30):
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        die(f"falha de conexão com a API ({url}): {exc.reason}. "
+            "A stack do SessionFlow está de pé?")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {"_raw": raw}
+    return status, parsed
+
+
+def login(env):
+    base = api_base(env)
+    email = env.get("SESSIONFLOW_EMAIL")
+    password = env.get("SESSIONFLOW_PASSWORD")
+    if not email or not password:
+        die("SESSIONFLOW_EMAIL/SESSIONFLOW_PASSWORD ausentes no .env")
+    status, body = _request(
+        "POST", f"{base}/auth/login", body={"email": email, "password": password}
+    )
+    if status != 200 or "token" not in body:
+        die(f"login falhou (HTTP {status}): {body}")
+    return body["token"]
+
+
+def list_sessions(env, token):
+    base = api_base(env)
+    status, body = _request("GET", f"{base}/sessions", token=token)
+    if status != 200:
+        die(f"GET /sessions falhou (HTTP {status}): {body}")
+    return body.get("items", [])
+
+
+# --------------------------------------------------------------------------- #
+# util
+# --------------------------------------------------------------------------- #
+def die(msg, code=1):
+    print(f"sf: erro: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def slugify_name(task):
+    """Deriva um nome de tmux válido ([A-Za-z0-9_-]) a partir da tarefa."""
+    words = re.sub(r"[^A-Za-z0-9]+", "-", task.lower()).strip("-")
+    slug = "-".join(words.split("-")[:4])[:28].strip("-") or "task"
+    rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"w-{slug}-{rand}"
+
+
+def sanitize_name(name):
+    """Garante nome de tmux válido a partir de um nome fornecido pelo usuário."""
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-")[:60]
+    return clean or slugify_name(name)
+
+
+def handoff_dir(work_dir):
+    return os.path.join(work_dir, ".sessionflow", "handoff")
+
+
+def handoff_md_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.md")
+
+
+def registry_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.json")
+
+
+def build_handoff_task(task, work_dir, name):
+    """Monta o texto injetado no filho: a tarefa + bloco de HANDOFF (PT-BR)."""
+    md_path = handoff_md_path(work_dir, name)
+    return (
+        f"{task}\n\n"
+        "----- INSTRUÇÕES DE HANDOFF (worker delegado) -----\n"
+        "Você é um WORKER DELEGADO. Execute SOMENTE esta tarefa, de forma "
+        "AUTÔNOMA — não peça confirmação nem faça perguntas. Ao terminar, "
+        "escreva um resumo OBJETIVO do resultado (o que você fez; arquivos/"
+        "PRs/commits envolvidos; como validar; pendências ou bloqueios) no "
+        f"arquivo:\n  {md_path}\n"
+        "Crie o diretório se necessário. Depois de escrever esse arquivo, "
+        "PARE — não faça mais nada."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# comando: delegate
+# --------------------------------------------------------------------------- #
+def cmd_delegate(args):
+    provider = args.provider
+    if provider not in PROVIDERS:
+        die(f"--provider inválido: {provider}. Use um de {', '.join(PROVIDERS)}")
+
+    work_dir = os.path.abspath(args.dir or os.getcwd())
+    name = sanitize_name(args.name) if args.name else slugify_name(args.task)
+
+    # gemini não tem dimensão de esforço → força None.
+    effort = None if provider == "gemini" else args.effort
+
+    env = load_env()
+    token = login(env)
+    base = api_base(env)
+
+    payload = {
+        "name": name,
+        "display_name": name,
+        "agent_type": provider,
+        "work_dir": work_dir,
+        "model": args.model,   # None => default do provedor
+        "effort": effort,
+    }
+    status, body = _request("POST", f"{base}/sessions", token=token, body=payload)
+    if status == 409:
+        die(f"já existe uma sessão ativa chamada '{name}'. Use --name outro.")
+    if status != 202:
+        die(f"criação falhou (HTTP {status}): {body}")
+
+    # POLL até a sessão aparecer com status running (criação é assíncrona).
+    session = None
+    deadline = time.time() + 40
+    while time.time() < deadline:
+        for s in list_sessions(env, token):
+            if s.get("tmux_name") == name or s.get("display_name") == name:
+                session = s
+                break
+        if session and (session.get("status") or "").lower() == "running":
+            break
+        session = None
+        time.sleep(2)
+
+    if session is None:
+        die("a sessão não subiu em 40s (não apareceu como running). "
+            f"Verifique 'sf check {name}' em instantes ou o worker do SessionFlow.")
+
+    session_id = session["id"]
+
+    # Injeta a tarefa + bloco de handoff.
+    task_text = build_handoff_task(args.task, work_dir, name)
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": task_text, "enter": True},
+    )
+    if status != 202:
+        die(f"envio da tarefa falhou (HTTP {status}): {body}")
+
+    # Registro local p/ o 'check' resolver por nome.
+    os.makedirs(handoff_dir(work_dir), exist_ok=True)
+    reg = {
+        "id": session_id,
+        "name": name,
+        "dir": work_dir,
+        "provider": provider,
+        "model": args.model,
+        "effort": effort,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with open(registry_path(work_dir, name), "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"aviso: não consegui gravar o registro local: {exc}", file=sys.stderr)
+
+    md_path = handoff_md_path(work_dir, name)
+    model_lbl = args.model or "(default)"
+    print("delegado ✅")
+    print(f"  handle:  {name}  (id={session_id})")
+    print(f"  provedor: {provider} | modelo: {model_lbl}"
+          + (f" | effort: {effort}" if effort else ""))
+    print(f"  handoff: {md_path}")
+    print(f"  acompanhe: sf check {name}"
+          + (f" --dir {work_dir}" if work_dir != os.getcwd() else ""))
+
+
+# --------------------------------------------------------------------------- #
+# comando: check
+# --------------------------------------------------------------------------- #
+def cmd_check(args):
+    target = args.target
+    work_dir = os.path.abspath(args.dir or os.getcwd())
+
+    # Tenta achar o registro local (por nome) pra saber dir/nome do handoff.
+    reg = None
+    reg_file = registry_path(work_dir, target)
+    if os.path.exists(reg_file):
+        try:
+            with open(reg_file, "r", encoding="utf-8") as fh:
+                reg = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            reg = None
+
+    env = load_env()
+    token = login(env)
+    sessions = list_sessions(env, token)
+
+    session = None
+    for s in sessions:
+        if s.get("id") == target or s.get("tmux_name") == target \
+                or s.get("display_name") == target:
+            session = s
+            break
+
+    name = (reg or {}).get("name") or (session or {}).get("tmux_name") or target
+    hdir = (reg or {}).get("dir") or work_dir
+
+    if session is not None:
+        status = session.get("status") or "?"
+        activity = session.get("activity") or "-"
+        prov = session.get("agent_type") or (reg or {}).get("provider") or "?"
+        print(f"[{name}] {prov} | status={status} | activity={activity}")
+    else:
+        print(f"[{name}] sessão não encontrada na lista "
+              "(pode ter sido encerrada/purgada)")
+
+    md_path = handoff_md_path(hdir, name)
+    if os.path.exists(md_path):
+        print(f"--- handoff ({md_path}) ---")
+        try:
+            with open(md_path, "r", encoding="utf-8") as fh:
+                sys.stdout.write(fh.read())
+                sys.stdout.write("\n")
+        except OSError as exc:
+            print(f"(não consegui ler o handoff: {exc})")
+    else:
+        print("ainda rodando (sem handoff ainda)")
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="sf",
+        description="Delega tarefas pesadas a workers filhos do SessionFlow "
+                    "em outros provedores e colhe só o resultado (handoff).",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    d = sub.add_parser(
+        "delegate",
+        help="cria um worker filho (outro provedor), manda a tarefa e ele "
+             "escreve o resultado num arquivo de handoff.",
+        description="Ideia: use um provedor MAIS BARATO e um MODELO "
+                    "INTERMEDIÁRIO (--model) para economizar token. O filho "
+                    "roda autônomo (yolo). NÃO acompanhe o stream; use "
+                    "'sf check' de vez em quando e leia só o handoff.",
+    )
+    d.add_argument("--provider", required=True, choices=PROVIDERS,
+                   help="provedor do worker filho.")
+    d.add_argument("--model", default=None,
+                   help="id do modelo (OMITA para usar o default do provedor; "
+                        "prefira um modelo intermediário p/ economizar).")
+    d.add_argument("--effort", default=None,
+                   help="nível de esforço (low/medium/high; ignorado no gemini).")
+    d.add_argument("--dir", default=None,
+                   help="work_dir do filho (default: diretório atual).")
+    d.add_argument("--task", required=True, help="texto da tarefa a delegar.")
+    d.add_argument("--name", default=None,
+                   help="nome do worker (default: slug da tarefa + sufixo).")
+    d.set_defaults(func=cmd_delegate)
+
+    c = sub.add_parser(
+        "check",
+        help="mostra status/activity do worker e imprime o handoff se existir.",
+    )
+    c.add_argument("target", help="nome (tmux_name) ou id da sessão.")
+    c.add_argument("--dir", default=None,
+                   help="work_dir onde está o handoff (default: diretório atual).")
+    c.set_defaults(func=cmd_check)
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
