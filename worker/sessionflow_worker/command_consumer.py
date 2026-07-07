@@ -172,6 +172,38 @@ def _load_per_core() -> float | None:
         return None
 
 
+def _ensure_codex_trust(work_dir: str) -> None:
+    """Marca ``work_dir`` como 'trusted' no ``~/.codex/config.toml`` (idempotente).
+
+    Sem isso, o codex trava no prompt 'Do you trust the contents of this
+    directory?' ao subir num diretório novo — o SessionFlow não conseguia
+    lançá-lo de forma autônoma. Cobre o path dado e o realpath (macOS: /tmp ->
+    /private/tmp). Best-effort: nunca derruba o launch.
+    """
+    try:
+        cfg = os.path.expanduser("~/.codex/config.toml")
+        paths = {os.path.abspath(os.path.expanduser(work_dir))}
+        try:
+            paths.add(os.path.realpath(os.path.expanduser(work_dir)))
+        except OSError:
+            pass
+        existing = ""
+        if os.path.exists(cfg):
+            with open(cfg, encoding="utf-8") as f:
+                existing = f.read()
+        add = "".join(
+            f'\n[projects."{p}"]\ntrust_level = "trusted"\n'
+            for p in paths
+            if f'[projects."{p}"]' not in existing
+        )
+        if add:
+            os.makedirs(os.path.dirname(cfg), exist_ok=True)
+            with open(cfg, "a", encoding="utf-8") as f:
+                f.write(add)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("codex trust: falha ao marcar %r", work_dir, exc_info=True)
+
+
 def _resource_block_reason() -> str | None:
     """Motivo p/ RECUSAR iniciar uma sessão agora, ou ``None`` se há folga.
 
@@ -517,6 +549,8 @@ class CommandConsumer:
             session_id=claude_session_id,
             name=display,
         )
+        if agent_type is AgentType.CODEX:
+            _ensure_codex_trust(work_dir)  # evita o prompt de "confiar no diretório"
         self._send_keys(name, launch_cmd)
 
         now = _now()
@@ -703,6 +737,8 @@ class CommandConsumer:
             session_id=claude_session_id,
             name=doc.get("display_name") or name,
         )
+        if agent_type is AgentType.CODEX:
+            _ensure_codex_trust(work_dir)  # evita o prompt de "confiar no diretório"
         self._send_keys(name, launch_cmd)
 
         now = _now()

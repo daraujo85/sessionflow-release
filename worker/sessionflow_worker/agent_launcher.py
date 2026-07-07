@@ -56,7 +56,11 @@ MAX_PERMISSION_FLAGS: dict[AgentType, list[str]] = {
     AgentType.CLAUDE: ["--permission-mode", "bypassPermissions"],
     AgentType.CODEX: ["--dangerously-bypass-approvals-and-sandbox"],
     AgentType.GEMINI: ["--yolo"],
-    AgentType.OPENCODE: ["--dangerously-skip-permissions"],
+    # opencode NÃO tem flag de permissão nesta versão (o --help não lista);
+    # ``--dangerously-skip-permissions`` era INVÁLIDO → a CLI saía com erro e caía
+    # pro shell. Lançamos bare (a TUI sobe); autonomia total é via opencode.json
+    # ("permission"), não por flag.
+    AgentType.OPENCODE: [],
 }
 
 
