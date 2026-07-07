@@ -65,6 +65,10 @@ export interface Session {
   favorite?: boolean;
   /** JARVIS: resumo falado da sessão (voz no celular) ligado p/ esta sessão. */
   jarvis?: boolean;
+  /** Sub-agents rodando agora (heurística do worker sobre a tela). */
+  subagents?: number;
+  /** Nomes dos sub-agents rodando (quando o provedor expõe) — p/ tooltip. */
+  subagent_names?: string[];
   metrics?: SessionMetrics | null;
   /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
   last_activity_at?: string | null;

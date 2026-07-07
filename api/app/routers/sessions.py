@@ -63,6 +63,9 @@ class SessionOut(BaseModel):
     favorite: bool = False
     # JARVIS: resumo falado da sessão (voz no celular) quando conclui/aguarda.
     jarvis: bool = False
+    # Sub-agents rodando agora (heurística sobre a tela) + nomes p/ tooltip.
+    subagents: int = 0
+    subagent_names: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_doc(cls, doc: dict[str, Any]) -> SessionOut:

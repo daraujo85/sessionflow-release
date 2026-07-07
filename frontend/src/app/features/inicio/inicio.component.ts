@@ -107,6 +107,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               type="button"
               class="sf-card sf-enter"
               [class.is-waiting]="s.status === 'waiting_input'"
+              [class.sf-has-agents]="subAgentCount(s) > 0"
               [class.sf-flash]="taskFlash(s)"
               [style.animation-delay]="enterDelay(i)"
               (click)="openSession(s.id)"
@@ -173,6 +174,18 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                         <path class="sf-wave sf-wave1" d="M15.5 8.5a5 5 0 0 1 0 7" />
                         <path class="sf-wave sf-wave2" d="M18.5 5.5a9 9 0 0 1 0 13" />
                       </svg>
+                    </span>
+                  }
+                  @if (subAgentCount(s) > 0) {
+                    <span class="sf-subagents" [title]="subAgentTip(s)"
+                          [attr.aria-label]="subAgentCount(s) + ' sub-agentes rodando'">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                           stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" />
+                        <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+                      </svg>
+                      {{ subAgentCount(s) }}
                     </span>
                   }
                 </span>
@@ -657,6 +670,30 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 2px 5px;
         border-radius: 6px;
       }
+      /* Badge de sub-agents rodando (contador + tooltip com nomes) */
+      .sf-subagents {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.16);
+        border: 1px solid rgba(56, 189, 248, 0.4);
+        padding: 1px 6px 1px 4px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        white-space: nowrap;
+        animation: sf-agents-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes sf-agents-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+        50% { box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18); }
+      }
+      /* Card com sub-agents rodando: borda-guia sutil pra destacar na lista. */
+      .sf-card.sf-has-agents {
+        border-color: rgba(56, 189, 248, 0.45);
+      }
       .sf-card-status {
         font-size: 13.5px;
         margin-top: 3px;
@@ -948,6 +985,20 @@ export class InicioComponent implements OnInit {
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
   protected isSpeaking(s: Session): boolean {
     return !!s.tmux_name && this.jarvis.speakingSessionId() === s.tmux_name;
+  }
+
+  /** Quantos sub-agents estão rodando nesta sessão (0 = nenhum/desconhecido). */
+  protected subAgentCount(s: Session): number {
+    const n = s.subagents;
+    return typeof n === 'number' && n > 0 ? n : 0;
+  }
+
+  /** Tooltip do badge: lista os nomes dos sub-agents quando o provedor expõe. */
+  protected subAgentTip(s: Session): string {
+    const n = this.subAgentCount(s);
+    const names = Array.isArray(s.subagent_names) ? s.subagent_names : [];
+    const head = `${n} sub-agente${n === 1 ? '' : 's'} rodando`;
+    return names.length ? `${head}:\n• ${names.join('\n• ')}` : head;
   }
 
   /** True por alguns segundos após ESTA sessão concluir uma tarefa → destaca. */

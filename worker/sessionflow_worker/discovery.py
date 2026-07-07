@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -77,6 +78,43 @@ class ReconcileReport:
 # uma mesma sessão. Absorve a piscada idle↔ocupado do reflow do agente (resize)
 # sem suprimir conclusões genuínas mais espaçadas.
 _NOTIFY_COOLDOWN_S = 8.0
+
+
+# --- Detecção de sub-agents rodando (heurística sobre a tela do Claude Code) --
+
+# "Waiting for N background agents to finish" — o provedor dizendo quantos rodam.
+_BG_AGENTS_RE = re.compile(r"(\d+)\s+background agents?\b", re.IGNORECASE)
+# Nome de sub-agent (o Claude Code usa Agent "<nome>" no resumo). Filtramos os
+# que aparecem como concluídos ("finished"/"done") p/ listar só os que rodam.
+_AGENT_NAME_RE = re.compile(r'Agent\s+"([^"]{1,60})"')
+_AGENT_DONE_RE = re.compile(r"finished|done|conclu", re.IGNORECASE)
+
+
+def derive_subagents(text: str) -> tuple[int, list[str]]:
+    """Extrai (qtd, nomes) de sub-agents RODANDO a partir da tela visível.
+
+    Heurística best-effort sobre o que o Claude Code imprime:
+      - "Waiting for N background agents to finish" → N (sinal mais confiável);
+      - linhas ``Agent "<nome>"`` que NÃO estão marcadas como concluídas → nomes.
+    Sem sinal → (0, []). Viewport-limitado (só a tela visível), então é uma
+    aproximação — some quando o bloco some da tela.
+    """
+    if not text:
+        return 0, []
+    count = 0
+    m = _BG_AGENTS_RE.search(text)
+    if m:
+        count = int(m.group(1))
+    names: list[str] = []
+    for line in text.split("\n"):
+        mm = _AGENT_NAME_RE.search(line)
+        if mm and not _AGENT_DONE_RE.search(line):
+            names.append(mm.group(1).strip())
+    # dedupe preservando ordem; teto p/ não estourar tooltip
+    names = list(dict.fromkeys(names))[:8]
+    if count == 0 and names:
+        count = len(names)
+    return count, names
 
 
 def _now() -> datetime:
@@ -228,6 +266,8 @@ class Discovery:
         # restart do worker (``hash()`` nativo é aleatório por processo).
         screen_sig: str | None = None
         screen_changed = False
+        subagents = 0
+        subagent_names: list[str] = []
         if state is SessionState.RUNNING:
             screen_text = await self._screen_text(info.name)
             screen_sig = hashlib.md5(
@@ -240,6 +280,7 @@ class Discovery:
             elif self._screen_idle(info.name, screen_text):
                 attention = "idle"
             activity = derive_activity(screen_text, info.agent_type, attention)
+            subagents, subagent_names = derive_subagents(screen_text)
 
         set_fields = {
             "tmux_name": info.name,
@@ -250,6 +291,9 @@ class Discovery:
             "agent_pid": info.pane_pid,
             "last_seen_at": now,
             "updated_at": now,
+            # Sub-agents rodando (heurística sobre a tela) — contador + nomes p/ a Home.
+            "subagents": subagents,
+            "subagent_names": subagent_names,
         }
         # work_dir: só grava quando o tmux expõe um cwd não-vazio. Nunca
         # sobrescreve um work_dir já conhecido (ex. de sessão criada pelo
