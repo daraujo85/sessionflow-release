@@ -8,6 +8,7 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { forkJoin, of, catchError, map } from 'rxjs';
 import { Router } from '@angular/router';
 import { ApiService } from '../../core/api.service';
 import { Session, SessionStatus } from '../../core/models';
@@ -40,6 +41,29 @@ const FILTERS: readonly FilterChip[] = [
     <section class="sf-sessoes">
       <header class="sf-head">
         <h1 class="sf-title">Sessões</h1>
+        <button
+          type="button"
+          class="sf-select-toggle"
+          [class.is-active]="selectionMode()"
+          (click)="toggleSelectionMode()"
+          [attr.aria-pressed]="selectionMode()"
+          [attr.aria-label]="selectionMode() ? 'Sair do modo seleção' : 'Selecionar várias sessões'"
+        >
+          @if (selectionMode()) {
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+            Cancelar
+          } @else {
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 11l3 3L22 4" />
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+            </svg>
+            Selecionar
+          }
+        </button>
       </header>
 
       <div class="sf-search">
@@ -159,16 +183,32 @@ const FILTERS: readonly FilterChip[] = [
                 [class.is-dragging]="dragId() === s.id"
                 [class.is-waiting]="s.status === 'waiting_input'"
                 [class.sf-flash]="taskFlash(s)"
+                [class.is-selecting]="selectionMode()"
+                [class.is-selected]="isSelected(s)"
                 [style.transform]="'translateX(' + offset(s.id) + 'px)'"
                 (click)="onCardClick(s, $event)"
                 (pointerdown)="onPointerDown(s, $event)"
                 (pointermove)="onPointerMove(s, $event)"
                 (pointerup)="onPointerUp(s, $event)"
                 (pointercancel)="onPointerUp(s, $event)"
-                [attr.aria-label]="'Abrir sessão ' + displayName(s)"
+                [attr.aria-pressed]="selectionMode() ? isSelected(s) : null"
+                [attr.aria-label]="
+                  selectionMode()
+                    ? (isSelected(s) ? 'Desmarcar ' : 'Selecionar ') + displayName(s)
+                    : 'Abrir sessão ' + displayName(s)
+                "
               >
                 <span class="sf-press">
                 <span class="sf-row">
+                  @if (selectionMode()) {
+                    <span class="sf-check" [class.on]="isSelected(s)" aria-hidden="true">
+                      @if (isSelected(s)) {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="3" stroke-linecap="round"
+                             stroke-linejoin="round"><path d="M5 12l4 4 10-10" /></svg>
+                      }
+                    </span>
+                  }
                   <span
                     class="sf-avatar"
                     [style.color]="agent(s).color"
@@ -259,6 +299,52 @@ const FILTERS: readonly FilterChip[] = [
           }
         </ul>
       }
+
+      @if (selectionMode()) {
+        <div class="sf-actionbar" role="region" aria-label="Ações de seleção">
+          <div class="sf-actionbar__inner">
+            <span class="sf-actionbar__count">
+              {{ selectedCount() }} selecionada{{ selectedCount() === 1 ? '' : 's' }}
+            </span>
+            <button
+              type="button"
+              class="sf-ab-btn sf-ab-btn--ghost"
+              (click)="selectAllVisible()"
+              [disabled]="purging() || visibleSessions().length === 0"
+            >
+              Selecionar todas
+            </button>
+            <span class="sf-actionbar__spacer"></span>
+            <button
+              type="button"
+              class="sf-ab-btn sf-ab-btn--ghost"
+              (click)="exitSelection()"
+              [disabled]="purging()"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="sf-ab-btn sf-ab-btn--danger"
+              (click)="confirmBulkDelete()"
+              [disabled]="selectedCount() === 0 || purging()"
+              [attr.aria-label]="'Excluir ' + selectedCount() + ' sessões selecionadas'"
+            >
+              @if (purging()) {
+                <span class="sf-ab-spin" aria-hidden="true"></span>
+                Excluindo…
+              } @else {
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                  <path d="M10 11v6M14 11v6" />
+                </svg>
+                Excluir
+              }
+            </button>
+          </div>
+        </div>
+      }
     </section>
   `,
   styles: [
@@ -276,6 +362,10 @@ const FILTERS: readonly FilterChip[] = [
       }
       .sf-head {
         padding: 10px 0 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
       }
       .sf-title {
         margin: 0;
@@ -283,6 +373,33 @@ const FILTERS: readonly FilterChip[] = [
         font-weight: 700;
         color: #f4f5f7;
         letter-spacing: -0.6px;
+      }
+      /* Toggle "Selecionar" no cabeçalho — mesmo visual dos chips. */
+      .sf-select-toggle {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        appearance: none;
+        border: 1px solid #283230;
+        background: #181c1b;
+        color: #c9cdd6;
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        padding: 8px 14px;
+        border-radius: 11px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+      }
+      .sf-select-toggle:active {
+        transform: scale(0.97);
+      }
+      .sf-select-toggle.is-active {
+        background: #1d2221;
+        border-color: #34403d;
+        color: #f4f5f7;
       }
 
       .sf-search {
@@ -525,6 +642,32 @@ const FILTERS: readonly FilterChip[] = [
       .sf-card:hover {
         border-color: #34403d;
       }
+      /* Modo seleção: sem gesto de swipe, cursor de escolha. */
+      .sf-card.is-selecting {
+        touch-action: pan-y;
+      }
+      .sf-card.is-selected {
+        border-color: #00e4b4;
+        background: #12211d;
+      }
+      /* Checkbox circular à esquerda (só no modo seleção). */
+      .sf-check {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        border: 2px solid #3a453f;
+        color: #04140f;
+        background: transparent;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .sf-check.on {
+        background: #00e4b4;
+        border-color: #00e4b4;
+      }
       /* Aguardando AÇÃO do usuário: fundo âmbar sutil + brilho neon pulsante
          (a cor "aguardando" da paleta) — "tô parado esperando você". */
       .sf-card.is-waiting {
@@ -736,6 +879,120 @@ const FILTERS: readonly FilterChip[] = [
         margin-left: auto;
       }
 
+      /* Barra de ação fixa, logo acima da bottom-nav (64px + safe-area). */
+      .sf-actionbar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+        z-index: 45;
+        display: flex;
+        justify-content: center;
+        padding: 8px 12px;
+        pointer-events: none;
+      }
+      .sf-actionbar__inner {
+        pointer-events: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        max-width: 560px;
+        padding: 10px 12px;
+        background: #14181a;
+        border: 1px solid #283230;
+        border-radius: 16px;
+        box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.65);
+        animation: sf-ab-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      @keyframes sf-ab-in {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .sf-actionbar__count {
+        font-size: 13.5px;
+        font-weight: 700;
+        color: #f4f5f7;
+        white-space: nowrap;
+      }
+      .sf-actionbar__spacer {
+        flex: 1;
+      }
+      .sf-ab-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        appearance: none;
+        border: 1px solid #283230;
+        background: #1d2221;
+        color: #c9cdd6;
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        padding: 9px 13px;
+        border-radius: 11px;
+        cursor: pointer;
+        white-space: nowrap;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+      }
+      .sf-ab-btn:active:not(:disabled) {
+        transform: scale(0.97);
+      }
+      .sf-ab-btn:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .sf-ab-btn--ghost {
+        background: transparent;
+      }
+      .sf-ab-btn--danger {
+        background: linear-gradient(135deg, #b91c1c, #dc2626);
+        border-color: #dc2626;
+        color: #fff;
+      }
+      .sf-ab-btn--danger:disabled {
+        background: #3a2323;
+        border-color: #4a2c2c;
+        color: #d9a8a8;
+      }
+      .sf-ab-spin {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        border-top-color: #fff;
+        animation: sf-spin 0.7s linear infinite;
+      }
+      @keyframes sf-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-actionbar__inner,
+        .sf-ab-spin {
+          animation: none;
+        }
+      }
+      /* Telas estreitas: some o "Selecionar todas" pra caber os botões-chave. */
+      @media (max-width: 420px) {
+        .sf-actionbar__inner {
+          gap: 6px;
+          padding: 9px 10px;
+        }
+        .sf-ab-btn {
+          padding: 9px 11px;
+        }
+      }
+
       /* Respect reduced-motion: disable entrance + press feedback.
          Note: the swipe transform on .sf-card is driven by inline style and
          user intent, so we intentionally leave it untouched. */
@@ -783,6 +1040,97 @@ export class SessoesComponent {
 
   /** Texto de busca livre (case-insensitive) por nome da sessão. */
   protected readonly query = signal<string>('');
+
+  // ── Seleção múltipla + excluir em massa ─────────────────────────────────
+  /** Modo seleção ativo: o tap no card ALTERNA a seleção em vez de abrir. */
+  protected readonly selectionMode = signal<boolean>(false);
+  /** Ids das sessões marcadas para exclusão. */
+  protected readonly selectedIds = signal<Set<string>>(new Set<string>());
+  /** True enquanto o batch de purge está em andamento (trava a barra). */
+  protected readonly purging = signal<boolean>(false);
+  /** Quantidade selecionada (dirige o rótulo "N selecionada(s)"). */
+  protected readonly selectedCount = computed(() => this.selectedIds().size);
+
+  protected isSelected(s: Session): boolean {
+    return this.selectedIds().has(s.id);
+  }
+
+  /** Entra/sai do modo seleção. Ao entrar, fecha qualquer swipe aberto. */
+  protected toggleSelectionMode(): void {
+    if (this.selectionMode()) {
+      this.exitSelection();
+      return;
+    }
+    this.closeAll();
+    this.selectionMode.set(true);
+  }
+
+  /** Sai do modo seleção e limpa a seleção. */
+  protected exitSelection(): void {
+    this.selectionMode.set(false);
+    this.selectedIds.set(new Set<string>());
+  }
+
+  /** Alterna a marcação de uma sessão. */
+  protected toggleSelect(s: Session): void {
+    this.selectedIds.update((set) => {
+      const next = new Set(set);
+      if (next.has(s.id)) {
+        next.delete(s.id);
+      } else {
+        next.add(s.id);
+      }
+      return next;
+    });
+  }
+
+  /** Marca todas as sessões atualmente visíveis (respeita filtro/busca). */
+  protected selectAllVisible(): void {
+    this.selectedIds.set(new Set(this.visibleSessions().map((s) => s.id)));
+  }
+
+  /**
+   * Exclui em massa: confirma, purga cada sessão em paralelo (erro por-item não
+   * derruba o lote), remove as bem-sucedidas de forma otimista e recarrega.
+   */
+  protected confirmBulkDelete(): void {
+    if (this.purging()) {
+      return;
+    }
+    const ids = [...this.selectedIds()];
+    if (ids.length === 0) {
+      return;
+    }
+    const ok = confirm(
+      `Excluir ${ids.length} sessão${ids.length === 1 ? '' : 'ões'}? ` +
+        'Mata no Mac e remove daqui — não dá pra desfazer.',
+    );
+    if (!ok) {
+      return;
+    }
+
+    this.purging.set(true);
+    const calls = ids.map((id) =>
+      this.api.purgeSession(id).pipe(
+        map(() => ({ id, ok: true })),
+        catchError(() => of({ id, ok: false })),
+      ),
+    );
+
+    forkJoin(calls)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((results) => {
+        // Remove otimista as que deram certo; mantém as que falharam.
+        const okIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
+        this.sessions.update((list) => list.filter((x) => !okIds.has(x.id)));
+        this.purging.set(false);
+        this.exitSelection();
+        // Recarrega do servidor no filtro atual (pega o estado real; o purge
+        // roda em background no worker).
+        const chip = this.filters.find((c) => c.key === this.activeKey());
+        this.load(chip?.status);
+      });
+  }
 
   /** All sessions fetched from the API (live status applied via SSE). */
   protected readonly sessions = signal<Session[]>([]);
@@ -869,6 +1217,10 @@ export class SessoesComponent {
   }
 
   protected onPointerDown(s: Session, ev: PointerEvent): void {
+    // No modo seleção não há swipe: o tap só marca/desmarca.
+    if (this.selectionMode()) {
+      return;
+    }
     // Só botão primário do mouse / toque / caneta.
     if (ev.pointerType === 'mouse' && ev.button !== 0) {
       return;
@@ -946,6 +1298,13 @@ export class SessoesComponent {
 
   /** Um TAP normal abre a sessão; um swipe (moveu > threshold) é suprimido. */
   protected onCardClick(s: Session, ev: MouseEvent): void {
+    // Modo seleção: o clique alterna a marcação em vez de abrir a sessão.
+    if (this.selectionMode()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.toggleSelect(s);
+      return;
+    }
     const moved = this.offset(s.id) !== 0;
     if (this.lastWasSwipe || moved) {
       ev.preventDefault();
