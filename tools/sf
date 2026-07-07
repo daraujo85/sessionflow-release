@@ -59,6 +59,28 @@ def api_base(env):
     return f"http://127.0.0.1:{port}"
 
 
+def detect_parent():
+    """tmux_name da PRÓPRIA sessão chefe (quem está delegando), ou None.
+
+    Só resolve quando rodando DENTRO de um tmux (``$TMUX`` setado): usa
+    ``tmux display-message -p '#S'`` p/ pegar o nome da sessão atual. Fora do
+    tmux (ou se o comando falhar) devolve None — o filho fica sem pai.
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "#S"],
+            capture_output=True, text=True, timeout=5,
+        )
+        name = (out.stdout or "").strip()
+        return name or None
+    except Exception:  # noqa: BLE001 - best-effort; sem pai não é erro
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # HTTP helpers (urllib)
 # --------------------------------------------------------------------------- #
@@ -178,6 +200,8 @@ def cmd_delegate(args):
     token = login(env)
     base = api_base(env)
 
+    parent = detect_parent()
+
     payload = {
         "name": name,
         "display_name": name,
@@ -186,6 +210,10 @@ def cmd_delegate(args):
         "model": args.model,   # None => default do provedor
         "effort": effort,
     }
+    # Linka pai→filho: a sessão chefe (dentro do tmux) fica registrada como
+    # PAI do worker filho. Fora do tmux o campo é omitido (filho sem pai).
+    if parent:
+        payload["parent"] = parent
     status, body = _request("POST", f"{base}/sessions", token=token, body=payload)
     if status == 409:
         die(f"já existe uma sessão ativa chamada '{name}'. Use --name outro.")

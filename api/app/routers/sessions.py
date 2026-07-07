@@ -44,6 +44,9 @@ class SessionOut(BaseModel):
     tmux_name: str | None = None
     display_name: str | None = None
     agent_type: str | None = None
+    # tmux_name da sessão PAI (chefe que delegou esta via `sf delegate`); None
+    # se a sessão não foi delegada. Imutável após a criação.
+    parent: str | None = None
     model: str | None = None
     effort: str | None = None
     work_dir: str | None = None
@@ -99,6 +102,9 @@ class SessionCreate(BaseModel):
     work_dir: str = Field(min_length=1)
     model: str | None = None
     effort: str | None = None
+    # tmux_name da sessão PAI (quem delegou). Opcional; usado pela orquestração
+    # multi-provedor (`sf delegate`) para linkar pai→filho.
+    parent: str | None = None
 
 
 class SessionCreateAccepted(BaseModel):
@@ -243,6 +249,7 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
         "work_dir": work_dir,
         "model": body.model,
         "effort": effort,
+        "parent": (body.parent or "").strip() or None,
     }
     settings = request.app.state.settings
     command_id = await publish_command(settings, type="create", payload=payload)

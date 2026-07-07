@@ -987,16 +987,44 @@ export class InicioComponent implements OnInit {
     return !!s.tmux_name && this.jarvis.speakingSessionId() === s.tmux_name;
   }
 
-  /** Quantos sub-agents estão rodando nesta sessão (0 = nenhum/desconhecido). */
+  /**
+   * FILHOS REAIS desta sessão: sessões delegadas (``parent === s.tmux_name``)
+   * que ainda estão ATIVAS (status != stopped). É o sinal mais confiável de
+   * "sub-agents rodando" — bate a heurística de tela quando existe.
+   */
+  private realChildren(s: Session): Session[] {
+    const parent = s.tmux_name;
+    if (!parent) {
+      return [];
+    }
+    return this.sessions().filter(
+      (c) => c.parent === parent && c.status !== 'stopped',
+    );
+  }
+
+  /**
+   * Quantos sub-agents estão rodando nesta sessão. PREFERE os filhos reais
+   * delegados (mais confiável); na ausência deles cai na heurística da tela
+   * (``subagents``). 0 = nenhum/desconhecido.
+   */
   protected subAgentCount(s: Session): number {
+    const kids = this.realChildren(s).length;
+    if (kids > 0) {
+      return kids;
+    }
     const n = s.subagents;
     return typeof n === 'number' && n > 0 ? n : 0;
   }
 
-  /** Tooltip do badge: lista os nomes dos sub-agents quando o provedor expõe. */
+  /** Tooltip do badge: lista os filhos reais (ou os nomes da heurística). */
   protected subAgentTip(s: Session): string {
+    const kids = this.realChildren(s);
+    const names = kids.length
+      ? kids.map((c) => c.display_name || c.tmux_name)
+      : Array.isArray(s.subagent_names)
+        ? s.subagent_names
+        : [];
     const n = this.subAgentCount(s);
-    const names = Array.isArray(s.subagent_names) ? s.subagent_names : [];
     const head = `${n} sub-agente${n === 1 ? '' : 's'} rodando`;
     return names.length ? `${head}:\n• ${names.join('\n• ')}` : head;
   }

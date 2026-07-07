@@ -517,6 +517,10 @@ class CommandConsumer:
         agent_type = _coerce_agent_type(payload.get("agent_type"))
         model = payload.get("model")
         effort = payload.get("effort")
+        # tmux_name da sessão PAI (chefe que delegou via `sf delegate`), ou None.
+        # Gravado no doc p/ linkar pai→filho; imutável após a criação (o
+        # discovery NÃO mexe neste campo no reconcile).
+        parent = payload.get("parent") or None
 
         # Dedupe explícito de nome duplicado (o new_session também valida, mas
         # damos uma mensagem de erro clara e específica do consumer).
@@ -568,6 +572,7 @@ class CommandConsumer:
                     "work_dir": str(work_dir),
                     "tmux_id": info.id,
                     "claude_session_id": claude_session_id,
+                    "parent": parent,
                     "updated_at": now,
                     "last_activity_at": now,
                 },

@@ -69,6 +69,8 @@ export interface Session {
   subagents?: number;
   /** Nomes dos sub-agents rodando (quando o provedor expõe) — p/ tooltip. */
   subagent_names?: string[];
+  /** tmux_name da sessão PAI que delegou esta (via `sf delegate`); null se raiz. */
+  parent?: string | null;
   metrics?: SessionMetrics | null;
   /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
   last_activity_at?: string | null;

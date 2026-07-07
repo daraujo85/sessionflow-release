@@ -244,6 +244,18 @@ const FILTERS: readonly FilterChip[] = [
                         </span>
                       }
                     </span>
+                    @if (hasParent(s)) {
+                      <span class="sf-parent-chip"
+                            [title]="'Delegada por ' + parentLabel(s)">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                          <path d="M9 5v6a4 4 0 0 0 4 4h7" />
+                          <path d="M16 11l4 4-4 4" />
+                        </svg>
+                        delegada por {{ parentLabel(s) }}
+                      </span>
+                    }
                     <span class="mono sf-dir">{{ s.work_dir || '—' }}</span>
                   </span>
 
@@ -819,6 +831,27 @@ const FILTERS: readonly FilterChip[] = [
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      /* Chip discreto "↳ delegada por <pai>" (sessões filhas delegadas). */
+      .sf-parent-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #7dd3fc;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        padding: 2px 8px;
+        border-radius: 7px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-parent-chip svg {
+        flex: none;
       }
       .mono {
         font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
@@ -1400,6 +1433,24 @@ export class SessoesComponent {
   /** Worker/sub-agente pela convenção de nome (mostra chip ⑂ worker). */
   protected isWorker(s: Session): boolean {
     return isWorkerSession(s.tmux_name ?? s.display_name);
+  }
+
+  /** True se esta sessão foi DELEGADA por outra (tem um pai registrado). */
+  protected hasParent(s: Session): boolean {
+    return !!(s.parent && s.parent.trim());
+  }
+
+  /**
+   * Rótulo do pai p/ o chip "↳ delegada por X": usa o ``display_name`` do pai
+   * se ele estiver na lista; senão o próprio ``parent`` (tmux_name).
+   */
+  protected parentLabel(s: Session): string {
+    const p = (s.parent || '').trim();
+    if (!p) {
+      return '';
+    }
+    const parent = this.sessions().find((x) => x.tmux_name === p);
+    return parent?.display_name || p;
   }
 
   protected agent(s: Session) {
