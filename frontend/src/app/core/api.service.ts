@@ -238,13 +238,16 @@ export class ApiService {
   }
 
   /**
-   * Anexa um arquivo/imagem à sessão (o worker injeta o caminho no agente).
-   * `caption` opcional é o texto que acompanha o anexo — vai junto na mesma
-   * mensagem pro agente (imagem + texto de uma vez).
+   * Anexa arquivo(s)/imagem(ns) à sessão (o worker injeta os caminhos no
+   * agente numa mensagem única). `caption` opcional é o texto que acompanha
+   * os anexos — vai junto na mesma mensagem (imagens + texto de uma vez).
    */
-  uploadFile(id: string, file: File, caption?: string): Observable<void> {
+  uploadFile(id: string, files: File | File[], caption?: string): Observable<void> {
+    const list = Array.isArray(files) ? files : [files];
     const form = new FormData();
-    form.append('file', file);
+    for (const f of list) {
+      form.append('files', f);
+    }
     if (caption && caption.trim()) {
       form.append('caption', caption.trim());
     }

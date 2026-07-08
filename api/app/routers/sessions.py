@@ -35,6 +35,13 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 # signature default (ruff B008).
 _AUDIO_FILE = File(...)
 _CAPTION_FORM = Form(None)
+# Anexos múltiplos (campo ``files`` repetido) + fallback do campo antigo
+# ``file`` (1 arquivo) para retrocompat com clients no formato velho.
+_FILES_FORM = File(None)
+_FILE_FORM_OPT = File(None)
+
+# Máx. de anexos aceitos num envio (o front aplica o mesmo teto).
+MAX_ATTACHMENTS = 8
 
 
 class SessionOut(BaseModel):
@@ -602,32 +609,54 @@ async def upload_audio(
 async def upload_file(
     request: Request,
     session_id: str,
-    file: UploadFile = _AUDIO_FILE,
+    files: list[UploadFile] | None = _FILES_FORM,
+    file: UploadFile | None = _FILE_FORM_OPT,
     caption: str | None = _CAPTION_FORM,
 ) -> AudioUploadAccepted:
-    """Anexa um arquivo/imagem à sessão: salva no host e injeta o caminho.
+    """Anexa arquivo(s)/imagem(ns) à sessão: salva no host e injeta os caminhos.
 
-    Persiste em ``{uploads_dir}/{session_id}/{uuid}.{ext}`` e publica um comando
-    ``file`` — o Worker re-rooteia o caminho para o host e injeta no pane (o
-    agente lê a imagem/arquivo pelo path). ``caption`` opcional é o texto que
-    acompanha o anexo — vai junto na mesma injeção (imagem + texto de uma vez).
+    Aceita múltiplos arquivos no campo ``files`` (repetido) — retrocompat com o
+    campo antigo ``file`` (1 arquivo). Persiste cada um em
+    ``{uploads_dir}/{session_id}/{uuid}.{ext}`` e publica UM comando ``file``
+    com ``paths``/``filenames`` — o Worker re-rooteia os caminhos para o host e
+    injeta TUDO numa mensagem só no pane (o agente lê as imagens/arquivos pelos
+    paths). ``caption`` opcional é o texto que acompanha os anexos — vai junto
+    na mesma injeção (imagens + texto de uma vez).
     """
+    incoming: list[UploadFile] = list(files or [])
+    if file is not None:
+        incoming.append(file)
+    if not incoming:
+        raise HTTPException(status_code=422, detail="nenhum arquivo enviado")
+    if len(incoming) > MAX_ATTACHMENTS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"máximo de {MAX_ATTACHMENTS} anexos por envio",
+        )
+
     tmux_name = await _require_tmux_name(request, session_id)
     settings = request.app.state.settings
 
-    original = Path(file.filename or "").name or "arquivo"
-    ext = Path(original).suffix.lstrip(".") or "bin"
     target_dir = Path(settings.uploads_dir) / session_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / f"{uuid.uuid4().hex}.{ext}"
-    target_path.write_bytes(await file.read())
-    path_str = str(target_path)
-
     db = request.app.state.mongo_db
     uploads_repo = UploadsRepository(db, settings.uploads_collection)
-    upload_id = await uploads_repo.create_upload(
-        session_id=session_id, path=path_str, kind="file", status="received"
-    )
+
+    paths: list[str] = []
+    filenames: list[str] = []
+    upload_ids: list[str] = []
+    for up in incoming:
+        original = Path(up.filename or "").name or "arquivo"
+        ext = Path(original).suffix.lstrip(".") or "bin"
+        target_path = target_dir / f"{uuid.uuid4().hex}.{ext}"
+        target_path.write_bytes(await up.read())
+        path_str = str(target_path)
+        upload_id = await uploads_repo.create_upload(
+            session_id=session_id, path=path_str, kind="file", status="received"
+        )
+        paths.append(path_str)
+        filenames.append(original)
+        upload_ids.append(upload_id)
 
     caption_clean = (caption or "").strip()
     command_id = await publish_command(
@@ -635,14 +664,19 @@ async def upload_file(
         type="file",
         payload={
             "name": tmux_name,
-            "path": path_str,
-            "filename": original,
-            "upload_id": upload_id,
+            # Formato novo (lista) + campos antigos (1º item) p/ retrocompat
+            # com um worker ainda no formato velho durante o deploy.
+            "paths": paths,
+            "filenames": filenames,
+            "upload_ids": upload_ids,
+            "path": paths[0],
+            "filename": filenames[0],
+            "upload_id": upload_ids[0],
             "caption": caption_clean or None,
         },
     )
     return AudioUploadAccepted(
-        command_id=command_id, upload_id=upload_id, status="accepted"
+        command_id=command_id, upload_id=upload_ids[0], status="accepted"
     )
 
 

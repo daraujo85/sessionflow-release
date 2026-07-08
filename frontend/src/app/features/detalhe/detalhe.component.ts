@@ -657,42 +657,60 @@ import { ansiToHtml } from '../../shared/ansi-html';
           #fileInput
           type="file"
           accept="image/*,*/*"
+          multiple
           class="visually-hidden"
           (change)="onFileSelected($event)"
         />
 
-        @if (pendingFile(); as pf) {
-          <!-- Preview do anexo numa linha ACIMA do compositor: o input continua
-               disponível, então dá pra escrever uma legenda e enviar imagem +
-               texto JUNTOS num envio só (o ✕ remove o anexo). -->
-          <div class="staged-preview" role="group" aria-label="Anexo pronto para enviar">
-            @if (pendingFileUrl(); as url) {
-              <img class="staged-thumb" [src]="url" alt="" />
-            } @else {
-              <span class="staged-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                     stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
-                </svg>
-              </span>
+        @if (pendingItems().length > 0) {
+          <!-- Preview dos anexos numa faixa ACIMA do compositor: o input continua
+               disponível, então dá pra escrever uma legenda e enviar imagens +
+               texto JUNTOS num envio só (o ✕ remove só aquele item; "Limpar
+               todos" descarta tudo de uma vez). -->
+          <div class="staged-preview" role="group" aria-label="Anexos prontos para enviar">
+            <div class="staged-list">
+              @for (it of pendingItems(); track it.key) {
+                <div class="staged-item" [title]="it.file.name">
+                  @if (it.url) {
+                    <img class="staged-thumb" [src]="it.url" alt="" />
+                  } @else {
+                    <span class="staged-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
+                      </svg>
+                    </span>
+                  }
+                  <span class="staged-meta">
+                    <span class="staged-name">{{ it.file.name }}</span>
+                    <span class="staged-size">{{ sizeKb(it.file) }} KB</span>
+                  </span>
+                  <button
+                    type="button"
+                    class="staged-remove"
+                    aria-label="Remover anexo"
+                    title="Remover este anexo"
+                    [disabled]="attaching()"
+                    (click)="removeFile(it.key)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              }
+            </div>
+            @if (pendingItems().length > 1) {
+              <button
+                type="button"
+                class="staged-clear"
+                [disabled]="attaching()"
+                (click)="cancelFile()"
+              >
+                Limpar todos ({{ pendingItems().length }})
+              </button>
             }
-            <span class="staged-meta">
-              <span class="staged-name">{{ pf.name }}</span>
-              <span class="staged-size">{{ pendingFileSizeKb() }} KB</span>
-            </span>
-            <button
-              type="button"
-              class="staged-remove"
-              aria-label="Remover anexo"
-              title="Remover anexo"
-              [disabled]="attaching()"
-              (click)="cancelFile()"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
-                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-            </button>
           </div>
         }
 
@@ -777,7 +795,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
           #msgInput
           class="text-input mono"
           type="text"
-          [placeholder]="pendingFile() ? 'Escreva algo sobre o anexo (opcional)…' : (liveMode() ? 'Digite — ao vivo no terminal…' : 'Enviar comando ao terminal…')"
+          [placeholder]="inputPlaceholder()"
           autocomplete="off"
           [ngModel]="draft()"
           (ngModelChange)="onDraftChange($event)"
@@ -1967,15 +1985,55 @@ import { ansiToHtml } from '../../shared/ansi-html';
           animation: none;
         }
       }
-      /* Preview do anexo staged (linha acima do input). */
+      /* Preview dos anexos staged (faixa acima do input). */
       .staged-preview {
         display: flex;
-        align-items: center;
-        gap: 10px;
+        flex-direction: column;
+        gap: 6px;
         padding: 6px 8px;
         border: 1px solid #283230;
         border-radius: 10px;
         background: #12181a;
+      }
+      /* Grade de itens staged: quebra linha e rola se passar da altura. */
+      .staged-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        max-height: 132px;
+        overflow-y: auto;
+      }
+      .staged-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 6px;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        background: #181c1b;
+        max-width: 100%;
+      }
+      .staged-item .staged-meta {
+        flex: 0 1 auto;
+        max-width: 150px;
+      }
+      .staged-clear {
+        align-self: flex-end;
+        background: none;
+        border: none;
+        padding: 2px 4px;
+        color: #9aa0ae;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .staged-clear:hover:not(:disabled) {
+        color: #f87171;
+      }
+      .staged-clear:disabled {
+        opacity: 0.5;
+        cursor: progress;
       }
       .staged-remove {
         flex: none;
@@ -2428,14 +2486,38 @@ export class DetalheComponent implements AfterViewChecked {
   private lastCols = 0;
   private lastRows = 0;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Arquivo escolhido aguardando confirmação (staged, ainda não enviado). */
-  protected readonly pendingFile = signal<File | null>(null);
-  /** Object URL p/ thumbnail de imagem (revogado ao cancelar/enviar/destruir). */
-  protected readonly pendingFileUrl = signal<string | null>(null);
-  /** Tamanho do arquivo staged em KB (1 casa), p/ exibir no preview. */
-  protected readonly pendingFileSizeKb = computed(() => {
-    const f = this.pendingFile();
-    return f ? Math.max(1, Math.round(f.size / 1024)) : 0;
+  /**
+   * Anexos aguardando confirmação (staged, ainda não enviados). Cada item
+   * carrega o File + o object URL do thumbnail (imagens; revogado ao
+   * remover/limpar/enviar/destruir) + uma chave estável p/ o @for.
+   */
+  protected readonly pendingItems = signal<
+    { file: File; url: string | null; key: number }[]
+  >([]);
+  /** Sequência p/ as chaves dos itens staged (estável mesmo removendo do meio). */
+  private stagedSeq = 0;
+  /** Máx. de anexos por envio (o excedente é avisado e ignorado). */
+  private static readonly MAX_ATTACH = 8;
+  /** Tamanho máx. por arquivo (~10MB). */
+  private static readonly MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+
+  /** Tamanho de um arquivo em KB (mín. 1), p/ exibir no preview. */
+  protected sizeKb(f: File): number {
+    return Math.max(1, Math.round(f.size / 1024));
+  }
+
+  /** Placeholder do input: reflete anexos staged / modo ao vivo. */
+  protected readonly inputPlaceholder = computed(() => {
+    const n = this.pendingItems().length;
+    if (n === 1) {
+      return 'Escreva algo sobre o anexo (opcional)…';
+    }
+    if (n > 1) {
+      return `Escreva algo sobre os ${n} anexos (opcional)…`;
+    }
+    return this.liveMode()
+      ? 'Digite — ao vivo no terminal…'
+      : 'Enviar comando ao terminal…';
   });
   /** Input focado → esconde os botões de ação (mais espaço pra digitar). */
   protected readonly inputFocused = signal<boolean>(false);
@@ -2539,7 +2621,7 @@ export class DetalheComponent implements AfterViewChecked {
 
   protected readonly canSend = computed(
     () =>
-      (this.draft().trim().length > 0 || !!this.pendingFile()) &&
+      (this.draft().trim().length > 0 || this.pendingItems().length > 0) &&
       !this.sending() &&
       !this.attaching() &&
       !!this.id(),
@@ -3096,9 +3178,9 @@ export class DetalheComponent implements AfterViewChecked {
     if (!id) {
       return;
     }
-    // Anexo staged → envia o ARQUIVO (com o texto digitado como legenda) num
-    // fluxo só, pra imagem + texto chegarem JUNTOS no agente.
-    if (this.pendingFile()) {
+    // Anexos staged → envia os ARQUIVOS (com o texto digitado como legenda) num
+    // fluxo só, pra imagens + texto chegarem JUNTOS no agente.
+    if (this.pendingItems().length > 0) {
       this.sendFile();
       return;
     }
@@ -3146,8 +3228,8 @@ export class DetalheComponent implements AfterViewChecked {
   protected onDraftChange(value: string): void {
     this.draft.set(value);
     this.drafts.set(this.id(), value); // persiste por sessão
-    // Com anexo staged, o texto é LEGENDA do arquivo — não encaminha ao vivo.
-    if (this.liveMode() && !this.pendingFile()) {
+    // Com anexo staged, o texto é LEGENDA dos arquivos — não encaminha ao vivo.
+    if (this.liveMode() && this.pendingItems().length === 0) {
       this.scheduleForward();
     }
   }
@@ -3249,49 +3331,93 @@ export class DetalheComponent implements AfterViewChecked {
    */
   protected onFileSelected(event: Event): void {
     const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = Array.from(input.files ?? []);
     input.value = ''; // permite reanexar o mesmo arquivo
-    this.stageFile(file);
+    this.stageFiles(files);
   }
 
-  /** Põe o arquivo em "staged" + gera preview (imagem). Reusado por seletor e drop. */
+  /** Põe UM arquivo em "staged" (reusado pelo screenshot). Acrescenta à lista. */
   private stageFile(file: File | null | undefined): void {
-    if (!file) {
-      return;
-    }
-    // Revoga preview anterior antes de trocar o arquivo staged.
-    this.revokePendingUrl();
-    this.pendingFile.set(file);
-    if (file.type.startsWith('image/')) {
-      this.pendingFileUrl.set(URL.createObjectURL(file));
-    } else {
-      this.pendingFileUrl.set(null);
+    if (file) {
+      this.stageFiles([file]);
     }
   }
 
   /**
-   * Colar (Cmd/Ctrl+V) com IMAGEM na área de transferência → anexa como se fosse
-   * arrastada (preview + você adiciona uma legenda e envia). Ignora colagem de
-   * texto (deixa o comportamento normal do input).
+   * ACRESCENTA arquivos à lista de staged + gera preview (imagens). Reusado
+   * por seletor, colar e drop. Aplica os limites (máx {@link MAX_ATTACH}
+   * anexos por envio, ~10MB por arquivo) avisando pelo hint existente.
+   */
+  private stageFiles(files: (File | null | undefined)[]): void {
+    const incoming = files.filter((f): f is File => !!f);
+    if (!incoming.length) {
+      return;
+    }
+    const small = incoming.filter(
+      (f) => f.size <= DetalheComponent.MAX_ATTACH_BYTES,
+    );
+    const tooBig = incoming.length - small.length;
+    const room = Math.max(
+      0,
+      DetalheComponent.MAX_ATTACH - this.pendingItems().length,
+    );
+    const accepted = small.slice(0, room);
+    const overflow = small.length - accepted.length;
+    if (tooBig > 0) {
+      this.warnHint(
+        tooBig === 1
+          ? 'Arquivo acima de 10MB ignorado.'
+          : `${tooBig} arquivos acima de 10MB ignorados.`,
+      );
+    } else if (overflow > 0) {
+      this.warnHint(
+        `Máximo de ${DetalheComponent.MAX_ATTACH} anexos por envio — ${overflow} de fora.`,
+      );
+    }
+    if (!accepted.length) {
+      return;
+    }
+    const added = accepted.map((file) => ({
+      file,
+      url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+      key: ++this.stagedSeq,
+    }));
+    this.pendingItems.update((cur) => [...cur, ...added]);
+  }
+
+  /**
+   * Colar (Cmd/Ctrl+V) com IMAGENS na área de transferência → anexa TODAS como
+   * se fossem arrastadas (preview + você adiciona uma legenda e envia). Colar
+   * de novo ACRESCENTA à lista. Ignora colagem de texto (comportamento normal
+   * do input).
    */
   protected onPaste(event: ClipboardEvent): void {
     const items = event.clipboardData?.items;
     if (!items) {
       return;
     }
+    const ts = Date.now();
+    const images: File[] = [];
     for (const it of Array.from(items)) {
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
-        const file = it.getAsFile();
-        if (file) {
-          event.preventDefault();
-          // Clipboard costuma vir sem nome → dá um p/ o upload/legenda.
-          const named = file.name
-            ? file
-            : new File([file], `colado-${Date.now()}.png`, { type: file.type });
-          this.stageFile(named);
-        }
-        return;
+      if (it.kind !== 'file' || !it.type.startsWith('image/')) {
+        continue;
       }
+      const file = it.getAsFile();
+      if (!file) {
+        continue;
+      }
+      // Clipboard costuma vir sem nome → dá um p/ o upload/legenda.
+      images.push(
+        file.name
+          ? file
+          : new File([file], `colado-${ts}-${images.length + 1}.png`, {
+              type: file.type,
+            }),
+      );
+    }
+    if (images.length) {
+      event.preventDefault();
+      this.stageFiles(images);
     }
   }
 
@@ -3462,7 +3588,7 @@ export class DetalheComponent implements AfterViewChecked {
     this.dragOver.set(false);
   }
 
-  /** Soltou o arquivo: stage do primeiro item (espelha o seletor/áudio). */
+  /** Soltou arquivos: stage de TODOS (espelha o seletor/colar). */
   protected onDrop(event: DragEvent): void {
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) {
@@ -3470,43 +3596,56 @@ export class DetalheComponent implements AfterViewChecked {
     }
     event.preventDefault();
     this.dragOver.set(false);
-    this.stageFile(files[0]);
+    this.stageFiles(Array.from(files));
   }
 
-  /** Descarta o arquivo staged (não envia) e revoga o preview. */
+  /** Remove UM anexo staged (revoga o preview daquele item). */
+  protected removeFile(key: number): void {
+    this.pendingItems.update((cur) =>
+      cur.filter((it) => {
+        if (it.key !== key) {
+          return true;
+        }
+        if (it.url) {
+          URL.revokeObjectURL(it.url);
+        }
+        return false;
+      }),
+    );
+  }
+
+  /** Descarta TODOS os anexos staged (não envia) e revoga os previews. */
   protected cancelFile(): void {
     this.revokePendingUrl();
-    this.pendingFile.set(null);
   }
 
   /**
-   * Faz upload do arquivo staged junto com o texto digitado (legenda), pra
-   * imagem + texto chegarem JUNTOS no agente. O worker injeta os dois numa
-   * mensagem só. Limpa anexo e draft em caso de sucesso.
+   * Faz upload de TODOS os arquivos staged junto com o texto digitado
+   * (legenda), numa chamada só — imagens + texto chegam JUNTOS no agente (o
+   * worker injeta tudo numa mensagem única). Limpa anexos e draft no sucesso.
    */
   protected sendFile(): void {
-    const file = this.pendingFile();
+    const files = this.pendingItems().map((it) => it.file);
     const id = this.id();
-    if (!file || !id || this.attaching()) {
+    if (!files.length || !id || this.attaching()) {
       return;
     }
     const caption = this.draft().trim();
     this.attaching.set(true);
-    this.showHint('Enviando anexo…');
+    this.showHint(files.length > 1 ? 'Enviando anexos…' : 'Enviando anexo…');
     this.markWorkingLocal();
     this.api
-      .uploadFile(id, file, caption)
+      .uploadFile(id, files, caption)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
           this.attaching.set(false);
           this.revokePendingUrl();
-          this.pendingFile.set(null);
           this.draft.set('');
           this.drafts.set(id, '');
           this.refreshScreen();
         },
-        // Mantém o arquivo staged (e o texto) para o usuário tentar de novo.
+        // Mantém os arquivos staged (e o texto) para o usuário tentar de novo.
         error: () => {
           this.attaching.set(false);
           this.clearHint(); // falhou → tira o aviso na hora
@@ -3514,13 +3653,14 @@ export class DetalheComponent implements AfterViewChecked {
       });
   }
 
-  /** Revoga o object URL do preview (se houver) e limpa o signal. */
+  /** Revoga os object URLs dos previews e esvazia a lista de staged. */
   private revokePendingUrl(): void {
-    const url = this.pendingFileUrl();
-    if (url) {
-      URL.revokeObjectURL(url);
+    for (const it of this.pendingItems()) {
+      if (it.url) {
+        URL.revokeObjectURL(it.url);
+      }
     }
-    this.pendingFileUrl.set(null);
+    this.pendingItems.set([]);
   }
 
   /**
@@ -3597,6 +3737,15 @@ export class DetalheComponent implements AfterViewChecked {
     }
     // Rede de segurança: se a tela não mudar (ex.: nada injetado), some em 40s.
     this.hintTimer = setTimeout(() => this.actionHint.set(null), 40000);
+  }
+
+  /** Aviso curto no mesmo balão do hint (some sozinho em ~4s). */
+  private warnHint(label: string): void {
+    this.actionHint.set(label);
+    if (this.hintTimer) {
+      clearTimeout(this.hintTimer);
+    }
+    this.hintTimer = setTimeout(() => this.actionHint.set(null), 4000);
   }
 
   private clearHint(): void {

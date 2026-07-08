@@ -911,36 +911,73 @@ class CommandConsumer:
         return {"name": name, "key": key}
 
     async def _handle_file(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Anexa um arquivo: re-rooteia o path p/ o host e injeta no pane.
+        """Anexa arquivo(s): re-rooteia os paths p/ o host e injeta no pane.
 
-        O agente (ex.: Claude Code) lê a imagem/arquivo pelo caminho. Payload:
-        ``{name, path, filename?, upload_id?}``.
+        O agente (ex.: Claude Code) lê as imagens/arquivos pelos caminhos.
+        Payload novo: ``{name, paths: [...], filenames?, caption?, upload_id?}``.
+        Retrocompat com o formato antigo de 1 arquivo (``{name, path, ...}``) —
+        comandos já enfileirados podem chegar no formato velho.
         """
         name = payload.get("name")
         if not name:
             raise CommandError("file requer 'name'")
-        path = payload.get("path")
-        if not path:
-            raise CommandError("file requer 'path'")
-        path = self._resolve_upload_path(path)
-        if not os.path.isfile(path):
-            raise CommandError(f"arquivo não encontrado: {path!r}")
+        raw_paths = payload.get("paths")
+        if not isinstance(raw_paths, list) or not raw_paths:
+            single = payload.get("path")
+            raw_paths = [single] if single else []
+        if not raw_paths:
+            raise CommandError("file requer 'path' ou 'paths'")
 
-        filename = payload.get("filename") or os.path.basename(path)
-        # Injeta o caminho ABSOLUTO no pane (o agente abre/lê o arquivo). Se veio
-        # uma legenda (texto do usuário), manda TUDO numa linha só — imagem +
-        # texto chegam juntos, sem o agente concluir só pela imagem antes do texto.
+        paths: list[str] = []
+        for raw in raw_paths:
+            if not raw:
+                continue
+            resolved = self._resolve_upload_path(str(raw))
+            if not os.path.isfile(resolved):
+                raise CommandError(f"arquivo não encontrado: {resolved!r}")
+            paths.append(resolved)
+        if not paths:
+            raise CommandError("file requer 'path' ou 'paths'")
+
+        filenames = payload.get("filenames")
+        if not isinstance(filenames, list) or len(filenames) != len(paths):
+            single_name = payload.get("filename")
+            if len(paths) == 1 and single_name:
+                filenames = [single_name]
+            else:
+                filenames = [os.path.basename(p) for p in paths]
+
+        # Injeta os caminhos ABSOLUTOS no pane (o agente abre/lê os arquivos),
+        # separados por ESPAÇO na MESMA linha — assim o Claude Code enxerga
+        # todas as imagens de uma vez. Se veio uma legenda (texto do usuário),
+        # vai TUDO numa mensagem só — imagens + texto chegam juntos, sem o
+        # agente concluir só pelas imagens antes do texto.
         caption = (payload.get("caption") or "").strip()
+        joined = " ".join(paths)
+        plural = len(paths) > 1
         if caption:
-            message = f"{caption} (arquivo anexado: {path})"
+            label = "arquivos anexados" if plural else "arquivo anexado"
+            message = f"{caption} ({label}: {joined})"
+        elif plural:
+            message = f"Arquivos anexados ({len(paths)}): {joined}"
         else:
-            message = f"Arquivo anexado ({filename}): {path}"
-        self._send_keys(name, message)
+            message = f"Arquivo anexado ({filenames[0]}): {joined}"
+        # Texto e Enter SEPARADOS (bracketed-paste-safe) → submissão confiável.
+        await self._type_and_submit(name, message)
         await self._mark_working(name)  # anexo é resposta → agente trabalha
-        result: dict[str, Any] = {"name": name, "path": path, "filename": filename}
+        result: dict[str, Any] = {
+            "name": name,
+            "paths": paths,
+            "filenames": filenames,
+            "path": paths[0],
+            "filename": filenames[0],
+        }
         upload_id = payload.get("upload_id")
         if upload_id is not None:
             result["upload_id"] = upload_id
+        upload_ids = payload.get("upload_ids")
+        if upload_ids:
+            result["upload_ids"] = upload_ids
         return result
 
     async def _handle_audio(self, payload: dict[str, Any]) -> dict[str, Any]:
