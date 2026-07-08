@@ -44,11 +44,13 @@ Decisões de design
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import unicodedata
 import uuid
@@ -81,7 +83,9 @@ COMMAND_STALE_TTL_S = float(os.environ.get("SESSIONFLOW_COMMAND_TTL_S", "300"))
 # Só comandos de CICLO DE VIDA (criam/ressuscitam sessão) são descartados quando
 # velhos — é o que causou a duplicação. Os demais (kill/delete/rename) são
 # idempotentes ou destrutivos-desejáveis e seguem mesmo atrasados.
-_STALE_GUARDED_TYPES = frozenset({"create", "resume", "input", "key", "audio", "file"})
+_STALE_GUARDED_TYPES = frozenset(
+    {"create", "resume", "input", "key", "audio", "file", "switch_agent"}
+)
 
 # A API roda no Docker e grava uploads em ``/data/uploads/<sid>/<file>`` (path
 # do CONTAINER), publicado no comando ``audio``. O Worker roda no HOST, onde
@@ -108,6 +112,7 @@ _VALID_TYPES = frozenset(
         "file",
         "open_terminal",
         "resize",
+        "switch_agent",
     }
 )
 
@@ -497,6 +502,8 @@ class CommandConsumer:
             return await self._handle_open_terminal(payload)
         if ctype == "resize":
             return await self._handle_resize(payload)
+        if ctype == "switch_agent":
+            return await self._handle_switch_agent(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -876,6 +883,447 @@ class CommandConsumer:
             raise CommandError(f"falha ao redimensionar: {exc}") from exc
         return {"name": name, "cols": cols, "rows": rows}
 
+    # -- troca de provedor (switch_agent) -----------------------------------
+
+    _SWITCH_ACTIVITY = "Trocando provedor…"
+    # Shells reconhecidos no pane (agente NÃO está rodando).
+    _SHELLS = frozenset(
+        {"zsh", "-zsh", "bash", "-bash", "sh", "-sh", "fish", "login", "tmux"}
+    )
+
+    async def _handle_switch_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Troca o PROVEDOR da sessão (mesmo tmux/registro) com handoff de contexto.
+
+        Valida tudo ANTES de mexer no agente atual (inclusive o guard de
+        recursos — se o host não tem folga pro novo agente, falha aqui e a
+        sessão continua com o antigo). O fluxo pesado (pedir handoff, derrubar
+        o agente, subir o novo e injetar o contexto) roda em BACKGROUND
+        (:meth:`_switch_agent_flow`), como o ``_resume_and_send``.
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("switch_agent requer 'name'")
+        agent_type = _coerce_agent_type(payload.get("agent_type"))
+        model = payload.get("model")
+        effort = payload.get("effort")
+        if agent_type is AgentType.GEMINI:
+            effort = None  # gemini não tem dimensão de esforço
+
+        if not self._runtime.has_session(name):
+            raise CommandError(
+                f"sessão tmux {name!r} não está rodando (retome antes de trocar)"
+            )
+        doc = await self._sessions.find_one({"tmux_name": name})
+        if not doc:
+            raise CommandError(f"sessão {name!r} desconhecida")
+        work_dir = doc.get("work_dir")
+        if not work_dir:
+            raise CommandError(f"sessão {name!r} sem work_dir salvo")
+        if doc.get("switching"):
+            raise CommandError(f"sessão {name!r} já está trocando de provedor")
+
+        # Guard de recursos ANTES de derrubar o agente atual: se bloquear,
+        # falha aqui e a sessão fica intacta (nunca sem agente).
+        reason = _resource_block_reason()
+        if reason:
+            raise CommandError(reason)
+
+        now = _now()
+        await self._sessions.update_one(
+            {"tmux_name": name},
+            {"$set": {
+                "switching": True,
+                "activity": self._SWITCH_ACTIVITY,
+                "updated_at": now,
+            }},
+        )
+        asyncio.create_task(
+            self._switch_agent_flow(name, agent_type, model, effort, doc)
+        )
+        return {"name": name, "note": "switching", "to": agent_type.value}
+
+    async def _switch_agent_flow(
+        self,
+        name: str,
+        agent_type: AgentType,
+        model: str | None,
+        effort: str | None,
+        doc: dict[str, Any],
+    ) -> None:
+        """Fluxo completo da troca de provedor (roda em background).
+
+        1. pede ao agente ATUAL um handoff-resumo em
+           ``<work_dir>/.sessionflow/handoff/switch-<name>.md`` (fallback:
+           captura da tela+scrollback);
+        2. exporta a CONVERSA da sessão anterior (transcript-<name>.md) — do
+           JSONL nativo do Claude quando a origem é claude, ou do scrollback
+           (bruto) nos demais;
+        3. gera o índice de skills da máquina (skills-index-<name>.md) e, se o
+           destino é codex, sincroniza ~/.claude/skills → ~/.codex/skills;
+        4. encerra o agente atual SEM matar o tmux (Ctrl-C até voltar ao shell);
+        5. lança o novo provedor no MESMO pane (claude→claude retoma a conversa
+           nativa exata via --resume; indo pra claude gera claude_session_id);
+        6. injeta a mensagem de contexto (referencia transcript + skills e
+           embute o handoff) e atualiza o doc. Best-effort: nunca levanta.
+        """
+        old_agent = str(doc.get("agent_type") or "desconhecido")
+        work_dir = str(doc.get("work_dir"))
+        try:
+            handoff = await self._collect_handoff(name, work_dir)
+            transcript_path = self._write_transcript(name, work_dir, doc)
+            skills_path = self._write_skills_index(name, work_dir)
+            if agent_type is AgentType.CODEX:
+                self._sync_skills_to_codex()
+
+            if not await self._shutdown_agent(name):
+                # Não derrubou o agente atual: ABORTA sem lançar o novo — a
+                # sessão continua utilizável com o provedor antigo (nunca
+                # digitamos o launch dentro do agente vivo).
+                raise CommandError(
+                    "não consegui encerrar o agente atual; a sessão segue no "
+                    f"provedor {old_agent}"
+                )
+
+            lang_instruction = await self._language_instruction()
+            claude_session_id = doc.get("claude_session_id")
+            resume = False
+            if agent_type is AgentType.CLAUDE:
+                if claude_session_id:
+                    # Voltando pro claude: retoma a conversa nativa EXATA.
+                    resume = True
+                else:
+                    # Indo pro claude pela 1ª vez: fixa o id da conversa nova.
+                    claude_session_id = str(uuid.uuid4())
+            launch_cmd = build_launch_cmd(
+                agent_type,
+                model,
+                effort,
+                resume=resume,
+                lang_instruction=lang_instruction,
+                session_id=(
+                    claude_session_id if agent_type is AgentType.CLAUDE else None
+                ),
+                name=doc.get("display_name") or name,
+            )
+            if agent_type is AgentType.CODEX:
+                _ensure_codex_trust(work_dir)
+            self._send_keys(name, launch_cmd)
+
+            now = _now()
+            update: dict[str, Any] = {
+                "agent_type": agent_type.value,
+                "model": model,
+                "effort": effort,
+                "status": SessionState.RUNNING.value,
+                "updated_at": now,
+                "last_activity_at": now,
+            }
+            if agent_type is AgentType.CLAUDE and claude_session_id:
+                update["claude_session_id"] = claude_session_id
+            await self._sessions.update_one({"tmux_name": name}, {"$set": update})
+
+            await self._await_agent_ready(name)
+            # Respiro extra pro TUI assentar (o boot do codex é mais lento).
+            await asyncio.sleep(20.0 if agent_type is AgentType.CODEX else 10.0)
+
+            parts = [
+                f"Você está ASSUMINDO esta sessão, que antes rodava no "
+                f"provedor {old_agent}.",
+            ]
+            if transcript_path:
+                parts.append(
+                    f"A conversa COMPLETA da sessão anterior está em "
+                    f"{transcript_path} — leia esse arquivo antes de continuar."
+                )
+            if skills_path:
+                parts.append(
+                    f"As ferramentas/skills desta máquina estão indexadas em "
+                    f"{skills_path} (scripts executáveis via shell; leia o "
+                    f"SKILL.md da que precisar)."
+                )
+            parts.append(f"Resumo/handoff do trabalho até aqui:\n{handoff}")
+            parts.append(
+                "O diretório do projeto é o mesmo (memória/arquivos "
+                "preservados). Continue de onde parou. Responda em português "
+                "do Brasil."
+            )
+            await self._type_and_submit(name, "\n".join(parts))
+            await self._emit(
+                None, "switch_agent", ok=True, name=name, phase="done",
+                from_agent=old_agent, to_agent=agent_type.value,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            logger.warning("switch_agent falhou para %r", name, exc_info=True)
+            try:
+                await self._emit(
+                    None, "switch_agent", ok=False, name=name,
+                    phase="done", error=str(exc),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            try:
+                await self._sessions.update_one(
+                    {"tmux_name": name},
+                    {"$set": {"updated_at": _now()},
+                     "$unset": {"switching": ""}},
+                )
+                # Limpa o rótulo transitório só se ainda for o nosso (o
+                # discovery pode já ter escrito a atividade real do novo agente).
+                await self._sessions.update_one(
+                    {"tmux_name": name, "activity": self._SWITCH_ACTIVITY},
+                    {"$set": {"activity": None}},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _handoff_dir(self, work_dir: str) -> Path:
+        return Path(os.path.expanduser(work_dir)) / ".sessionflow" / "handoff"
+
+    async def _collect_handoff(self, name: str, work_dir: str) -> str:
+        """Pede o handoff ao agente ATUAL e espera o arquivo aparecer/estabilizar.
+
+        Poll de ~2s até 90s; "estável" = tamanho > 0 igual em 2 leituras
+        seguidas. Se não vier no prazo, cai na captura bruta da tela+scrollback
+        (últimos ~6000 chars). Devolve o texto do contexto (corta em ~8000).
+        """
+        handoff_dir = self._handoff_dir(work_dir)
+        handoff_path = handoff_dir / f"switch-{name}.md"
+        try:
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            if handoff_path.exists():
+                handoff_path.unlink()  # espera um handoff FRESCO desta troca
+        except OSError:
+            pass
+
+        instruction = (
+            "Vamos trocar o provedor desta sessão. Escreva AGORA um handoff "
+            f"completo do contexto em {handoff_path}: o que está sendo feito, "
+            "decisões tomadas, arquivos tocados, estado atual e próximos "
+            "passos. Seja objetivo e completo. Depois de gravar, não faça "
+            "mais nada."
+        )
+        await self._type_and_submit(name, instruction)
+
+        deadline = asyncio.get_event_loop().time() + 90.0
+        last_size = -1
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(2.0)
+            try:
+                size = handoff_path.stat().st_size
+            except OSError:
+                continue
+            if size > 0 and size == last_size:
+                try:
+                    text = handoff_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                except OSError:
+                    text = ""
+                if text:
+                    return text[:8000]
+            last_size = size
+
+        raw = self._capture_pane_text(name)
+        return (
+            "(o agente anterior não gravou o handoff a tempo; segue a captura "
+            "bruta do terminal)\n" + raw[-6000:]
+        )
+
+    def _capture_pane_text(self, name: str) -> str:
+        """Tela visível + scrollback do pane via ``tmux capture-pane`` (host).
+
+        Usa o MESMO socket do server (como o :meth:`_send_wheel`). Best-effort:
+        devolve "" se o tmux reclamar.
+        """
+        socket_name = getattr(self._server, "socket_name", None)
+        base = ["tmux"]
+        if socket_name and socket_name != "default":
+            base += ["-L", socket_name]
+        for args in (
+            ["capture-pane", "-p", "-S", "-2000", "-t", name],
+            ["capture-pane", "-p", "-t", name],
+        ):
+            try:
+                res = subprocess.run(
+                    base + args, capture_output=True, text=True, timeout=10
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    return res.stdout
+            except Exception:  # noqa: BLE001 - best-effort
+                continue
+        return ""
+
+    async def _shutdown_agent(self, name: str) -> bool:
+        """Encerra o agente do pane SEM matar o tmux (inverso do await_ready).
+
+        Rajadas de 3x Ctrl-C (0.35s entre elas): nos TUIs (claude/gemini/codex)
+        o 1º Ctrl-C pode só LIMPAR o input pendente e o "press ctrl-c again to
+        exit" tem janela curta — 2 Ctrl-C espaçados não bastavam (visto no
+        teste E2E). Se as rajadas não derrubarem, ESCALA matando o processo
+        FILHO do shell do pane (o agente) com TERM→KILL — o tmux e o shell
+        sobrevivem. Devolve True se o pane voltou a ser um shell.
+        """
+        loop = asyncio.get_event_loop()
+
+        def is_shell() -> bool:
+            cmd = (self._runtime.pane_command(name) or "").strip().lower()
+            return cmd in self._SHELLS
+
+        async def wait_shell(seconds: float) -> bool:
+            deadline = loop.time() + seconds
+            while loop.time() < deadline:
+                if is_shell():
+                    await asyncio.sleep(1.0)  # respiro pro shell assentar
+                    return True
+                await asyncio.sleep(0.5)
+            return False
+
+        for _ in range(2):
+            for _ in range(3):
+                try:
+                    self._send_key(name, "C-c")
+                except CommandError:
+                    pass
+                await asyncio.sleep(0.35)
+            if await wait_shell(6.0):
+                return True
+        for sig in ("TERM", "KILL"):
+            self._kill_pane_children(name, sig)
+            if await wait_shell(5.0):
+                return True
+        return is_shell()
+
+    def _kill_pane_children(self, name: str, sig: str) -> None:
+        """Mata os processos FILHOS do shell do pane (o agente), não o tmux.
+
+        ``pkill -<sig> -P <pid do shell>`` derruba o agente e devolve o pane ao
+        shell. Best-effort: sem PID ou sem filho, no-op.
+        """
+        pid = self._runtime.pane_pid(name)
+        if not pid:
+            return
+        try:
+            subprocess.run(
+                ["pkill", f"-{sig}", "-P", str(pid)],
+                check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+
+    def _write_transcript(
+        self, name: str, work_dir: str, doc: dict[str, Any]
+    ) -> str | None:
+        """Exporta a CONVERSA da sessão anterior para um .md legível.
+
+        Origem claude: localiza o JSONL nativo por ``claude_session_id`` em
+        ``~/.claude/projects/*/<sid>.jsonl`` (o glob pelo uuid dispensa acertar
+        o slug do diretório) e converte os turnos user/assistant. Origem
+        não-claude (codex/gemini/opencode): não há formato nativo estável
+        mapeado — usa o scrollback capturado como "transcript bruto".
+        Devolve o path gravado ou ``None``. Best-effort: nunca levanta.
+        """
+        try:
+            handoff_dir = self._handoff_dir(work_dir)
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            out_path = handoff_dir / f"transcript-{name}.md"
+            old_agent = str(doc.get("agent_type") or "")
+            sid = doc.get("claude_session_id")
+
+            body: str | None = None
+            if old_agent == AgentType.CLAUDE.value and sid:
+                pattern = os.path.expanduser(
+                    f"~/.claude/projects/*/{sid}.jsonl"
+                )
+                matches = glob.glob(pattern)
+                if matches:
+                    body = _claude_jsonl_to_markdown(matches[0])
+            if body is None:
+                raw = self._capture_pane_text(name).strip()
+                if not raw:
+                    return None
+                body = (
+                    f"> Transcript BRUTO (captura do terminal) — o provedor "
+                    f"anterior ({old_agent or 'desconhecido'}) não tem export "
+                    f"de conversa mapeado.\n\n```\n{raw[-20000:]}\n```\n"
+                )
+            header = (
+                f"# Conversa da sessão {name} (provedor anterior: "
+                f"{old_agent or 'desconhecido'})\n\n"
+            )
+            out_path.write_text(header + body, encoding="utf-8")
+            return str(out_path)
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("transcript: falha ao exportar %r", name, exc_info=True)
+            return None
+
+    def _write_skills_index(self, name: str, work_dir: str) -> str | None:
+        """Gera o índice das skills da máquina (~/.claude/skills/*/SKILL.md).
+
+        Cada entrada: nome, 1ª linha da description e caminho base. O novo
+        agente (qualquer CLI) pode ler o SKILL.md e executar os scripts via
+        shell. Devolve o path do índice ou ``None`` (sem skills / falha).
+        """
+        try:
+            skills_root = Path(os.path.expanduser("~/.claude/skills"))
+            entries: list[tuple[str, str, str]] = []
+            if skills_root.is_dir():
+                for skill_md in sorted(skills_root.glob("*/SKILL.md")):
+                    meta = _skill_frontmatter(skill_md)
+                    if meta:
+                        entries.append((meta[0], meta[1], str(skill_md.parent)))
+            if not entries:
+                return None
+            lines = [
+                f"# Skills disponíveis nesta máquina ({len(entries)})",
+                "",
+                "Ferramentas/skills disponíveis nesta máquina — são scripts",
+                "executáveis; você pode usá-los via shell (leia o SKILL.md da",
+                "que precisar para ver uso/parâmetros).",
+                "",
+            ]
+            for nm, desc, base in entries:
+                lines.append(f"- **{nm}** — {desc or '(sem descrição)'}")
+                lines.append(f"  - base: `{base}` (doc: `{base}/SKILL.md`)")
+            handoff_dir = self._handoff_dir(work_dir)
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            out_path = handoff_dir / f"skills-index-{name}.md"
+            out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return str(out_path)
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("skills-index: falha", exc_info=True)
+            return None
+
+    def _sync_skills_to_codex(self) -> int:
+        """Copia skills compatíveis ~/.claude/skills/<n> → ~/.codex/skills/<n>.
+
+        Mesmo formato SKILL.md. NÃO sobrescreve as já existentes; pula skills
+        sem frontmatter válido. Idempotente e best-effort. Devolve o nº copiado.
+        """
+        copied = 0
+        try:
+            src_root = Path(os.path.expanduser("~/.claude/skills"))
+            dst_root = Path(os.path.expanduser("~/.codex/skills"))
+            if not src_root.is_dir():
+                return 0
+            dst_root.mkdir(parents=True, exist_ok=True)
+            for skill_md in sorted(src_root.glob("*/SKILL.md")):
+                src = skill_md.parent
+                dst = dst_root / src.name
+                if dst.exists():
+                    continue  # não sobrescreve
+                if not _skill_frontmatter(skill_md):
+                    continue  # frontmatter inválido → pula
+                try:
+                    shutil.copytree(src, dst, symlinks=True)
+                    copied += 1
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("sync skills→codex: falha", exc_info=True)
+        return copied
+
     async def _handle_key(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Envia uma TECLA ESPECIAL (seta/enter/espaço/esc/tab…) ao pane.
 
@@ -1188,6 +1636,89 @@ class CommandConsumer:
                         # Mensagem corrompida: ack p/ não reentregar em loop.
                         continue
                     await self.handle(command)
+
+
+def _claude_jsonl_to_markdown(jsonl_path: str) -> str | None:
+    """Converte o JSONL nativo do Claude Code em markdown legível (turnos).
+
+    Cada linha relevante tem ``type`` ``user``/``assistant`` e ``message`` com
+    ``role``/``content``. ``content`` pode ser string ou lista de blocos:
+    ``text`` vira texto; ``tool_use`` vira "[usou ferramenta X]"; blocos de
+    ``tool_result``/meta são ignorados (ruído). Devolve ``None`` se nada
+    aproveitável. Best-effort: linha malformada é pulada.
+    """
+    turns: list[str] = []
+    try:
+        with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if rec.get("type") not in ("user", "assistant"):
+                    continue
+                if rec.get("isSidechain"):
+                    continue  # threads de sub-agentes poluem a linha do tempo
+                msg = rec.get("message") or {}
+                role = msg.get("role")
+                content = msg.get("content")
+                pieces: list[str] = []
+                if isinstance(content, str):
+                    if content.strip():
+                        pieces.append(content.strip())
+                elif isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        btype = block.get("type")
+                        if btype == "text":
+                            txt = str(block.get("text") or "").strip()
+                            if txt:
+                                pieces.append(txt)
+                        elif btype == "tool_use":
+                            tool = block.get("name") or "?"
+                            pieces.append(f"[usou ferramenta {tool}]")
+                if not pieces:
+                    continue
+                label = "## Usuário:" if role == "user" else "## Assistente:"
+                turns.append(f"{label}\n\n" + "\n\n".join(pieces))
+    except OSError:
+        return None
+    if not turns:
+        return None
+    return "\n\n".join(turns) + "\n"
+
+
+def _skill_frontmatter(skill_md: Path) -> tuple[str, str] | None:
+    """Extrai ``(name, 1ª linha da description)`` do frontmatter de um SKILL.md.
+
+    ``None`` se o arquivo não tem frontmatter YAML válido (``---`` ... ``---``)
+    ou não tem ``name``. Parse propositalmente simples (linha a linha), sem
+    depender de lib YAML.
+    """
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.lstrip().startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    name = ""
+    desc = ""
+    for line in parts[1].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("name:") and not name:
+            name = stripped[len("name:"):].strip().strip("\"'")
+        elif stripped.startswith("description:") and not desc:
+            first = stripped[len("description:"):].strip().strip("\"'")
+            # description multiline (``description: >``/``|``): pega a 1ª linha
+            # de conteúdo indentado que vier a seguir.
+            desc = "" if first in (">", "|", ">-", "|-") else first
+    if not name:
+        return None
+    return name, desc
 
 
 def _coerce_agent_type(value: Any) -> AgentType:

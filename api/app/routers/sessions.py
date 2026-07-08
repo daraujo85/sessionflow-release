@@ -185,6 +185,18 @@ class SessionResize(BaseModel):
     rows: int = Field(ge=5, le=300)
 
 
+class SessionSwitchAgent(BaseModel):
+    """Request body para TROCAR o provedor da sessão (mesmo tmux/registro).
+
+    O worker pede um handoff ao agente atual, derruba-o sem matar o tmux e
+    sobe o novo provedor no mesmo pane, injetando o contexto.
+    """
+
+    agent_type: AgentType
+    model: str | None = None
+    effort: str | None = None
+
+
 class SessionRename(BaseModel):
     """Request body for renaming a session (TMUX-10).
 
@@ -678,6 +690,35 @@ async def upload_file(
     return AudioUploadAccepted(
         command_id=command_id, upload_id=upload_ids[0], status="accepted"
     )
+
+
+@router.post(
+    "/{session_id}/switch-agent",
+    response_model=SessionCreateAccepted,
+    status_code=202,
+)
+async def switch_agent(
+    request: Request, session_id: str, body: SessionSwitchAgent
+) -> SessionCreateAccepted:
+    """Troca o PROVEDOR da sessão (claude/codex/gemini/opencode) mantendo o
+    mesmo tmux/registro/histórico. O worker faz o handoff de contexto: pede um
+    resumo ao agente atual, encerra-o sem matar o tmux, sobe o novo provedor
+    no mesmo pane e injeta o contexto (202: processo roda em background)."""
+    tmux_name = await _require_tmux_name(request, session_id)
+    # Gemini não tem dimensão de esforço (mesma regra do create).
+    effort = None if body.agent_type == AgentType.gemini else body.effort
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="switch_agent",
+        payload={
+            "name": tmux_name,
+            "agent_type": body.agent_type.value,
+            "model": body.model,
+            "effort": effort,
+        },
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")
 
 
 @router.post(

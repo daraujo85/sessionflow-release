@@ -20,7 +20,14 @@ import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
-import { Session, SessionMetrics, ShareLink, Task, TerminalKey } from '../../core/models';
+import {
+  AgentType,
+  Session,
+  SessionMetrics,
+  ShareLink,
+  Task,
+  TerminalKey,
+} from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
 import { ansiToHtml } from '../../shared/ansi-html';
@@ -450,6 +457,62 @@ import { ansiToHtml } from '../../shared/ansi-html';
             </div>
           }
         </div>
+
+        <!-- Trocar de PROVEDOR nesta MESMA sessão (handoff de contexto) -->
+        @if (!guest()) {
+          @if (!switchOpen()) {
+            <div class="switch-row">
+              <button
+                type="button"
+                class="switch-btn"
+                [disabled]="switching()"
+                (click)="openSwitch()"
+                title="Trocar o provedor desta sessão (o contexto é transferido)"
+              >
+                {{ switching() ? 'Trocando provedor…' : 'Trocar provedor' }}
+              </button>
+            </div>
+          } @else {
+            <div class="switch-panel" aria-label="Trocar provedor da sessão">
+              <label class="rename-field">
+                <span class="rename-lbl">Provedor</span>
+                <select
+                  class="rename-input"
+                  [ngModel]="switchAgentSel()"
+                  (ngModelChange)="switchAgentSel.set($event)"
+                >
+                  @for (p of switchProviders; track p) {
+                    <option [value]="p">{{ p }}</option>
+                  }
+                </select>
+              </label>
+              <label class="rename-field">
+                <span class="rename-lbl">Modelo</span>
+                <input
+                  class="rename-input mono"
+                  type="text"
+                  [ngModel]="switchModel()"
+                  (ngModelChange)="switchModel.set($event)"
+                  placeholder="modelo (opcional — default do provedor)"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <span class="rename-hint"
+                >O agente atual grava um handoff do contexto e o novo provedor
+                assume ESTA sessão (mesmo diretório, registro e histórico).</span
+              >
+              <div class="rename-acts">
+                <button type="button" class="rename-btn" [disabled]="switching()"
+                        (click)="switchOpen.set(false)">Cancelar</button>
+                <button type="button" class="rename-btn rename-btn--primary"
+                        [disabled]="switching()" (click)="confirmSwitch()">
+                  {{ switching() ? 'Trocando…' : 'Confirmar' }}
+                </button>
+              </div>
+            </div>
+          }
+        }
         }
       </section>
 
@@ -1070,6 +1133,39 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .rename-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      /* Trocar provedor (dentro do bloco de métricas) */
+      .switch-row {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 10px;
+      }
+      .switch-btn {
+        appearance: none;
+        background: transparent;
+        border: 1px solid #283230;
+        border-radius: 10px;
+        color: #7a8090;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      .switch-btn:hover {
+        color: #c9cdd6;
+        border-color: #37464f;
+      }
+      .switch-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .switch-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #20262a;
       }
       /* Overlay de recorte do screenshot */
       .shot-overlay {
@@ -2570,6 +2666,19 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly renameDisp = signal<string>('');
   protected readonly renaming = signal<boolean>(false);
 
+  /** Painel "Trocar provedor" (no bloco de métricas): troca o agente da MESMA
+   *  sessão com handoff de contexto (o worker orquestra em background). */
+  protected readonly switchOpen = signal<boolean>(false);
+  protected readonly switchAgentSel = signal<AgentType>('claude');
+  protected readonly switchModel = signal<string>('');
+  protected readonly switching = signal<boolean>(false);
+  protected readonly switchProviders: AgentType[] = [
+    'claude',
+    'codex',
+    'gemini',
+    'opencode',
+  ];
+
   /** Captura de tela (só onde o navegador suporta — desktop/Mac). */
   protected readonly canScreenshot =
     typeof navigator !== 'undefined' &&
@@ -2967,6 +3076,53 @@ export class DetalheComponent implements AfterViewChecked {
     } else {
       doTech();
     }
+  }
+
+  /** Abre o painel de trocar provedor pré-selecionando o agente atual. */
+  protected openSwitch(): void {
+    const cur = this.session()?.agent_type;
+    if (cur && this.switchProviders.includes(cur)) {
+      this.switchAgentSel.set(cur);
+    }
+    this.switchModel.set('');
+    this.switchOpen.set(true);
+  }
+
+  /**
+   * Confirma a troca de provedor: 202 aceito — o worker pede o handoff ao
+   * agente atual, derruba-o e sobe o novo em background. Recarrega o doc e a
+   * tela em 2 tempos (como o resume), e o card mostra "Trocando provedor…"
+   * (activity setada pelo worker) enquanto roda.
+   */
+  protected confirmSwitch(): void {
+    const id = this.id();
+    if (!id || this.switching()) {
+      return;
+    }
+    this.switching.set(true);
+    const model = this.switchModel().trim() || null;
+    this.api
+      .switchAgent(id, this.switchAgentSel(), model)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.switching.set(false);
+          this.switchOpen.set(false);
+          this.showHint('Trocando provedor…');
+          setTimeout(() => {
+            this.loadSession();
+            this.refreshScreen(true);
+          }, 3000);
+          setTimeout(() => {
+            this.loadSession();
+            this.refreshScreen(true);
+          }, 10000);
+        },
+        error: () => {
+          this.switching.set(false);
+          this.warnHint('Falha ao trocar o provedor.');
+        },
+      });
   }
 
   protected resume(): void {

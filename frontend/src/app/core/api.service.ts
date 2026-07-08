@@ -137,6 +137,24 @@ export class ApiService {
     return this.http.post<void>(this.url(`/sessions/${id}/resume`), {});
   }
 
+  /**
+   * Troca o PROVEDOR da sessão (mesmo tmux/registro) com handoff de contexto.
+   * 202: o worker pede o handoff ao agente atual, derruba-o e sobe o novo em
+   * background — recarregue o doc/tela depois (como no resume).
+   */
+  switchAgent(
+    id: string,
+    agentType: AgentType,
+    model?: string | null,
+    effort?: string | null,
+  ): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/switch-agent`), {
+      agent_type: agentType,
+      model: model ?? null,
+      effort: effort ?? null,
+    });
+  }
+
   /** Abre a sessão num Terminal do Mac (tmux attach) — uso lado a lado. */
   openTerminal(id: string): Observable<void> {
     return this.http.post<void>(this.url(`/sessions/${id}/open-terminal`), {});
