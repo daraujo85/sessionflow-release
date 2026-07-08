@@ -118,6 +118,9 @@ def _clean_for_speech(text: str) -> str:
     sintetizador não fala "ponto"/"asterisco" do nada.
     """
     t = _URL_RE.sub("", text or "")
+    # Reticências UNICODE (… ‥) viram um ponto ANTES do colapso — o caractere
+    # único escapava do tratamento de "..." e o XTTS lia "ponto ponto (ponto)".
+    t = t.replace("…", ". ").replace("‥", ". ")
     t = _DROP_RE.sub(" ", t)
     # Ponto ENTRE letras/números (nome de arquivo, versão, decimal) → espaço.
     # Senão o XTTS lê cada ponto como "ponto": ``detalhe.component.ts`` viraria
