@@ -131,6 +131,11 @@ def _clean_for_speech(text: str) -> str:
     # único ponto+espaço — senão o XTTS lê a pontuação solta como "ponto, ponto".
     t = re.sub(r"[.,;:!?](?:\s*[.,;:!?])+", ". ", t)
     t = re.sub(r"\s+([.,!?;:])", r"\1", t)  # espaço antes de pontuação
+    # PONTO → VÍRGULA: comprovado por synth+transcrição que o XTTS local fala o
+    # "." como a palavra "ponto" (ex.: "Sessão X. resumo" → "...código, PONTO,
+    # terminei..."); com vírgula a pausa é a mesma e nada é falado. (Decisão
+    # antiga do projeto que havia regredido — não usar "." antes do resumo.)
+    t = re.sub(r"\.(\s+|$)", ", ", t)
     t = re.sub(r"\s+", " ", t).strip()
     t = t.strip(" .,:;-—–")  # remove pontuação/sobras nas EXTREMIDADES
     return t
