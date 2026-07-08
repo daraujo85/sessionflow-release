@@ -222,8 +222,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </span>
           <span
             class="agent-badge"
+            [class.agent-badge--btn]="!guest()"
             [style.color]="agent().color"
             [style.background]="agent().color + '22'"
+            (click)="toggleSwitchFromHeader()"
+            [attr.title]="guest() ? null : 'Trocar provedor desta sessão'"
+            [attr.role]="guest() ? null : 'button'"
             >{{ agent().short }}</span
           >
           </div>
@@ -282,6 +286,50 @@ import { ansiToHtml } from '../../shared/ansi-html';
             <button type="button" class="rename-btn" [disabled]="renaming()" (click)="closeRename()">Cancelar</button>
             <button type="button" class="rename-btn rename-btn--primary" [disabled]="renaming()" (click)="saveRename()">
               {{ renaming() ? 'Salvando…' : 'Salvar' }}
+            </button>
+          </div>
+        </section>
+      }
+
+      <!-- Painel "Trocar provedor": mesmo tmux/registro, com handoff de
+           contexto. Abre pelo badge do agente no topo OU pelo botão nas
+           métricas (painel de topo, como o Renomear). -->
+      @if (switchOpen() && !guest()) {
+        <section class="rename" aria-label="Trocar provedor da sessão">
+          <label class="rename-field">
+            <span class="rename-lbl">Provedor</span>
+            <select
+              class="rename-input"
+              [ngModel]="switchAgentSel()"
+              (ngModelChange)="switchAgentSel.set($event)"
+            >
+              @for (p of switchProviders; track p) {
+                <option [value]="p">{{ p }}</option>
+              }
+            </select>
+          </label>
+          <label class="rename-field">
+            <span class="rename-lbl">Modelo</span>
+            <input
+              class="rename-input mono"
+              type="text"
+              [ngModel]="switchModel()"
+              (ngModelChange)="switchModel.set($event)"
+              placeholder="modelo (opcional — default do provedor)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <span class="rename-hint"
+            >O agente atual grava um handoff do contexto e o novo provedor
+            assume ESTA sessão (mesmo diretório, registro e histórico).</span
+          >
+          <div class="rename-acts">
+            <button type="button" class="rename-btn" [disabled]="switching()"
+                    (click)="switchOpen.set(false)">Cancelar</button>
+            <button type="button" class="rename-btn rename-btn--primary"
+                    [disabled]="switching()" (click)="confirmSwitch()">
+              {{ switching() ? 'Trocando…' : 'Confirmar' }}
             </button>
           </div>
         </section>
@@ -460,58 +508,17 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
         <!-- Trocar de PROVEDOR nesta MESMA sessão (handoff de contexto) -->
         @if (!guest()) {
-          @if (!switchOpen()) {
-            <div class="switch-row">
-              <button
-                type="button"
-                class="switch-btn"
-                [disabled]="switching()"
-                (click)="openSwitch()"
-                title="Trocar o provedor desta sessão (o contexto é transferido)"
-              >
-                {{ switching() ? 'Trocando provedor…' : 'Trocar provedor' }}
-              </button>
-            </div>
-          } @else {
-            <div class="switch-panel" aria-label="Trocar provedor da sessão">
-              <label class="rename-field">
-                <span class="rename-lbl">Provedor</span>
-                <select
-                  class="rename-input"
-                  [ngModel]="switchAgentSel()"
-                  (ngModelChange)="switchAgentSel.set($event)"
-                >
-                  @for (p of switchProviders; track p) {
-                    <option [value]="p">{{ p }}</option>
-                  }
-                </select>
-              </label>
-              <label class="rename-field">
-                <span class="rename-lbl">Modelo</span>
-                <input
-                  class="rename-input mono"
-                  type="text"
-                  [ngModel]="switchModel()"
-                  (ngModelChange)="switchModel.set($event)"
-                  placeholder="modelo (opcional — default do provedor)"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-              </label>
-              <span class="rename-hint"
-                >O agente atual grava um handoff do contexto e o novo provedor
-                assume ESTA sessão (mesmo diretório, registro e histórico).</span
-              >
-              <div class="rename-acts">
-                <button type="button" class="rename-btn" [disabled]="switching()"
-                        (click)="switchOpen.set(false)">Cancelar</button>
-                <button type="button" class="rename-btn rename-btn--primary"
-                        [disabled]="switching()" (click)="confirmSwitch()">
-                  {{ switching() ? 'Trocando…' : 'Confirmar' }}
-                </button>
-              </div>
-            </div>
-          }
+          <div class="switch-row">
+            <button
+              type="button"
+              class="switch-btn"
+              [disabled]="switching()"
+              (click)="openSwitch()"
+              title="Trocar o provedor desta sessão (o contexto é transferido)"
+            >
+              {{ switching() ? 'Trocando provedor…' : 'Trocar provedor' }}
+            </button>
+          </div>
         }
         }
       </section>
@@ -1159,13 +1166,10 @@ import { ansiToHtml } from '../../shared/ansi-html';
         opacity: 0.5;
         cursor: not-allowed;
       }
-      .switch-panel {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        margin-top: 12px;
-        padding-top: 12px;
-        border-top: 1px solid #20262a;
+      /* Badge do agente clicável (dono): abre o painel de trocar provedor. */
+      .agent-badge--btn {
+        cursor: pointer;
+        user-select: none;
       }
       /* Overlay de recorte do screenshot */
       .shot-overlay {
@@ -3080,12 +3084,24 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Abre o painel de trocar provedor pré-selecionando o agente atual. */
   protected openSwitch(): void {
+    if (this.guest()) {
+      return;
+    }
     const cur = this.session()?.agent_type;
     if (cur && this.switchProviders.includes(cur)) {
       this.switchAgentSel.set(cur);
     }
     this.switchModel.set('');
     this.switchOpen.set(true);
+  }
+
+  /** Badge do agente no topo: alterna o painel de trocar provedor. */
+  protected toggleSwitchFromHeader(): void {
+    if (this.switchOpen()) {
+      this.switchOpen.set(false);
+      return;
+    }
+    this.openSwitch();
   }
 
   /**
