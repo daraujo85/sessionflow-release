@@ -63,6 +63,24 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           <span class="sf-brand-name">SessionFlow</span>
         </div>
 
+        <!-- Custo global estimado (todas as sessões) — some se não há dado. -->
+        @if (globalCost(); as g) {
+          <button
+            type="button"
+            class="sf-cost-chip mono"
+            [class.is-open]="costPanelOpen()"
+            [title]="globalCostTip()"
+            (click)="costPanelOpen.set(!costPanelOpen())"
+            aria-label="Custo estimado de todas as sessões"
+          >
+            <span aria-hidden="true">💰</span>
+            <span>{{ '~$' + fmtMoney(g.usd) }}</span>
+            @if (g.brl != null) {
+              <span class="sf-cost-chip-brl">· ~R$ {{ fmtMoney(g.brl) }}</span>
+            }
+          </button>
+        }
+
         <button
           type="button"
           class="sf-bell"
@@ -87,6 +105,43 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           }
         </button>
       </header>
+
+      <!-- Mini-painel do custo global: quebra por modelo (abre pelo chip). -->
+      @if (costPanelOpen() && globalCost(); as g) {
+        <div class="sf-cost-panel">
+          <div class="sf-cost-panel-head">
+            <span class="sf-cost-panel-title">Custo estimado · todas as sessões</span>
+            <span class="mono sf-cost-panel-total">
+              {{ '~$' + fmtMoney(g.usd) }}
+              @if (g.brl != null) {
+                <span class="sf-cost-panel-brl">· ~R$ {{ fmtMoney(g.brl) }}</span>
+              }
+            </span>
+          </div>
+          <div class="mono sf-cost-panel-toks">
+            in {{ fmtTok(g.tokensIn) }} · out {{ fmtTok(g.tokensOut) }}
+          </div>
+          @for (r of g.rows; track r.model) {
+            <div class="sf-cost-row">
+              <span class="sf-cost-model">{{ r.model }}</span>
+              <span class="mono sf-cost-toks"
+                >in {{ fmtTok(r.input) }} · out {{ fmtTok(r.output) }} · cache
+                {{ fmtTok(r.cache_read + r.cache_write) }}</span
+              >
+              <span class="mono sf-cost-usd">{{
+                r.usd != null ? '~$' + fmtUsd(r.usd) : '— (preço desconhecido)'
+              }}</span>
+            </div>
+          }
+          <div class="sf-cost-note">
+            Estimativa em preço de API; sessões sem dado de custo não entram na
+            soma.
+            @if (g.rate != null) {
+              Câmbio do dia: US$ 1 = R$ {{ fmtUsd(g.rate) }}.
+            }
+          </div>
+        </div>
+      }
 
       <!-- Greeting -->
       <h1 class="sf-greeting">{{ greeting() }}, Diego 👋</h1>
@@ -388,6 +443,116 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: var(--text-strong);
         letter-spacing: -0.3px;
       }
+      /* Chip discreto do custo global (header). */
+      .sf-cost-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+        margin-right: 10px;
+        min-width: 0;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border-default);
+        background: var(--surface-card);
+        color: #c9cdd6;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-cost-chip.is-open {
+        border-color: rgba(0, 228, 180, 0.45);
+        color: #e7eae9;
+      }
+      .sf-cost-chip-brl {
+        color: #7a8090;
+        font-weight: 600;
+      }
+      /* Telas estreitas: esconde o R$ pro header nunca quebrar (fica no painel). */
+      @media (max-width: 459px) {
+        .sf-cost-chip-brl {
+          display: none;
+        }
+      }
+
+      /* Mini-painel do custo global por modelo (mesmo dark dos cards). */
+      .sf-cost-panel {
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin: 0 0 16px;
+      }
+      .sf-cost-panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .sf-cost-panel-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        color: #9aa0ae;
+      }
+      .sf-cost-panel-total {
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #00e4b4;
+        white-space: nowrap;
+      }
+      .sf-cost-panel-brl {
+        color: #7a8090;
+        font-weight: 600;
+      }
+      .sf-cost-panel-toks {
+        font-size: 11.5px;
+        color: #7a8090;
+        white-space: nowrap;
+        margin-bottom: 6px;
+      }
+      .sf-cost-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 0;
+        min-width: 0;
+      }
+      .sf-cost-model {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 40%;
+      }
+      .sf-cost-toks {
+        flex: 1;
+        min-width: 0;
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-cost-usd {
+        flex: none;
+        font-size: 12px;
+        font-weight: 700;
+        color: #00e4b4;
+      }
+      .sf-cost-note {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #6a7080;
+        line-height: 1.45;
+      }
+
       .sf-bell {
         position: relative;
         width: 42px;
@@ -1056,6 +1221,149 @@ export class InicioComponent implements OnInit {
     ).length;
     return Math.max(waiting, this.sse.notifications().length);
   });
+
+  /** Painel do custo global (abre/fecha pelo chip do header). */
+  protected readonly costPanelOpen = signal(false);
+
+  /**
+   * Custo GLOBAL estimado: agrega o ``metrics.cost`` de TODAS as sessões.
+   * Soma USD/BRL ignorando nulls, pega o câmbio mais recente disponível e
+   * consolida a quebra por modelo (tokens + usd). Null = nenhuma sessão tem
+   * custo ainda (feature recente) → o chip não renderiza.
+   */
+  protected readonly globalCost = computed(() => {
+    let usd = 0;
+    let hasUsd = false;
+    let brl = 0;
+    let hasBrl = false;
+    let rate: number | null = null;
+    let rateTs = '';
+    const byModel = new Map<
+      string,
+      {
+        model: string;
+        input: number;
+        output: number;
+        cache_read: number;
+        cache_write: number;
+        usd: number | null;
+      }
+    >();
+
+    for (const s of this.sessions()) {
+      const c = s.metrics?.cost;
+      if (!c) {
+        continue;
+      }
+      if (c.total_usd != null) {
+        usd += c.total_usd;
+        hasUsd = true;
+      }
+      if (c.total_brl != null) {
+        brl += c.total_brl;
+        hasBrl = true;
+      } else if (c.total_usd != null && c.brl_rate != null) {
+        // Sessão com USD mas sem BRL calculado: converte com o câmbio dela.
+        brl += c.total_usd * c.brl_rate;
+        hasBrl = true;
+      }
+      if (c.brl_rate != null) {
+        const ts =
+          s.last_activity_at ?? (s['updated_at'] as string | undefined) ?? '';
+        if (rate === null || ts > rateTs) {
+          rate = c.brl_rate;
+          rateTs = ts;
+        }
+      }
+      for (const r of c.by_model ?? []) {
+        const cur = byModel.get(r.model) ?? {
+          model: r.model,
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+          usd: null as number | null,
+        };
+        cur.input += r.input;
+        cur.output += r.output;
+        cur.cache_read += r.cache_read;
+        cur.cache_write += r.cache_write;
+        if (r.usd != null) {
+          cur.usd = (cur.usd ?? 0) + r.usd;
+        }
+        byModel.set(r.model, cur);
+      }
+    }
+
+    if (!hasUsd) {
+      return null;
+    }
+    // Ordena por usd desc; modelos sem preço (usd null) por último.
+    const rows = [...byModel.values()].sort(
+      (a, b) => (b.usd ?? -1) - (a.usd ?? -1),
+    );
+    const tokensIn = rows.reduce((n, r) => n + r.input, 0);
+    const tokensOut = rows.reduce((n, r) => n + r.output, 0);
+    return {
+      usd,
+      brl: hasBrl ? brl : null,
+      rate,
+      rows,
+      tokensIn,
+      tokensOut,
+    };
+  });
+
+  /** Tooltip do chip: quebra por modelo + nota de estimativa. */
+  protected readonly globalCostTip = computed(() => {
+    const g = this.globalCost();
+    if (!g) {
+      return '';
+    }
+    const lines = g.rows.map(
+      (r) =>
+        `${r.model}: ${r.usd != null ? '~$' + this.fmtUsd(r.usd) : '—'} ` +
+        `(in ${this.fmtTok(r.input)}tok · out ${this.fmtTok(r.output)}tok)`,
+    );
+    return [
+      `Todas as sessões — in ${this.fmtTok(g.tokensIn)}tok · out ${this.fmtTok(g.tokensOut)}tok`,
+      ...lines,
+      'Estimativa em preço de API.',
+    ].join('\n');
+  });
+
+  /** Formata tokens em k/M compactos: 248000→"248k", 18300→"18,3k". */
+  protected fmtTok(n: number | null | undefined): string {
+    if (n == null) {
+      return '—';
+    }
+    if (n >= 1_000_000) {
+      const m = Math.round((n / 1_000_000) * 10) / 10;
+      return String(m).replace('.', ',') + 'M';
+    }
+    if (n >= 1000) {
+      const k = Math.round((n / 1000) * 10) / 10;
+      return String(k).replace('.', ',') + 'k';
+    }
+    return String(n);
+  }
+
+  /** Formata USD: 2 casas; valores <0,01 ganham mais precisão (0.003). */
+  protected fmtUsd(n: number): string {
+    if (n > 0 && n < 0.01) {
+      return n.toFixed(3);
+    }
+    return n.toFixed(2);
+  }
+
+  /** Dinheiro compacto pro chip: >=1000 vira "1,2k"; senão 2 casas. */
+  protected fmtMoney(n: number): string {
+    if (n >= 1000) {
+      const k = Math.round((n / 1000) * 10) / 10;
+      return String(k).replace('.', ',') + 'k';
+    }
+    return this.fmtUsd(n);
+  }
 
   /** Active sessions = running or waiting_input. */
   readonly activeSessions = computed(() =>
