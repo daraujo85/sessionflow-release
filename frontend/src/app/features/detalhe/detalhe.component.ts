@@ -81,6 +81,17 @@ import { ansiToHtml } from '../../shared/ansi-html';
                   </svg>
                 </button>
               }
+              <!-- Status AO LADO do nome: aproveita o espaço vazio da linha do
+                   título e libera a linha de baixo só pros botões (no celular a
+                   pill quebrava sozinha e desperdiçava uma linha inteira). -->
+              <span
+                class="status-pill"
+                [style.color]="statusMeta().color"
+                [style.background]="statusMeta().dot + '1f'"
+              >
+                <span class="status-dot" [style.background]="statusMeta().dot"></span>
+                <span class="status-label">{{ statusMeta().label }}</span>
+              </span>
             </div>
             <div class="mono hdr-dir">{{ session()?.work_dir || '—' }}</div>
             @if (activeTask()) {
@@ -95,15 +106,6 @@ import { ansiToHtml } from '../../shared/ansi-html';
                linha de status separada → mais espaço). Em tela estreita quebra
                pra baixo (flex-wrap). -->
           <div class="hdr-controls">
-          <span
-            class="status-pill"
-            [style.color]="statusMeta().color"
-            [style.background]="statusMeta().dot + '1f'"
-          >
-            <span class="status-dot" [style.background]="statusMeta().dot"></span>
-            <span class="status-label">{{ statusMeta().label }}</span>
-          </span>
-
           <span class="status-actions">
             @if (!guest()) {
               <button
@@ -1030,44 +1032,30 @@ import { ansiToHtml } from '../../shared/ansi-html';
         flex-wrap: wrap;
         margin-left: auto;
       }
-      /* Mobile: a linha do status ocupa a largura toda (status à esquerda,
-         botões à direita, aproveitando o espaço vazio). Status trunca se longo
-         e os botões encolhem um tico p/ caberem numa linha só. */
+      /* Mobile: com o status na LINHA DO TÍTULO, a linha de baixo é só dos
+         botões — uma linha única, à direita, sem quebra nem corte. */
       @media (max-width: 700px) {
         .hdr-controls {
           flex-basis: 100%;
           margin-left: 0;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
         }
-        /* Status ENCOLHE (trunca com "…") → sobra espaço pros botões. */
-        .status-pill {
-          flex: 0 1 auto;
-          min-width: 0;
-          overflow: hidden;
-        }
-        .status-label {
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          min-width: 0;
-        }
-        /* Os botões PODEM QUEBRAR pra uma 2ª linha (alinhados à direita) em vez
-           de transbordar e cortar a lixeira. Cresce pra ocupar o espaço restante
-           ao lado do status. */
         .status-actions {
-          flex: 1 1 auto;
+          flex: none;
           margin-left: auto;
           gap: 6px;
-          flex-wrap: wrap;
-          justify-content: flex-end;
         }
         .act {
           padding: 6px 8px;
         }
-        /* CC (tipo do agente) escondido no celular p/ status + botões caberem
-           numa linha só — o agente já aparece no avatar da lista de sessões. */
+        /* CC (tipo do agente) escondido no celular — o espaço é dos botões. */
         .hdr-controls .agent-badge {
           display: none;
+        }
+        /* Pill compacta na linha do título (trunca o rótulo se apertar). */
+        .hdr-title .status-pill {
+          padding: 3px 8px;
+          font-size: 11px;
         }
       }
       .back {
@@ -1332,8 +1320,19 @@ import { ansiToHtml } from '../../shared/ansi-html';
         padding: 5px 11px;
         border-radius: 9px;
         white-space: nowrap;
+        /* Vive na linha do TÍTULO: encolhe/trunca antes de empurrar o nome. */
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .status-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
       }
       .status-dot {
+        flex: none;
         width: 7px;
         height: 7px;
         border-radius: 50%;
