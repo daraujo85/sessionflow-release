@@ -36,7 +36,16 @@ def milestones_instruction(session: str) -> str:
         "ou for superado, REMOVA-o; não mantenha várias linhas 'done' sobre o mesmo "
         "ticket/feature (colapse em UMA). Antes de mudar um status, confira o "
         "estado real (o que de fato foi concluído). Poucos itens verdadeiros valem "
-        "mais que uma lista longa e desatualizada."
+        "mais que uma lista longa e desatualizada. "
+        "FORMATO DE ENTREGA (checkpoint): ao CONCLUIR algo que o usuário pediu, "
+        "feche com um checkpoint estruturado e enxuto — '✅ Checkpoint — <título "
+        "curto>' seguido de: (1) Arquivos alterados: path — o quê/por quê, 1 linha "
+        "cada; (2) Comportamento: como funciona agora (flags/casos especiais); "
+        "(3) Como foi testado: cenários REAIS → resultado (tabela se ajudar) — só "
+        "liste o que você de fato executou; (4) Fora de escopo respeitado: o que "
+        "NÃO foi mexido de propósito; (5) Próximos candidatos (opcional, curto). "
+        "Seja factual e verificável; se algo falhou ou ficou pendente, diga "
+        "claramente em vez de omitir."
     )
 
 
