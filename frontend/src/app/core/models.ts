@@ -44,6 +44,9 @@ export interface SessionMetrics {
   /** Custo estimado (USD, preço de API) por modelo. usd null = preço desconhecido. */
   cost?: {
     total_usd: number | null;
+    /** Cotação USD→BRL do dia (cache ~6h no worker) e o total convertido. */
+    brl_rate?: number | null;
+    total_brl?: number | null;
     by_model: {
       model: string;
       input: number;

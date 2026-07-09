@@ -441,9 +441,12 @@ import { ansiToHtml } from '../../shared/ansi-html';
           <div class="cost-card">
             <div class="cost-head">
               <span class="mcard-label">Custo estimado</span>
-              <span class="mono cost-total">{{
-                c.total_usd != null ? '~$' + fmtUsd(c.total_usd) : '—'
-              }}</span>
+              <span class="mono cost-total">
+                {{ c.total_usd != null ? '~$' + fmtUsd(c.total_usd) : '—' }}
+                @if (c.total_brl != null) {
+                  <span class="cost-brl">· ~R$ {{ fmtUsd(c.total_brl) }}</span>
+                }
+              </span>
             </div>
             @if (costRows().length > 0) {
               <div class="cost-rows">
@@ -465,6 +468,9 @@ import { ansiToHtml } from '../../shared/ansi-html';
             }
             <div class="cost-note">
               Estimativa em preço de API; assinatura não cobra por token.
+              @if (c.brl_rate != null) {
+                Câmbio do dia: US$ 1 = R$ {{ fmtUsd(c.brl_rate) }}.
+              }
             </div>
           </div>
         }
@@ -1638,6 +1644,10 @@ import { ansiToHtml } from '../../shared/ansi-html';
         font-size: 15px;
         font-weight: 800;
         color: #f4f5f7;
+      }
+      .cost-brl {
+        font-weight: 700;
+        color: #9fb0ad;
       }
       .cost-rows {
         margin-top: 7px;

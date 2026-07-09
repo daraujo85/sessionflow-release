@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import re
+import time
+import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("sessionflow_worker.metrics")
@@ -106,10 +108,53 @@ def _cost_from_usage(by_model: dict[str, dict[str, int]]) -> dict:
             }
         )
     entries.sort(key=lambda e: (e["usd"] is None, -(e["usd"] or 0.0)))
+    rate = _usd_brl_rate()
+    total_usd = round(total, 4) if total is not None else None
     return {
-        "total_usd": round(total, 4) if total is not None else None,
+        "total_usd": total_usd,
+        # Cotação USD→BRL do dia (cache ~6h; fallback env) e o total convertido —
+        # o front mostra os dois. Ausentes (None) quando a cotação não veio.
+        "brl_rate": rate,
+        "total_brl": round(total_usd * rate, 2)
+        if total_usd is not None and rate is not None
+        else None,
         "by_model": entries,
     }
+
+
+# Cache em memória da cotação USD→BRL: (valor, monotonic da leitura).
+_BRL_CACHE: list = [None, 0.0]
+_BRL_TTL_S = 6 * 3600.0
+
+
+def _usd_brl_rate() -> float | None:
+    """Cotação USD→BRL do dia (AwesomeAPI, grátis/sem chave), cache ~6h.
+
+    Fallback: env ``SESSIONFLOW_USD_BRL`` (câmbio fixo). Sem nada → ``None``
+    (o front mostra só USD). Best-effort: nunca levanta.
+    """
+    now = time.monotonic()
+    if _BRL_CACHE[0] is not None and now - _BRL_CACHE[1] < _BRL_TTL_S:
+        return _BRL_CACHE[0]
+    rate: float | None = None
+    try:
+        req = urllib.request.Request(
+            "https://economia.awesomeapi.com.br/json/last/USD-BRL",
+            headers={"User-Agent": "sessionflow-worker"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        rate = round(float(data["USDBRL"]["bid"]), 4)
+    except Exception:  # noqa: BLE001 - best-effort; cai pro fallback
+        try:
+            env = os.environ.get("SESSIONFLOW_USD_BRL", "")
+            rate = float(env) if env else None
+        except ValueError:
+            rate = None
+    if rate is not None:
+        _BRL_CACHE[0] = rate
+        _BRL_CACHE[1] = now
+    return rate
 
 
 def _claude_activity(stats_path: Path) -> dict | None:
