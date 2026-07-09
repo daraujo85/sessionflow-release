@@ -555,12 +555,25 @@ async def instruct_milestones(request: Request, session_id: str) -> dict:
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if doc.get("milestones_instructed_at"):
-        return {"status": "already"}
 
-    tmux_name = doc["tmux_name"]
     settings = request.app.state.settings
     db = request.app.state.mongo_db
+    instructed_at = doc.get("milestones_instructed_at")
+    if instructed_at:
+        # AUTO-CORREÇÃO: o flag pode ter sido gravado sem a instrução ter
+        # chegado de fato (ex.: bug histórico do texto preso no input do tmux).
+        # Se já passou tempo suficiente e a sessão NUNCA produziu uma tarefa,
+        # re-instruímos em vez de responder "already" pra sempre.
+        if instructed_at.tzinfo is None:
+            instructed_at = instructed_at.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - instructed_at
+        has_tasks = await db[settings.tasks_collection].count_documents(
+            {"session_id": doc["tmux_name"]}, limit=1
+        )
+        if has_tasks or age < timedelta(minutes=30):
+            return {"status": "already"}
+
+    tmux_name = doc["tmux_name"]
     command_id = await publish_command(
         settings,
         type="input",
