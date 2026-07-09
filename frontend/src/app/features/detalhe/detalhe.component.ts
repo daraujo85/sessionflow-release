@@ -436,6 +436,39 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </div>
         </div>
 
+        <!-- Custo estimado de tokens (preço de API), quebrado por modelo -->
+        @if (cost(); as c) {
+          <div class="cost-card">
+            <div class="cost-head">
+              <span class="mcard-label">Custo estimado</span>
+              <span class="mono cost-total">{{
+                c.total_usd != null ? '~$' + fmtUsd(c.total_usd) : '—'
+              }}</span>
+            </div>
+            @if (costRows().length > 0) {
+              <div class="cost-rows">
+                @for (r of costRows(); track r.model) {
+                  <div class="cost-row">
+                    <span class="cost-model">{{ r.model }}</span>
+                    <span class="mono cost-toks"
+                      >in {{ fmtTok(r.input) }} · out {{ fmtTok(r.output) }} ·
+                      cache {{ fmtTok(r.cache_read + r.cache_write) }}</span
+                    >
+                    <span class="mono cost-usd">{{
+                      r.usd != null
+                        ? '~$' + fmtUsd(r.usd)
+                        : '— (preço desconhecido)'
+                    }}</span>
+                  </div>
+                }
+              </div>
+            }
+            <div class="cost-note">
+              Estimativa em preço de API; assinatura não cobra por token.
+            </div>
+          </div>
+        }
+
         <div class="metric-cards">
           @if (limits(); as l) {
             <!-- PRIORIDADE 1: limites reais (recolhidos; clique expande reset) -->
@@ -1586,6 +1619,66 @@ import { ansiToHtml } from '../../shared/ansi-html';
         font-size: 14.5px;
         font-weight: 700;
         color: #f4f5f7;
+      }
+      /* Custo estimado (preço de API) por modelo */
+      .cost-card {
+        margin-top: 10px;
+        background: #181c1b;
+        border: 1px solid #283230;
+        border-radius: 12px;
+        padding: 10px 12px;
+      }
+      .cost-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .cost-total {
+        font-size: 15px;
+        font-weight: 800;
+        color: #f4f5f7;
+      }
+      .cost-rows {
+        margin-top: 7px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .cost-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+      }
+      .cost-model {
+        font-size: 12px;
+        font-weight: 700;
+        color: #c9cdd6;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cost-toks {
+        font-size: 10.5px;
+        color: #6b7180;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1;
+        min-width: 0;
+      }
+      .cost-usd {
+        font-size: 12px;
+        font-weight: 700;
+        color: #9aa0ac;
+        white-space: nowrap;
+        margin-left: auto;
+      }
+      .cost-note {
+        margin-top: 7px;
+        font-size: 10px;
+        color: #6b7180;
       }
       .lcard {
         flex: 1;
@@ -2909,6 +3002,33 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Limites reais de uso (sessão 5h + semanal) ou null se ausentes. */
   protected readonly limits = computed(() => this.metrics()?.limits ?? null);
+
+  /** Custo estimado (preço de API) por modelo, ou null se ausente. */
+  protected readonly cost = computed(() => this.metrics()?.cost ?? null);
+
+  /**
+   * Quebra por modelo do custo: exibida quando há 2+ modelos OU quando o
+   * único modelo tem preço conhecido (usd != null). Único sem preço não
+   * ganha quebra (o total já mostra "—").
+   */
+  protected readonly costRows = computed(() => {
+    const rows = this.cost()?.by_model ?? [];
+    if (rows.length >= 2) {
+      return rows;
+    }
+    if (rows.length === 1 && rows[0].usd != null) {
+      return rows;
+    }
+    return [];
+  });
+
+  /** Formata USD: 2 casas; valores <0,01 ganham mais precisão (0.003). */
+  protected fmtUsd(n: number): string {
+    if (n > 0 && n < 0.01) {
+      return n.toFixed(3);
+    }
+    return n.toFixed(2);
+  }
 
   /** Cor da barra de limite: <70% mint, 70-85% âmbar, ≥85% vermelho. */
   protected limitColor(pct: number | null | undefined): string {

@@ -43,6 +43,74 @@ _MODEL_LABELS = {
     "claude-haiku-4-5": "Haiku 4.5",
 }
 
+#: Preços de API em USD por MTok: (substring do id do modelo, input, output).
+#: Matching por substring case-insensitive; primeiro match vence. cache_read
+#: custa 10% do input e cache_write 125% do input (padrão Anthropic). Modelos
+#: sem match (fable/mythos/ids desconhecidos) ficam SEM preço (usd=None) —
+#: nunca inventamos valor. Fácil de editar quando a tabela mudar.
+_PRICES_USD_PER_MTOK: list[tuple[str, float, float]] = [
+    ("opus", 15.0, 75.0),
+    ("sonnet", 3.0, 15.0),
+    ("haiku", 1.0, 5.0),
+]
+_CACHE_READ_FACTOR = 0.10
+_CACHE_WRITE_FACTOR = 1.25
+
+
+def _price_for(model_id: str) -> tuple[float, float] | None:
+    """(input, output) USD/MTok pro modelo, ou ``None`` se desconhecido."""
+    low = (model_id or "").lower()
+    for needle, price_in, price_out in _PRICES_USD_PER_MTOK:
+        if needle in low:
+            return price_in, price_out
+    return None
+
+
+def _cost_from_usage(by_model: dict[str, dict[str, int]]) -> dict:
+    """Custo estimado (USD, preço de API) a partir dos tokens POR MODELO.
+
+    ``by_model`` mapeia id/rótulo do modelo -> contadores ``input``/``output``/
+    ``cache_read``/``cache_write``. Retorna ``{"total_usd", "by_model": [...]}``
+    com as entradas ordenadas por usd desc (sem preço por último). Modelos sem
+    preço mapeado entram com ``usd: None`` (os tokens são reportados mesmo
+    assim); ``total_usd`` soma só os conhecidos, ou ``None`` se nenhum tiver
+    preço.
+    """
+    entries: list[dict] = []
+    total: float | None = None
+    for model, tok in by_model.items():
+        # Ignora buckets sem token algum (ex.: linhas "<synthetic>" do Claude
+        # Code, que têm usage zerado) — só poluiriam a quebra por modelo.
+        if not any(tok.values()):
+            continue
+        price = _price_for(model)
+        usd: float | None = None
+        if price is not None:
+            price_in, price_out = price
+            usd = (
+                tok["input"] * price_in
+                + tok["output"] * price_out
+                + tok["cache_read"] * price_in * _CACHE_READ_FACTOR
+                + tok["cache_write"] * price_in * _CACHE_WRITE_FACTOR
+            ) / 1_000_000
+            usd = round(usd, 4)
+            total = (total or 0.0) + usd
+        entries.append(
+            {
+                "model": model,
+                "input": tok["input"],
+                "output": tok["output"],
+                "cache_read": tok["cache_read"],
+                "cache_write": tok["cache_write"],
+                "usd": usd,
+            }
+        )
+    entries.sort(key=lambda e: (e["usd"] is None, -(e["usd"] or 0.0)))
+    return {
+        "total_usd": round(total, 4) if total is not None else None,
+        "by_model": entries,
+    }
+
 
 def _claude_activity(stats_path: Path) -> dict | None:
     """Atividade REAL do Claude a partir de ``~/.claude/stats-cache.json``.
@@ -169,6 +237,9 @@ def claude_metrics_for(
     - ``tokens_in``: igual a ``context_used`` (entrada atual da janela).
     - ``tokens_out``: SOMA de ``output_tokens`` de TODAS as linhas (saída
       acumulada da sessão).
+    - ``cost``: custo estimado em USD (preço de API) POR MODELO —
+      ``{"total_usd", "by_model": [{model, input, output, cache_read,
+      cache_write, usd}]}`` — ou ``None`` em falha (best-effort).
     - ``source``: ``"claude_jsonl"``.
 
     Retorna ``None`` se o dir/JSONL/usage não existir ou em qualquer falha
@@ -188,6 +259,10 @@ def claude_metrics_for(
         last_model: str | None = None
         tokens_out_total = 0
         saw_usage = False
+        # Tokens acumulados POR MODELO (sessão pode trocar de modelo no meio).
+        # Chave = rótulo amigável (ou id cru); linha sem model cai no último
+        # modelo visto (fallback: modelo corrente da sessão) ou "desconhecido".
+        usage_by_model: dict[str, dict[str, int]] = {}
 
         for usage, model in _iter_usage_lines(jsonl_path):
             saw_usage = True
@@ -195,6 +270,22 @@ def claude_metrics_for(
             if model:
                 last_model = model
             tokens_out_total += int(usage.get("output_tokens", 0) or 0)
+            try:
+                key = _model_label(model or last_model or "") or "desconhecido"
+                bucket = usage_by_model.setdefault(
+                    key,
+                    {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                )
+                bucket["input"] += int(usage.get("input_tokens", 0) or 0)
+                bucket["output"] += int(usage.get("output_tokens", 0) or 0)
+                bucket["cache_read"] += int(
+                    usage.get("cache_read_input_tokens", 0) or 0
+                )
+                bucket["cache_write"] += int(
+                    usage.get("cache_creation_input_tokens", 0) or 0
+                )
+            except Exception:  # noqa: BLE001 - custo é best-effort
+                pass
 
         if not saw_usage or last_usage is None:
             return None
@@ -215,8 +306,17 @@ def claude_metrics_for(
             min(100, round(context_used / context_max * 100)) if context_max else 0
         )
 
+        # Custo estimado por modelo (best-effort: falha some, não quebra o resto).
+        cost: dict | None = None
+        try:
+            if usage_by_model:
+                cost = _cost_from_usage(usage_by_model)
+        except Exception:  # noqa: BLE001
+            cost = None
+
         return {
             "model": _model_label(model_id) if model_id else None,
+            "cost": cost,
             "context_used": context_used,
             "context_max": context_max,
             "context_pct": context_pct,

@@ -41,6 +41,18 @@ export interface SessionMetrics {
     week_messages: number;
     week_tools: number;
   } | null;
+  /** Custo estimado (USD, preço de API) por modelo. usd null = preço desconhecido. */
+  cost?: {
+    total_usd: number | null;
+    by_model: {
+      model: string;
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      usd: number | null;
+    }[];
+  } | null;
   /** % real do limite de uso (sessão 5h + semanal). Só p/ sessões claude com dado. */
   limits?: {
     session_pct: number;
