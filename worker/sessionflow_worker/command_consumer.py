@@ -1459,7 +1459,10 @@ class CommandConsumer:
         if not text:
             raise CommandError("transcrição vazia: nada a injetar")
 
-        self._send_keys(name, text)
+        # Enter SEPARADO + verificação (bracketed-paste-safe): era o último
+        # caminho ainda mandando texto+Enter grudados — transcrições ficavam
+        # presas no input do agente sem submeter.
+        await self._type_and_submit(name, text)
         await self._mark_working(name)  # áudio transcrito é resposta → trabalha
         result: dict[str, Any] = {"name": name, "text": text}
         upload_id = payload.get("upload_id")
@@ -1513,8 +1516,37 @@ class CommandConsumer:
         """
         self._send_keys(name, text, enter=False)
         # Pausa proporcional ao tamanho (paste maior demora mais a assentar).
-        await asyncio.sleep(min(0.6, 0.12 + len(text) / 4000))
+        # Teto maior (1,2s): transcrições de áudio são longas e o paste demora.
+        await asyncio.sleep(min(1.2, 0.15 + len(text) / 3000))
+        before = self._pane_tail(name)
         self._send_key(name, "Enter")
+        # VERIFICAÇÃO: se a tela não mudou após o Enter, ele foi engolido (paste
+        # ainda fechando / agente lento) e o texto ficou PRESO no input — manda
+        # Enter de novo (até 2x). Se o agente já reagiu (tela mudou), para.
+        for _ in range(2):
+            await asyncio.sleep(1.3)
+            after = self._pane_tail(name)
+            if not before or not after or after != before:
+                break
+            self._send_key(name, "Enter")
+
+    def _pane_tail(self, name: str, lines: int = 12) -> str:
+        """Últimas linhas da tela do pane (p/ detectar se o Enter submeteu).
+
+        Best-effort: erro → ``""`` (a verificação vira no-op, sem re-Enter).
+        """
+        socket_name = getattr(self._server, "socket_name", None)
+        cmd = ["tmux"]
+        if socket_name and socket_name != "default":
+            cmd += ["-L", socket_name]
+        cmd += ["capture-pane", "-p", "-t", name]
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5
+            ).stdout
+            return "\n".join(out.rstrip("\n").split("\n")[-lines:])
+        except Exception:  # noqa: BLE001 - best-effort
+            return ""
 
     def _send_key(self, name: str, tmux_key: str) -> None:
         """Envia uma tecla nomeada do tmux (ex.: ``Up``, ``Enter``) SEM Enter.
