@@ -1210,17 +1210,13 @@ export class InicioComponent implements OnInit {
   protected readonly tasks = signal<Task[]>([]);
 
   /**
-   * Badge do sino = quantas sessões precisam de você AGORA (status
-   * ``waiting_input``) + notificações novas que chegaram ao vivo nesta sessão.
-   * Contar o status (e não só o buffer SSE) faz o badge sobreviver a recargas
-   * e refletir o estado real de "tem resposta esperando".
+   * Badge do sino = SÓ as notificações não limpas (buffer SSE). Antes entrava
+   * também o nº de sessões em ``waiting_input`` (Math.max) — aí o "Limpar
+   * todas" zerava o buffer mas o badge continuava mostrando as aguardando e
+   * NUNCA zerava. Sessão aguardando já é sinalizada no próprio card
+   * (destaque "is-waiting"); o sino fica só com o que é notificação de fato.
    */
-  readonly notifCount = computed(() => {
-    const waiting = this.sessions().filter(
-      (s) => s.status === 'waiting_input',
-    ).length;
-    return Math.max(waiting, this.sse.notifications().length);
-  });
+  readonly notifCount = computed(() => this.sse.notifications().length);
 
   /** Painel do custo global (abre/fecha pelo chip do header). */
   protected readonly costPanelOpen = signal(false);
