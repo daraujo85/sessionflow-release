@@ -20,6 +20,7 @@ import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
+import { SessionPrefsStore } from '../../core/session-prefs-store';
 import {
   AgentType,
   Session,
@@ -872,7 +873,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
             type="button"
             class="live-toggle"
             [class.is-on]="keypadOpen()"
-            (click)="keypadOpen.set(!keypadOpen())"
+            (click)="toggleKeypad()"
             [attr.aria-pressed]="keypadOpen()"
             aria-label="Teclas de navegação (setas/Enter/Esc)"
             title="Mostrar/ocultar teclas de navegação"
@@ -2604,6 +2605,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
   private readonly drafts = inject(DraftStore);
+  private readonly prefs = inject(SessionPrefsStore);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly location = inject(Location);
   private readonly shareSvc = inject(ShareSessionService);
@@ -2964,6 +2966,17 @@ export class DetalheComponent implements AfterViewChecked {
   private lastRenderedScreen = '';
 
   /**
+   * ``at`` do último frame de SSE JÁ aplicado ao espelho. O effect do push só
+   * aplica um frame quando esse timestamp MUDA (push novo do worker) — nunca por
+   * o texto do SSE simplesmente diferir de {@link screen}. Sem isso, um frame de
+   * SSE defasado (ex.: reconexão/backoff) brigava com o poll de 4s: o poll trazia
+   * a tela nova do doc e o effect a revertia pro frame velho, congelando o "ao
+   * vivo" até o próximo push. Agora o poll sempre vence a frescura e o SSE só
+   * adiciona baixa latência em pushes de fato novos.
+   */
+  private lastScreenPushAt = '';
+
+  /**
    * Auto-scroll só "gruda no fim" quando o usuário JÁ está no fim. Se ele rolou
    * para cima (ex.: acompanhando o highlight de um picker TUI ao navegar com as
    * setas), NÃO arrastamos a viewport — senão a opção em foco some de vista.
@@ -3020,15 +3033,28 @@ export class DetalheComponent implements AfterViewChecked {
         this.session.set(null);
         this.screen.set('');
         this.tasks.set([]);
-        this.historyMode.set(false);
         this.seenArtifactUrl.set(null);
         this.bufMode.set(false);
         this.bufLines = [];
         this.bufText.set('');
-        this.liveMode.set(false);
+        this.lastScreenPushAt = ''; // sessão nova → não herda o gate do push anterior
+        // Restaura as OPÇÕES escolhidas antes nesta sessão (SessionPrefsStore);
+        // campos ausentes caem no default. Persistidas nos toggles/bumpFont.
+        const prefs = this.prefs.get(sid);
+        this.liveMode.set(prefs.liveMode ?? false);
+        this.keypadOpen.set(prefs.keypadOpen ?? false);
+        this.termFont.set(prefs.termFont ?? readTermFont());
         this.draft.set(this.drafts.get(sid));
         this.loadSession();
-        this.refreshScreen();
+        if (prefs.historyMode) {
+          // Sessão estava no histórico congelado: recarrega o scrollback profundo
+          // e recongela (enterHistory liga o historyMode e busca o texto).
+          this.historyMode.set(false);
+          this.enterHistory();
+        } else {
+          this.historyMode.set(false);
+          this.refreshScreen();
+        }
         // Ao abrir a sessão, foca o campo de mensagem (pronto pra digitar). Em
         // celular o teclado só abre com gesto — aqui é best-effort e não incomoda.
         this.focusMessageInput();
@@ -3056,11 +3082,20 @@ export class DetalheComponent implements AfterViewChecked {
       if (this.historyMode() || this.bufMode()) {
         return;
       }
-      if (scr && scr.text !== this.screen()) {
-        this.stickToBottom = this.isAtBottom();
-        this.screen.set(scr.text);
-        // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
-        this.clearHint();
+      // Só aplica quando o worker EMPURROU um frame novo (``at`` mudou). Comparar
+      // por texto != screen() faria o effect brigar com o poll de 4s e reverter a
+      // tela nova do doc para um frame de SSE defasado — o que congelava o "ao
+      // vivo". Ao gatear por ``at``, o poll nunca é revertido e o SSE só antecipa
+      // pushes realmente novos.
+      const at = scr?.at ?? '';
+      if (scr && at !== this.lastScreenPushAt) {
+        this.lastScreenPushAt = at;
+        if (scr.text !== this.screen()) {
+          this.stickToBottom = this.isAtBottom();
+          this.screen.set(scr.text);
+          // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
+          this.clearHint();
+        }
       }
     });
 
@@ -3683,6 +3718,7 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.paneBuffer = '';
     this.liveMode.set(turningOn);
+    this.prefs.patch(id ?? '', { liveMode: turningOn }); // lembra por sessão
     // Ligando com algo já digitado: encaminha o draft atual de uma vez.
     if (turningOn && id && this.draft()) {
       this.forwardDiff();
@@ -4303,6 +4339,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Volta ao espelho ao vivo: retoma o stick e desce pro fim (última msg). */
   private exitHistory(): void {
     this.historyMode.set(false);
+    this.prefs.patch(this.id() ?? '', { historyMode: false }); // lembra por sessão
     this.stickToBottom = true;
     this.showLivePill.set(false);
     this.jumpAgentToBottom(); // o agente pode estar rolado → Ctrl+End pro fim
@@ -4321,6 +4358,7 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.historyText.set(this.screen()); // pré-carrega p/ não piscar vazio
     this.historyMode.set(true);
+    this.prefs.patch(id, { historyMode: true }); // lembra por sessão
     this.showLivePill.set(false);
     this.api
       .getScreen(id)
@@ -4342,10 +4380,19 @@ export class DetalheComponent implements AfterViewChecked {
    * ex.: Claude Code, guardam o scrollback dentro de si, não no tmux; por isso
    * não dá pra rolar via tmux nem via o modo "Histórico".)
    */
+  /** Abre/fecha o teclado de navegação e lembra por sessão. */
+  protected toggleKeypad(): void {
+    const open = !this.keypadOpen();
+    this.keypadOpen.set(open);
+    this.prefs.patch(this.id() ?? '', { keypadOpen: open });
+  }
+
   /** Aumenta/diminui a fonte do terminal (clamp 9–22px) e persiste no aparelho. */
   protected bumpFont(delta: number): void {
     const next = Math.min(22, Math.max(9, Math.round((this.termFont() + delta) * 2) / 2));
     this.termFont.set(next);
+    // Global (sf.term.font) = default p/ sessões novas; por-sessão = o que fica.
+    this.prefs.patch(this.id() ?? '', { termFont: next });
     try {
       localStorage.setItem('sf.term.font', String(next));
     } catch {
@@ -4472,7 +4519,10 @@ export class DetalheComponent implements AfterViewChecked {
   /** Manda o scroll pro agente (▲/▼) com throttle — compartilhado por wheel e toque. */
   private agentScroll(dir: 'up' | 'down'): void {
     const now = Date.now();
-    if (now - this.lastWheelAt < 80) {
+    // Throttle folgado (150ms): a roda dispara MUITOS eventos por gesto; junto do
+    // burst de 2 notches por comando no worker, um flickzinho pulava dezenas de
+    // linhas no agente. Espaçar mais os comandos dá controle fino do histórico.
+    if (now - this.lastWheelAt < 150) {
       return;
     }
     this.lastWheelAt = now;
