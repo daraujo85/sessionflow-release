@@ -625,10 +625,20 @@ import { ansiToHtml } from '../../shared/ansi-html';
              NÃO é OSC 8 (o clique é tratado pelo próprio TUI no Mac) — aqui
              oferecemos a URL real capturada da conversa, clicável no celular. -->
         @if (artifactUrl(); as au) {
-          <a class="term-artifact" [href]="au" target="_blank" rel="noopener noreferrer"
-             title="Abrir o último artifact desta sessão">
-            ⧉ artifact
-          </a>
+          <span class="term-artifact-group">
+            <a class="term-artifact" [href]="au" target="_blank" rel="noopener noreferrer"
+               title="Abrir o artifact mais recente desta sessão">
+              ⧉ artifact
+            </a>
+            @if (artifactList().length > 1) {
+              <button type="button" class="term-artifact term-artifact-more"
+                      (click)="artifactMenuOpen.set(!artifactMenuOpen())"
+                      [attr.aria-expanded]="artifactMenuOpen()"
+                      aria-label="Ver todos os artifacts da sessão">
+                {{ artifactList().length }} ▾
+              </button>
+            }
+          </span>
         }
         <button
           type="button"
@@ -680,6 +690,18 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </button>
         </div>
       </div>
+
+      <!-- Menu com o HISTÓRICO de artifacts da sessão (mais recente primeiro) -->
+      @if (artifactMenuOpen() && artifactList().length > 1) {
+        <div class="artifact-menu">
+          @for (u of artifactList(); track u; let i = $index) {
+            <a class="artifact-menu-item" [href]="u" target="_blank" rel="noopener noreferrer"
+               (click)="artifactMenuOpen.set(false)">
+              ⧉ {{ artifactLabel(u, i) }}
+            </a>
+          }
+        </div>
+      }
 
       <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
       <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()"
@@ -1984,6 +2006,38 @@ import { ansiToHtml } from '../../shared/ansi-html';
         color: #7dd3fc;
         border-color: #2b5261;
       }
+      .term-artifact-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .term-artifact-more {
+        font-family: inherit;
+        cursor: pointer;
+        padding: 4px 8px;
+      }
+      /* Menu do histórico de artifacts */
+      .artifact-menu {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 16px;
+        background: #10191c;
+        border-bottom: 1px solid #20262a;
+      }
+      .artifact-menu-item {
+        color: #38bdf8;
+        font-size: 12.5px;
+        font-weight: 600;
+        text-decoration: none;
+        padding: 5px 8px;
+        border-radius: 8px;
+      }
+      .artifact-menu-item:hover {
+        background: #0e2730;
+        color: #7dd3fc;
+      }
       .term-toggle svg {
         flex: none;
       }
@@ -2797,13 +2851,38 @@ export class DetalheComponent implements AfterViewChecked {
   /** Último artifact visto no espelho ENQUANTO esta tela está aberta. */
   private readonly seenArtifactUrl = signal<string | null>(null);
   /**
-   * URL do botão "⧉ artifact": o que o espelho mostrou agora OU o último que o
-   * WORKER persistiu no doc da sessão (sobrevive a rolagem/reload — o rodapé
-   * "⧉ <nome>" do Claude Code não expõe a URL; o clique dele é tratado no Mac).
+   * Artifacts da sessão (mais recente primeiro): o histórico persistido pelo
+   * WORKER (sobrevive a rolagem/reload) + o que o espelho mostrou agora. O
+   * rodapé "⧉ <nome>" do Claude Code não expõe URL (clique é tratado no Mac).
    */
+  protected readonly artifactList = computed<string[]>(() => {
+    const s = this.session();
+    const list = [...(s?.artifact_urls ?? [])];
+    if (list.length === 0 && s?.last_artifact_url) {
+      list.push(s.last_artifact_url); // docs antigos (só o campo single)
+    }
+    const seen = this.seenArtifactUrl();
+    if (seen) {
+      const i = list.indexOf(seen);
+      if (i >= 0) {
+        list.splice(i, 1);
+      }
+      list.unshift(seen);
+    }
+    return list;
+  });
+  /** URL principal do botão (o artifact mais recente). */
   protected readonly artifactUrl = computed<string | null>(
-    () => this.seenArtifactUrl() ?? this.session()?.last_artifact_url ?? null,
+    () => this.artifactList()[0] ?? null,
   );
+  /** Menu com o histórico de artifacts (aberto pelo chevron do botão). */
+  protected readonly artifactMenuOpen = signal<boolean>(false);
+
+  /** Rótulo curto de um artifact (uuid abreviado) p/ o menu. */
+  protected artifactLabel(url: string, i: number): string {
+    const id = url.split('/').pop() ?? '';
+    return `${i === 0 ? 'mais recente' : 'artifact ' + (i + 1)} · ${id.slice(0, 8)}`;
+  }
 
   /** Painel de renomear (nome técnico do tmux + nome falado/exibição). */
   protected readonly renameOpen = signal<boolean>(false);
@@ -2993,6 +3072,9 @@ export class DetalheComponent implements AfterViewChecked {
         this.refreshScreen();
       }
       this.loadTasks();
+      // Re-busca o DOC da sessão também (status/métricas/artifacts mudam no
+      // worker sem evento) — antes só atualizava em ações pontuais.
+      this.loadSession();
     }, 4000);
 
     // Responsivo: ajusta o pane do tmux p/ caber na área do terminal (o agente

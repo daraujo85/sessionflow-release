@@ -628,7 +628,22 @@ class OutputCapture:
             m = _ARTIFACT_URL_RE.findall(text)
             if m and self._last_artifact.get(tmux_name) != m[-1]:
                 self._last_artifact[tmux_name] = m[-1]
-                await self._db[SESSIONS_COLLECTION_NAME].update_one(
+                coll = self._db[SESSIONS_COLLECTION_NAME]
+                # HISTÓRICO de artifacts da sessão: mais recente primeiro, sem
+                # duplicar (re-menção sobe pro topo), teto de 10. $pull+$push
+                # em vez de read-modify-write (o worker é o único escritor).
+                for url in dict.fromkeys(m):
+                    await coll.update_one(
+                        {"tmux_name": tmux_name},
+                        {"$pull": {"artifact_urls": url}},
+                    )
+                    await coll.update_one(
+                        {"tmux_name": tmux_name},
+                        {"$push": {"artifact_urls": {
+                            "$each": [url], "$position": 0, "$slice": 10,
+                        }}},
+                    )
+                await coll.update_one(
                     {"tmux_name": tmux_name},
                     {"$set": {"last_artifact_url": m[-1]}},
                 )

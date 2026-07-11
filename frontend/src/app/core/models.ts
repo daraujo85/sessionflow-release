@@ -88,6 +88,8 @@ export interface Session {
   parent?: string | null;
   /** Último artifact (claude.ai) visto na tela desta sessão (worker persiste). */
   last_artifact_url?: string | null;
+  /** Histórico de artifacts vistos (mais recente primeiro, máx 10). */
+  artifact_urls?: string[];
   metrics?: SessionMetrics | null;
   /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
   last_activity_at?: string | null;
