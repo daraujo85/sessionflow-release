@@ -621,6 +621,15 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
       <!-- Barra do terminal: alterna entre espelho AO VIVO e HISTÓRICO rolável -->
       <div class="term-bar">
+        <!-- Último artifact visto na sessão: o rodapé "⧉ <nome>" do Claude Code
+             NÃO é OSC 8 (o clique é tratado pelo próprio TUI no Mac) — aqui
+             oferecemos a URL real capturada da conversa, clicável no celular. -->
+        @if (artifactUrl(); as au) {
+          <a class="term-artifact" [href]="au" target="_blank" rel="noopener noreferrer"
+             title="Abrir o último artifact desta sessão">
+            ⧉ artifact
+          </a>
+        }
         <button
           type="button"
           class="term-toggle"
@@ -1956,6 +1965,25 @@ import { ansiToHtml } from '../../shared/ansi-html';
         -webkit-tap-highlight-color: transparent;
         transition: background 0.15s, color 0.15s, border-color 0.15s;
       }
+      /* Botão "⧉ artifact": abre o último artifact visto na sessão. */
+      .term-artifact {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid #1e3a44;
+        background: #0e2730;
+        color: #38bdf8;
+        font-size: 11.5px;
+        font-weight: 700;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .term-artifact:hover {
+        color: #7dd3fc;
+        border-color: #2b5261;
+      }
       .term-toggle svg {
         flex: none;
       }
@@ -2766,6 +2794,17 @@ export class DetalheComponent implements AfterViewChecked {
   /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
 
+  /** Último artifact visto no espelho ENQUANTO esta tela está aberta. */
+  private readonly seenArtifactUrl = signal<string | null>(null);
+  /**
+   * URL do botão "⧉ artifact": o que o espelho mostrou agora OU o último que o
+   * WORKER persistiu no doc da sessão (sobrevive a rolagem/reload — o rodapé
+   * "⧉ <nome>" do Claude Code não expõe a URL; o clique dele é tratado no Mac).
+   */
+  protected readonly artifactUrl = computed<string | null>(
+    () => this.seenArtifactUrl() ?? this.session()?.last_artifact_url ?? null,
+  );
+
   /** Painel de renomear (nome técnico do tmux + nome falado/exibição). */
   protected readonly renameOpen = signal<boolean>(false);
   protected readonly renameTech = signal<string>('');
@@ -2870,6 +2909,21 @@ export class DetalheComponent implements AfterViewChecked {
       this.taskLimit.set(DetalheComponent.TASKS_PAGE);
     });
 
+    // Guarda o ÚLTIMO artifact (claude.ai) que passou pelo espelho — o rodapé
+    // "⧉ <nome>" do Claude Code não expõe a URL, então oferecemos a última vista.
+    effect(() => {
+      const raw = this.screen();
+      if (!raw) {
+        return;
+      }
+      // eslint-disable-next-line no-control-regex
+      const text = raw.replace(/\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+      const m = text.match(/https:\/\/claude\.ai\/code\/artifact\/[0-9a-f-]+/gi);
+      if (m && m.length > 0) {
+        this.seenArtifactUrl.set(m[m.length - 1]);
+      }
+    });
+
     // id REATIVO: ao navegar /sessao/A -> /sessao/B o Angular REUSA este mesmo
     // componente, então ler só o snapshot deixa o id PRESO na sessão anterior —
     // a tela, o upload e o input passam a mirar a sessão errada (bug "mostra o
@@ -2888,6 +2942,7 @@ export class DetalheComponent implements AfterViewChecked {
         this.screen.set('');
         this.tasks.set([]);
         this.historyMode.set(false);
+        this.seenArtifactUrl.set(null);
         this.bufMode.set(false);
         this.bufLines = [];
         this.bufText.set('');

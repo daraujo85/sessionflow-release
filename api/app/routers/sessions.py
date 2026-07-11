@@ -76,6 +76,8 @@ class SessionOut(BaseModel):
     # Sub-agents rodando agora (heurística sobre a tela) + nomes p/ tooltip.
     subagents: int = 0
     subagent_names: list[str] = Field(default_factory=list)
+    # Último artifact (claude.ai) visto na tela desta sessão — botão "⧉ artifact".
+    last_artifact_url: str | None = None
 
     @classmethod
     def from_doc(cls, doc: dict[str, Any]) -> SessionOut:

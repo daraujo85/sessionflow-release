@@ -86,6 +86,8 @@ export interface Session {
   subagent_names?: string[];
   /** tmux_name da sessão PAI que delegou esta (via `sf delegate`); null se raiz. */
   parent?: string | null;
+  /** Último artifact (claude.ai) visto na tela desta sessão (worker persiste). */
+  last_artifact_url?: string | null;
   metrics?: SessionMetrics | null;
   /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
   last_activity_at?: string | null;

@@ -150,6 +150,12 @@ _OSC8_RE = re.compile(r"\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)")
 # Combinado: o que queremos MANTER no espelho (cor + hyperlink).
 _KEEP_RE = re.compile(f"{_SGR_RE.pattern}|{_OSC8_RE.pattern}")
 
+# URL de artifact do claude.ai vista na tela (persistida por sessão p/ o botão
+# "abrir artifact" do app — o rodapé "⧉ <nome>" do Claude Code não expõe a URL).
+_ARTIFACT_URL_RE = re.compile(r"https://claude\.ai/code/artifact/[0-9a-f-]+", re.IGNORECASE)
+# Coleção dos docs de sessão (onde o last_artifact_url é gravado).
+SESSIONS_COLLECTION_NAME = "sessions"
+
 
 def clean_screen_keep_color(text: str) -> str:
     """Como ``strip_ansi``, mas mantém cor/atributo (SGR) e hyperlinks (OSC 8).
@@ -479,6 +485,8 @@ class OutputCapture:
         # Hash do último espelho publicado por sessão (dedupe do push SSE — só
         # empurra quando a tela MUDA, em vez de a cada ciclo de captura).
         self._screen_hash: dict[str, int] = {}
+        # Último artifact URL persistido por sessão (dedupe do update no Mongo).
+        self._last_artifact: dict[str, str] = {}
 
     @property
     def collection(self) -> str:
@@ -612,6 +620,20 @@ class OutputCapture:
         # Push SSE do espelho: empurra a tela assim que captura (em vez do front
         # pollar a cada ~1,2s), só quando MUDOU — feedback quase imediato.
         await self._publish_screen(tmux_name, text, now)
+        # Último ARTIFACT visto: o rodapé "⧉ <nome>" do Claude Code não expõe a
+        # URL (o clique é tratado pelo TUI); persistimos a última URL de artifact
+        # que passou pela tela p/ o app oferecer o botão "abrir artifact" mesmo
+        # depois que a linha rolou pra fora. Best-effort, só quando muda.
+        try:
+            m = _ARTIFACT_URL_RE.findall(text)
+            if m and self._last_artifact.get(tmux_name) != m[-1]:
+                self._last_artifact[tmux_name] = m[-1]
+                await self._db[SESSIONS_COLLECTION_NAME].update_one(
+                    {"tmux_name": tmux_name},
+                    {"$set": {"last_artifact_url": m[-1]}},
+                )
+        except Exception:  # noqa: BLE001 - nunca derruba o snapshot
+            pass
         return text
 
     async def _publish_screen(self, tmux_name: str, text: str, at: datetime) -> None:
