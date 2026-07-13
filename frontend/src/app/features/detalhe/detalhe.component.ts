@@ -3747,7 +3747,7 @@ export class DetalheComponent implements AfterViewChecked {
       this.api
         .sendKey(id, 'enter')
         .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe({ next: () => this.refreshScreen(), error: () => this.clearHint() });
+        .subscribe({ next: () => this.refreshBurst(), error: () => this.clearHint() });
       this.draft.set('');
       this.drafts.set(id, '');
       this.paneBuffer = '';
@@ -3770,6 +3770,7 @@ export class DetalheComponent implements AfterViewChecked {
           this.draft.set('');
           this.drafts.set(id, '');
           this.sending.set(false);
+          this.refreshBurst(); // pega o eco no pane assim que o worker injeta
         },
         error: () => {
           this.sending.set(false);
@@ -4334,7 +4335,7 @@ export class DetalheComponent implements AfterViewChecked {
           this.revokePendingUrl();
           this.draft.set('');
           this.drafts.set(id, '');
-          this.refreshScreen();
+          this.refreshBurst(); // mostra o anexo/legenda no pane assim que injeta
         },
         // Mantém os arquivos staged (e o texto) para o usuário tentar de novo.
         error: () => {
@@ -4393,7 +4394,10 @@ export class DetalheComponent implements AfterViewChecked {
       .sendKey(id, key)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: () => this.refreshScreen(),
+        // Burst escalonado: uma tecla num picker (ex.: escolher opção) redesenha
+        // uns ms depois — um refresh único pegaria a tela antiga e o resto só
+        // viria no push (~1s), dando a sensação de "não foi".
+        next: () => this.refreshBurst(),
         error: () => {
           /* best-effort — ignora falha transitória */
         },
