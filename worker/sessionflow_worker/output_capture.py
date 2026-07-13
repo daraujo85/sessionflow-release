@@ -598,6 +598,15 @@ class OutputCapture:
         capturado (tela visível).
         """
         text = self.capture_screen(tmux_name)
+        # Gate por hash: se a tela NÃO mudou desde o último ciclo, não escreve no
+        # Mongo nem empurra por SSE — nada de IO/tráfego à toa. É isso que deixa
+        # baixar o intervalo de captura (mais responsivo) sem inundar banco/cliente.
+        # O ``at`` do doc passa a refletir a última MUDANÇA (não o último olhar),
+        # o que é o correto p/ o dedup do front.
+        h = hash(text)
+        if self._screen_hash.get(tmux_name) == h:
+            return text
+        self._screen_hash[tmux_name] = h
         now = _now()
         # NÃO capturamos o scrollback (2000 linhas coloridas) a CADA ciclo: era um
         # capture-pane pesado, síncrono, por sessão — atrasava o ciclo ao vivo (e o
@@ -652,13 +661,11 @@ class OutputCapture:
         return text
 
     async def _publish_screen(self, tmux_name: str, text: str, at: datetime) -> None:
-        """Publica o espelho via SSE quando mudou (dedupe por hash)."""
+        """Publica o espelho via SSE. Chamado só quando o texto MUDOU — o dedup
+        por hash vive no :meth:`snapshot_screen` (que também gateia a escrita no
+        Mongo), então aqui é sempre publicação de conteúdo novo."""
         if self._channel is None:
             return
-        h = hash(text)
-        if self._screen_hash.get(tmux_name) == h:
-            return
-        self._screen_hash[tmux_name] = h
         payload = {
             "event": OUTPUT_ROUTING_KEY,
             "kind": "screen",
