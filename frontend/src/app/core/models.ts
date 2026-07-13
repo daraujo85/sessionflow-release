@@ -22,6 +22,24 @@ export type AgentType =
   | 'opencode'
   | 'desconhecido';
 
+/** Tokens/custo somados dentro de uma janela de período (ver {@link SessionMetrics.tokens_periods}). */
+export interface TokenPeriodUsage {
+  tokens_in: number;
+  tokens_out: number;
+  cost: {
+    total_usd: number | null;
+    total_brl?: number | null;
+    by_model: {
+      model: string;
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      usd: number | null;
+    }[];
+  } | null;
+}
+
 /**
  * Métricas reais da sessão, enriquecidas pelo backend (atualmente só p/
  * sessões claude). Limites diário/semanal NÃO vêm — não há fonte.
@@ -55,6 +73,16 @@ export interface SessionMetrics {
       cache_write: number;
       usd: number | null;
     }[];
+  } | null;
+  /**
+   * Tokens/custo dentro de janelas ROLANTES (últimas 24h/7d/30d) — alimenta o
+   * filtro "hoje/semana/mês" do Top 3 da Home. "sempre" usa os campos
+   * tokens_in/tokens_out/cost acima (não duplicado aqui).
+   */
+  tokens_periods?: {
+    today?: TokenPeriodUsage;
+    week?: TokenPeriodUsage;
+    month?: TokenPeriodUsage;
   } | null;
   /** % real do limite de uso (sessão 5h + semanal). Só p/ sessões claude com dado. */
   limits?: {
