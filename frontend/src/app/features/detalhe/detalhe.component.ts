@@ -20,6 +20,7 @@ import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
+import { SessionPrefsStore } from '../../core/session-prefs-store';
 import {
   AgentType,
   Session,
@@ -872,7 +873,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
             type="button"
             class="live-toggle"
             [class.is-on]="keypadOpen()"
-            (click)="keypadOpen.set(!keypadOpen())"
+            (click)="toggleKeypad()"
             [attr.aria-pressed]="keypadOpen()"
             aria-label="Teclas de navegação (setas/Enter/Esc)"
             title="Mostrar/ocultar teclas de navegação"
@@ -922,6 +923,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
                 <rect x="8.5" y="8.5" width="7" height="7" rx="1" />
+              </svg>
+            </button>
+          }
+          @if (canCamera) {
+            <button
+              type="button"
+              class="attach"
+              (click)="openCamera()"
+              aria-label="Tirar foto com a câmera e anexar"
+              title="Tirar foto com a câmera para dar contexto ao agente"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
               </svg>
             </button>
           }
@@ -1010,6 +1026,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
               <button type="button" class="shot-btn" (click)="confirmShotFull()">Anexar tudo</button>
               <button type="button" class="shot-btn shot-btn--primary" [disabled]="!shotHasSel()" (click)="confirmShot()">
                 Anexar recorte
+              </button>
+            </span>
+          </div>
+        </div>
+      }
+
+      <!-- Overlay da CÂMERA: preview ao vivo + "Tirar foto". A imagem fica só em
+           memória (vira anexo staged) — nunca vai pra galeria do aparelho. -->
+      @if (camOpen()) {
+        <div class="shot-overlay">
+          <div class="cam-stage">
+            <video #camVideo class="cam-video" autoplay playsinline muted></video>
+            @if (!camReady()) {
+              <span class="cam-loading">abrindo câmera…</span>
+            }
+          </div>
+          <div class="shot-bar">
+            <span class="shot-tip">Enquadre e toque em “Tirar foto”</span>
+            <span class="shot-acts">
+              <button type="button" class="shot-btn" (click)="cancelCamera()">Cancelar</button>
+              <button type="button" class="shot-btn" (click)="flipCamera()">Trocar câmera</button>
+              <button type="button" class="shot-btn shot-btn--primary" [disabled]="!camReady()" (click)="capturePhoto()">
+                Tirar foto
               </button>
             </span>
           </div>
@@ -1300,6 +1339,30 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .shot-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      /* Palco do preview da câmera (mesmo overlay do screenshot) */
+      .cam-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        overflow: hidden;
+      }
+      .cam-video {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        background: #000;
+        border: 1px solid #263038;
+        border-radius: 8px;
+      }
+      .cam-loading {
+        position: absolute;
+        font-size: 13px;
+        color: #9fb0ad;
       }
       .hdr-dir {
         font-size: 12px;
@@ -2604,6 +2667,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
   private readonly drafts = inject(DraftStore);
+  private readonly prefs = inject(SessionPrefsStore);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly location = inject(Location);
   private readonly shareSvc = inject(ShareSessionService);
@@ -2627,6 +2691,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgInput = viewChild<ElementRef<HTMLInputElement>>('msgInput');
   private readonly shotImg = viewChild<ElementRef<HTMLImageElement>>('shotImg');
+  private readonly camVideo = viewChild<ElementRef<HTMLVideoElement>>('camVideo');
 
   /** Session id from the route (`sessao/:id`). */
   protected readonly id = signal<string>(
@@ -2918,6 +2983,22 @@ export class DetalheComponent implements AfterViewChecked {
   private shotStart: { x: number; y: number } | null = null;
 
   /**
+   * Câmera (foto ao vivo) — como o screenshot, mas usando a câmera do aparelho
+   * (getUserMedia) pra dar contexto físico ao agente (foto de tela, papel, etc.).
+   * Só onde o navegador suporta E em contexto seguro (https/localhost). A foto
+   * fica só em memória (vira anexo staged) — nunca vai pra galeria do aparelho.
+   */
+  protected readonly canCamera =
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia;
+  protected readonly camOpen = signal<boolean>(false);
+  /** True quando o preview já tem frame (habilita o botão "Tirar foto"). */
+  protected readonly camReady = signal<boolean>(false);
+  private camStream: MediaStream | null = null;
+  /** Câmera preferida: traseira por padrão (melhor p/ fotografar algo). */
+  private camFacing: 'environment' | 'user' = 'environment';
+
+  /**
    * Modo BUFFER: rolagem LISA do histórico. Como os TUIs alt-screen (Claude
    * Code) guardam o scrollback dentro do próprio agente (não no tmux), montamos
    * um buffer COSTURANDO os frames capturados: a cada "página" pra cima pedimos
@@ -2962,6 +3043,17 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Texto da última tela renderizada, para disparar o auto-scroll. */
   private lastRenderedScreen = '';
+
+  /**
+   * ``at`` do último frame de SSE JÁ aplicado ao espelho. O effect do push só
+   * aplica um frame quando esse timestamp MUDA (push novo do worker) — nunca por
+   * o texto do SSE simplesmente diferir de {@link screen}. Sem isso, um frame de
+   * SSE defasado (ex.: reconexão/backoff) brigava com o poll de 4s: o poll trazia
+   * a tela nova do doc e o effect a revertia pro frame velho, congelando o "ao
+   * vivo" até o próximo push. Agora o poll sempre vence a frescura e o SSE só
+   * adiciona baixa latência em pushes de fato novos.
+   */
+  private lastScreenPushAt = '';
 
   /**
    * Auto-scroll só "gruda no fim" quando o usuário JÁ está no fim. Se ele rolou
@@ -3020,15 +3112,28 @@ export class DetalheComponent implements AfterViewChecked {
         this.session.set(null);
         this.screen.set('');
         this.tasks.set([]);
-        this.historyMode.set(false);
         this.seenArtifactUrl.set(null);
         this.bufMode.set(false);
         this.bufLines = [];
         this.bufText.set('');
-        this.liveMode.set(false);
+        this.lastScreenPushAt = ''; // sessão nova → não herda o gate do push anterior
+        // Restaura as OPÇÕES escolhidas antes nesta sessão (SessionPrefsStore);
+        // campos ausentes caem no default. Persistidas nos toggles/bumpFont.
+        const prefs = this.prefs.get(sid);
+        this.liveMode.set(prefs.liveMode ?? false);
+        this.keypadOpen.set(prefs.keypadOpen ?? false);
+        this.termFont.set(prefs.termFont ?? readTermFont());
         this.draft.set(this.drafts.get(sid));
         this.loadSession();
-        this.refreshScreen();
+        if (prefs.historyMode) {
+          // Sessão estava no histórico congelado: recarrega o scrollback profundo
+          // e recongela (enterHistory liga o historyMode e busca o texto).
+          this.historyMode.set(false);
+          this.enterHistory();
+        } else {
+          this.historyMode.set(false);
+          this.refreshScreen();
+        }
         // Ao abrir a sessão, foca o campo de mensagem (pronto pra digitar). Em
         // celular o teclado só abre com gesto — aqui é best-effort e não incomoda.
         this.focusMessageInput();
@@ -3056,11 +3161,20 @@ export class DetalheComponent implements AfterViewChecked {
       if (this.historyMode() || this.bufMode()) {
         return;
       }
-      if (scr && scr.text !== this.screen()) {
-        this.stickToBottom = this.isAtBottom();
-        this.screen.set(scr.text);
-        // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
-        this.clearHint();
+      // Só aplica quando o worker EMPURROU um frame novo (``at`` mudou). Comparar
+      // por texto != screen() faria o effect brigar com o poll de 4s e reverter a
+      // tela nova do doc para um frame de SSE defasado — o que congelava o "ao
+      // vivo". Ao gatear por ``at``, o poll nunca é revertido e o SSE só antecipa
+      // pushes realmente novos.
+      const at = scr?.at ?? '';
+      if (scr && at !== this.lastScreenPushAt) {
+        this.lastScreenPushAt = at;
+        if (scr.text !== this.screen()) {
+          this.stickToBottom = this.isAtBottom();
+          this.screen.set(scr.text);
+          // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
+          this.clearHint();
+        }
       }
     });
 
@@ -3120,6 +3234,8 @@ export class DetalheComponent implements AfterViewChecked {
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
+      // Garante que a câmera não fica ligada ao sair da tela.
+      this.stopCamStream();
     });
   }
 
@@ -3683,6 +3799,7 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.paneBuffer = '';
     this.liveMode.set(turningOn);
+    this.prefs.patch(id ?? '', { liveMode: turningOn }); // lembra por sessão
     // Ligando com algo já digitado: encaminha o draft atual de uma vez.
     if (turningOn && id && this.draft()) {
       this.forwardDiff();
@@ -4004,6 +4121,142 @@ export class DetalheComponent implements AfterViewChecked {
     this.shotImgUrl.set('');
   }
 
+  /**
+   * Abre a câmera do aparelho (getUserMedia) e mostra o preview ao vivo. Pede
+   * o stream ANTES de abrir o overlay (dispara a permissão), depois anexa ao
+   * <video> assim que ele existe no DOM. Traseira por padrão.
+   */
+  protected async openCamera(): Promise<void> {
+    const md = navigator.mediaDevices;
+    if (!md?.getUserMedia) {
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await md.getUserMedia(this.camConstraints());
+    } catch {
+      this.warnHint('Não consegui acessar a câmera (permita o acesso).');
+      return;
+    }
+    this.camStream = stream;
+    this.camReady.set(false);
+    this.camOpen.set(true);
+    // O <video> só existe depois que o overlay renderiza.
+    setTimeout(() => this.attachCamStream(), 0);
+  }
+
+  /** Liga o stream atual ao elemento <video> do preview e toca. */
+  private attachCamStream(): void {
+    const video = this.camVideo()?.nativeElement;
+    if (!video || !this.camStream) {
+      return;
+    }
+    video.srcObject = this.camStream;
+    video.muted = true;
+    video
+      .play()
+      .then(() => this.camReady.set(true))
+      .catch(() => this.camReady.set(true));
+  }
+
+  /** Alterna entre câmera traseira/frontal (celular/tablet) e reabre o stream. */
+  protected async flipCamera(): Promise<void> {
+    this.camFacing = this.camFacing === 'environment' ? 'user' : 'environment';
+    this.stopCamStream();
+    this.camReady.set(false);
+    try {
+      this.camStream = await navigator.mediaDevices.getUserMedia(
+        this.camConstraints(),
+      );
+      this.attachCamStream();
+    } catch {
+      this.warnHint('Só há uma câmera disponível.');
+      this.closeCamera();
+    }
+  }
+
+  /**
+   * Restrições do stream: pede a MAIOR resolução que a câmera oferecer (ideal
+   * 4K; ``ideal`` degrada sozinho pro que houver). Sem isso o preview costuma
+   * vir baixo, e o frame capturado sai pequeno.
+   */
+  private camConstraints(): MediaStreamConstraints {
+    return {
+      video: {
+        facingMode: this.camFacing,
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+      },
+      audio: false,
+    };
+  }
+
+  /** Tira a MELHOR foto possível → anexa (staged) e fecha. */
+  protected async capturePhoto(): Promise<void> {
+    const blob = await this.grabPhotoBlob();
+    if (blob) {
+      const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+      this.stageFile(
+        new File([blob], `foto-${Date.now()}.${ext}`, {
+          type: blob.type || 'image/jpeg',
+        }),
+      );
+    }
+    this.closeCamera();
+  }
+
+  /**
+   * Melhor foto possível. Tenta ``ImageCapture.takePhoto()`` (resolução de FOTO
+   * do sensor — geralmente maior que o preview; Chrome/Android). Sem suporte
+   * (Safari/iOS), cai pro frame do ``<video>``. Exporta JPEG q0.92: qualidade
+   * alta com arquivo pequeno (um PNG em 4K estouraria o limite de 10MB).
+   */
+  private async grabPhotoBlob(): Promise<Blob | null> {
+    const track = this.camStream?.getVideoTracks()[0];
+    const ImageCaptureCtor = (
+      globalThis as unknown as {
+        ImageCapture?: new (t: MediaStreamTrack) => { takePhoto(): Promise<Blob> };
+      }
+    ).ImageCapture;
+    if (track && ImageCaptureCtor) {
+      try {
+        const still = await new ImageCaptureCtor(track).takePhoto();
+        if (still && still.size > 0) {
+          return still;
+        }
+      } catch {
+        /* sem suporte real / negado → cai pro frame do vídeo */
+      }
+    }
+    const video = this.camVideo()?.nativeElement;
+    if (!video || !video.videoWidth) {
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.92),
+    );
+  }
+
+  protected cancelCamera(): void {
+    this.closeCamera();
+  }
+
+  private closeCamera(): void {
+    this.stopCamStream();
+    this.camOpen.set(false);
+    this.camReady.set(false);
+  }
+
+  /** Encerra as tracks da câmera (libera o LED/permissão de uso). */
+  private stopCamStream(): void {
+    this.camStream?.getTracks().forEach((t) => t.stop());
+    this.camStream = null;
+  }
+
   /** Arrastou um arquivo sobre o compositor: realça a área e aceita o drop. */
   protected onDragOver(event: DragEvent): void {
     if (!event.dataTransfer?.types?.includes('Files')) {
@@ -4303,6 +4556,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Volta ao espelho ao vivo: retoma o stick e desce pro fim (última msg). */
   private exitHistory(): void {
     this.historyMode.set(false);
+    this.prefs.patch(this.id() ?? '', { historyMode: false }); // lembra por sessão
     this.stickToBottom = true;
     this.showLivePill.set(false);
     this.jumpAgentToBottom(); // o agente pode estar rolado → Ctrl+End pro fim
@@ -4321,6 +4575,7 @@ export class DetalheComponent implements AfterViewChecked {
     }
     this.historyText.set(this.screen()); // pré-carrega p/ não piscar vazio
     this.historyMode.set(true);
+    this.prefs.patch(id, { historyMode: true }); // lembra por sessão
     this.showLivePill.set(false);
     this.api
       .getScreen(id)
@@ -4342,10 +4597,19 @@ export class DetalheComponent implements AfterViewChecked {
    * ex.: Claude Code, guardam o scrollback dentro de si, não no tmux; por isso
    * não dá pra rolar via tmux nem via o modo "Histórico".)
    */
+  /** Abre/fecha o teclado de navegação e lembra por sessão. */
+  protected toggleKeypad(): void {
+    const open = !this.keypadOpen();
+    this.keypadOpen.set(open);
+    this.prefs.patch(this.id() ?? '', { keypadOpen: open });
+  }
+
   /** Aumenta/diminui a fonte do terminal (clamp 9–22px) e persiste no aparelho. */
   protected bumpFont(delta: number): void {
     const next = Math.min(22, Math.max(9, Math.round((this.termFont() + delta) * 2) / 2));
     this.termFont.set(next);
+    // Global (sf.term.font) = default p/ sessões novas; por-sessão = o que fica.
+    this.prefs.patch(this.id() ?? '', { termFont: next });
     try {
       localStorage.setItem('sf.term.font', String(next));
     } catch {
@@ -4472,7 +4736,10 @@ export class DetalheComponent implements AfterViewChecked {
   /** Manda o scroll pro agente (▲/▼) com throttle — compartilhado por wheel e toque. */
   private agentScroll(dir: 'up' | 'down'): void {
     const now = Date.now();
-    if (now - this.lastWheelAt < 80) {
+    // Throttle folgado (150ms): a roda dispara MUITOS eventos por gesto; junto do
+    // burst de 2 notches por comando no worker, um flickzinho pulava dezenas de
+    // linhas no agente. Espaçar mais os comandos dá controle fino do histórico.
+    if (now - this.lastWheelAt < 150) {
       return;
     }
     this.lastWheelAt = now;
