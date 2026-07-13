@@ -22,6 +22,7 @@ import os
 import re
 import time
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger("sessionflow_worker.metrics")
@@ -241,10 +242,13 @@ def _latest_jsonl(project_dir: Path) -> Path | None:
 
 
 def _iter_usage_lines(jsonl_path: Path):
-    """Itera os pares ``(usage, model)`` das linhas com ``message.usage``.
+    """Itera as tuplas ``(usage, model, ts)`` das linhas com ``message.usage``.
 
     Linhas inválidas (JSON quebrado / sem usage) são ignoradas. ``model`` pode
-    vir ``None`` quando a linha não o expõe.
+    vir ``None`` quando a linha não o expõe. ``ts`` é o ``timestamp`` ISO8601
+    gravado pelo Claude Code (UTC, ex. ``2026-06-22T23:43:57.358Z``) já
+    parseado, ou ``None`` se ausente/inválido (usado só p/ os filtros de
+    período — a soma "sempre" não depende dele).
     """
     with jsonl_path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -261,7 +265,23 @@ def _iter_usage_lines(jsonl_path: Path):
             usage = message.get("usage")
             if not isinstance(usage, dict):
                 continue
-            yield usage, message.get("model")
+            ts: datetime | None = None
+            raw_ts = obj.get("timestamp")
+            if isinstance(raw_ts, str):
+                try:
+                    ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                except ValueError:
+                    ts = None
+            yield usage, message.get("model"), ts
+
+
+#: Janelas ROLANTES (não calendário) usadas pelo filtro "hoje/semana/mês" do
+#: Top 3 da Home — mais simples e sem ambiguidade de fuso/início de semana.
+_PERIOD_WINDOWS = {
+    "today": timedelta(hours=24),
+    "week": timedelta(days=7),
+    "month": timedelta(days=30),
+}
 
 
 def claude_metrics_for(
@@ -308,8 +328,15 @@ def claude_metrics_for(
         # Chave = rótulo amigável (ou id cru); linha sem model cai no último
         # modelo visto (fallback: modelo corrente da sessão) ou "desconhecido".
         usage_by_model: dict[str, dict[str, int]] = {}
+        # Mesma coisa, mas UM balde por janela de período (hoje/semana/mês) —
+        # só recebe a linha se ela cair dentro da janela. Usado pelos filtros
+        # do Top 3 da Home; "sempre" reaproveita usage_by_model acima.
+        now = datetime.now(timezone.utc)
+        period_usage: dict[str, dict[str, dict[str, int]]] = {
+            key: {} for key in _PERIOD_WINDOWS
+        }
 
-        for usage, model in _iter_usage_lines(jsonl_path):
+        for usage, model, ts in _iter_usage_lines(jsonl_path):
             saw_usage = True
             last_usage = usage
             if model:
@@ -329,6 +356,26 @@ def claude_metrics_for(
                 bucket["cache_write"] += int(
                     usage.get("cache_creation_input_tokens", 0) or 0
                 )
+                if ts is not None:
+                    for period, window in _PERIOD_WINDOWS.items():
+                        if now - ts <= window:
+                            pb = period_usage[period].setdefault(
+                                key,
+                                {
+                                    "input": 0,
+                                    "output": 0,
+                                    "cache_read": 0,
+                                    "cache_write": 0,
+                                },
+                            )
+                            pb["input"] += int(usage.get("input_tokens", 0) or 0)
+                            pb["output"] += int(usage.get("output_tokens", 0) or 0)
+                            pb["cache_read"] += int(
+                                usage.get("cache_read_input_tokens", 0) or 0
+                            )
+                            pb["cache_write"] += int(
+                                usage.get("cache_creation_input_tokens", 0) or 0
+                            )
             except Exception:  # noqa: BLE001 - custo é best-effort
                 pass
 
@@ -359,6 +406,25 @@ def claude_metrics_for(
         except Exception:  # noqa: BLE001
             cost = None
 
+        # Mesmo cálculo, por janela de período — alimenta o filtro
+        # hoje/semana/mês do Top 3 da Home. "sempre" usa tokens_in/tokens_out/
+        # cost acima (não duplicado aqui).
+        tokens_periods: dict[str, dict] = {}
+        for period, by_model in period_usage.items():
+            tokens_in_p = sum(b["input"] for b in by_model.values())
+            tokens_out_p = sum(b["output"] for b in by_model.values())
+            cost_p: dict | None = None
+            try:
+                if by_model:
+                    cost_p = _cost_from_usage(by_model)
+            except Exception:  # noqa: BLE001
+                cost_p = None
+            tokens_periods[period] = {
+                "tokens_in": tokens_in_p,
+                "tokens_out": tokens_out_p,
+                "cost": cost_p,
+            }
+
         return {
             "model": _model_label(model_id) if model_id else None,
             "cost": cost,
@@ -367,6 +433,7 @@ def claude_metrics_for(
             "context_pct": context_pct,
             "tokens_in": context_used,
             "tokens_out": tokens_out_total,
+            "tokens_periods": tokens_periods,
             "activity": _claude_activity(root.parent / "stats-cache.json"),
             "source": "claude_jsonl",
         }

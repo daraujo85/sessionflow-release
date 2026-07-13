@@ -272,6 +272,48 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         <p class="sf-empty">Nenhuma sessão ativa no momento.</p>
       }
 
+      <!-- Top 3 sessões por consumo de tokens (in+out) — só aparece quando há
+           ao menos 1 sessão com métricas de uso (feature recente). -->
+      @if (topTokenSessions().length > 0 || topTokensPeriod() !== 'all') {
+        <div class="sf-section-head">
+          <h2>Top consumo</h2>
+          <div class="sf-period-tabs" role="group" aria-label="Período do Top consumo">
+            @for (opt of topTokensPeriodOptions; track opt.key) {
+              <button
+                type="button"
+                class="sf-period-tab"
+                [class.is-on]="topTokensPeriod() === opt.key"
+                (click)="topTokensPeriod.set(opt.key)"
+              >
+                {{ opt.label }}
+              </button>
+            }
+          </div>
+        </div>
+        @if (topTokenSessions().length > 0) {
+          <div class="sf-top-toks">
+            @for (r of topTokenSessions(); track r.session.id; let i = $index) {
+              <button
+                type="button"
+                class="sf-top-tok-row"
+                (click)="openSession(r.session.id)"
+              >
+                <span class="sf-top-tok-rank">{{ i + 1 }}</span>
+                <span class="sf-top-tok-name">{{ displayName(r.session) }}</span>
+                <span class="mono sf-top-tok-toks"
+                  >in {{ fmtTok(r.tokensIn) }} · out {{ fmtTok(r.tokensOut) }}</span
+                >
+                <span class="mono sf-top-tok-usd">{{
+                  r.usd != null ? '~$' + fmtUsd(r.usd) : fmtTok(r.total) + 'tok'
+                }}</span>
+              </button>
+            }
+          </div>
+        } @else {
+          <p class="sf-empty">Sem consumo registrado nesse período.</p>
+        }
+      }
+
       <!-- Tarefas (marcos do agente, via .sessionflow/milestones.json) -->
       <div class="sf-section-head">
         <h2>Tarefas</h2>
@@ -551,6 +593,87 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-size: 11px;
         color: #6a7080;
         line-height: 1.45;
+      }
+
+      /* Filtro de período do Top consumo */
+      .sf-period-tabs {
+        display: flex;
+        gap: 4px;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 10px;
+        padding: 3px;
+      }
+      .sf-period-tab {
+        appearance: none;
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        color: #9aa0ae;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      .sf-period-tab.is-on {
+        background: var(--color-accent-strong);
+        color: var(--text-on-accent);
+      }
+
+      /* Top 3 sessões por consumo de tokens */
+      .sf-top-toks {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .sf-top-tok-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+        text-align: left;
+      }
+      .sf-top-tok-rank {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: rgba(0, 228, 180, 0.14);
+        color: #00e4b4;
+        font-size: 11.5px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sf-top-tok-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-top-tok-toks {
+        flex: none;
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+      }
+      .sf-top-tok-usd {
+        flex: none;
+        font-size: 12px;
+        font-weight: 700;
+        color: #00e4b4;
+        white-space: nowrap;
       }
 
       .sf-bell {
@@ -1326,6 +1449,50 @@ export class InicioComponent implements OnInit {
       ...lines,
       'Estimativa em preço de API.',
     ].join('\n');
+  });
+
+  /**
+   * Período do Top 3 de tokens. "today/week/month" são janelas ROLANTES
+   * (últimas 24h/7d/30d, calculadas no worker a partir do timestamp de cada
+   * turno no JSONL) — não calendário. "all" é o consumo total já existente
+   * (tokens_in/tokens_out/cost, sem filtro de tempo).
+   */
+  protected readonly topTokensPeriod = signal<'today' | 'week' | 'month' | 'all'>('all');
+  protected readonly topTokensPeriodOptions: { key: 'today' | 'week' | 'month' | 'all'; label: string }[] = [
+    { key: 'today', label: 'Hoje' },
+    { key: 'week', label: 'Semana' },
+    { key: 'month', label: 'Mês' },
+    { key: 'all', label: 'Sempre' },
+  ];
+
+  /**
+   * TOP 3 sessões por consumo de tokens (in+out) NO PERÍODO selecionado,
+   * maior primeiro. Ignora sessões sem dado pra aquele período (sessão nova,
+   * sem atividade na janela, ou métricas antigas sem `tokens_periods` ainda
+   * — feature recente). Ranking por tokens brutos (não por USD): reflete uso
+   * real mesmo quando o preço do modelo é desconhecido (``usd`` null).
+   */
+  protected readonly topTokenSessions = computed(() => {
+    const period = this.topTokensPeriod();
+    const rows = this.sessions()
+      .map((s) => {
+        const m = s.metrics;
+        const usage = period === 'all' ? m : m?.tokens_periods?.[period];
+        const tokensIn = usage?.tokens_in ?? 0;
+        const tokensOut = usage?.tokens_out ?? 0;
+        const total = tokensIn + tokensOut;
+        return {
+          session: s,
+          tokensIn,
+          tokensOut,
+          total,
+          usd: usage?.cost?.total_usd ?? null,
+        };
+      })
+      .filter((r) => r.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 3);
+    return rows;
   });
 
   /** Formata tokens em k/M compactos: 248000→"248k", 18300→"18,3k". */
