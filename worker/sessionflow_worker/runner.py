@@ -76,7 +76,7 @@ _ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 # Parâmetros dos loops periódicos.
 DISCOVERY_INTERVAL = 5.0
 DIR_SCAN_INTERVAL = 300.0
-CAPTURE_INTERVAL = 0.6
+CAPTURE_INTERVAL = 0.3
 # Descoberta dos modelos REAIS do host: rotina DIÁRIA (24h). No boot só
 # (re)descobre se o cache ``host_models`` estiver vazio ou velho (> 24h).
 MODEL_DISCOVERY_INTERVAL = 86400.0
