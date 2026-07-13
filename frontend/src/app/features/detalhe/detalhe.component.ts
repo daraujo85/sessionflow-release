@@ -926,6 +926,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
               </svg>
             </button>
           }
+          @if (canCamera) {
+            <button
+              type="button"
+              class="attach"
+              (click)="openCamera()"
+              aria-label="Tirar foto com a câmera e anexar"
+              title="Tirar foto com a câmera para dar contexto ao agente"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+            </button>
+          }
           <sf-audio-recorder
             class="mic"
             [sessionId]="id()"
@@ -1011,6 +1026,29 @@ import { ansiToHtml } from '../../shared/ansi-html';
               <button type="button" class="shot-btn" (click)="confirmShotFull()">Anexar tudo</button>
               <button type="button" class="shot-btn shot-btn--primary" [disabled]="!shotHasSel()" (click)="confirmShot()">
                 Anexar recorte
+              </button>
+            </span>
+          </div>
+        </div>
+      }
+
+      <!-- Overlay da CÂMERA: preview ao vivo + "Tirar foto". A imagem fica só em
+           memória (vira anexo staged) — nunca vai pra galeria do aparelho. -->
+      @if (camOpen()) {
+        <div class="shot-overlay">
+          <div class="cam-stage">
+            <video #camVideo class="cam-video" autoplay playsinline muted></video>
+            @if (!camReady()) {
+              <span class="cam-loading">abrindo câmera…</span>
+            }
+          </div>
+          <div class="shot-bar">
+            <span class="shot-tip">Enquadre e toque em “Tirar foto”</span>
+            <span class="shot-acts">
+              <button type="button" class="shot-btn" (click)="cancelCamera()">Cancelar</button>
+              <button type="button" class="shot-btn" (click)="flipCamera()">Trocar câmera</button>
+              <button type="button" class="shot-btn shot-btn--primary" [disabled]="!camReady()" (click)="capturePhoto()">
+                Tirar foto
               </button>
             </span>
           </div>
@@ -1301,6 +1339,30 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .shot-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      /* Palco do preview da câmera (mesmo overlay do screenshot) */
+      .cam-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        overflow: hidden;
+      }
+      .cam-video {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        background: #000;
+        border: 1px solid #263038;
+        border-radius: 8px;
+      }
+      .cam-loading {
+        position: absolute;
+        font-size: 13px;
+        color: #9fb0ad;
       }
       .hdr-dir {
         font-size: 12px;
@@ -2629,6 +2691,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgInput = viewChild<ElementRef<HTMLInputElement>>('msgInput');
   private readonly shotImg = viewChild<ElementRef<HTMLImageElement>>('shotImg');
+  private readonly camVideo = viewChild<ElementRef<HTMLVideoElement>>('camVideo');
 
   /** Session id from the route (`sessao/:id`). */
   protected readonly id = signal<string>(
@@ -2920,6 +2983,22 @@ export class DetalheComponent implements AfterViewChecked {
   private shotStart: { x: number; y: number } | null = null;
 
   /**
+   * Câmera (foto ao vivo) — como o screenshot, mas usando a câmera do aparelho
+   * (getUserMedia) pra dar contexto físico ao agente (foto de tela, papel, etc.).
+   * Só onde o navegador suporta E em contexto seguro (https/localhost). A foto
+   * fica só em memória (vira anexo staged) — nunca vai pra galeria do aparelho.
+   */
+  protected readonly canCamera =
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia;
+  protected readonly camOpen = signal<boolean>(false);
+  /** True quando o preview já tem frame (habilita o botão "Tirar foto"). */
+  protected readonly camReady = signal<boolean>(false);
+  private camStream: MediaStream | null = null;
+  /** Câmera preferida: traseira por padrão (melhor p/ fotografar algo). */
+  private camFacing: 'environment' | 'user' = 'environment';
+
+  /**
    * Modo BUFFER: rolagem LISA do histórico. Como os TUIs alt-screen (Claude
    * Code) guardam o scrollback dentro do próprio agente (não no tmux), montamos
    * um buffer COSTURANDO os frames capturados: a cada "página" pra cima pedimos
@@ -3155,6 +3234,8 @@ export class DetalheComponent implements AfterViewChecked {
       }
       // Evita vazar o object URL do preview do anexo staged.
       this.revokePendingUrl();
+      // Garante que a câmera não fica ligada ao sair da tela.
+      this.stopCamStream();
     });
   }
 
@@ -4038,6 +4119,142 @@ export class DetalheComponent implements AfterViewChecked {
     this.shotStart = null;
     this.shotCanvas = null;
     this.shotImgUrl.set('');
+  }
+
+  /**
+   * Abre a câmera do aparelho (getUserMedia) e mostra o preview ao vivo. Pede
+   * o stream ANTES de abrir o overlay (dispara a permissão), depois anexa ao
+   * <video> assim que ele existe no DOM. Traseira por padrão.
+   */
+  protected async openCamera(): Promise<void> {
+    const md = navigator.mediaDevices;
+    if (!md?.getUserMedia) {
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await md.getUserMedia(this.camConstraints());
+    } catch {
+      this.warnHint('Não consegui acessar a câmera (permita o acesso).');
+      return;
+    }
+    this.camStream = stream;
+    this.camReady.set(false);
+    this.camOpen.set(true);
+    // O <video> só existe depois que o overlay renderiza.
+    setTimeout(() => this.attachCamStream(), 0);
+  }
+
+  /** Liga o stream atual ao elemento <video> do preview e toca. */
+  private attachCamStream(): void {
+    const video = this.camVideo()?.nativeElement;
+    if (!video || !this.camStream) {
+      return;
+    }
+    video.srcObject = this.camStream;
+    video.muted = true;
+    video
+      .play()
+      .then(() => this.camReady.set(true))
+      .catch(() => this.camReady.set(true));
+  }
+
+  /** Alterna entre câmera traseira/frontal (celular/tablet) e reabre o stream. */
+  protected async flipCamera(): Promise<void> {
+    this.camFacing = this.camFacing === 'environment' ? 'user' : 'environment';
+    this.stopCamStream();
+    this.camReady.set(false);
+    try {
+      this.camStream = await navigator.mediaDevices.getUserMedia(
+        this.camConstraints(),
+      );
+      this.attachCamStream();
+    } catch {
+      this.warnHint('Só há uma câmera disponível.');
+      this.closeCamera();
+    }
+  }
+
+  /**
+   * Restrições do stream: pede a MAIOR resolução que a câmera oferecer (ideal
+   * 4K; ``ideal`` degrada sozinho pro que houver). Sem isso o preview costuma
+   * vir baixo, e o frame capturado sai pequeno.
+   */
+  private camConstraints(): MediaStreamConstraints {
+    return {
+      video: {
+        facingMode: this.camFacing,
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+      },
+      audio: false,
+    };
+  }
+
+  /** Tira a MELHOR foto possível → anexa (staged) e fecha. */
+  protected async capturePhoto(): Promise<void> {
+    const blob = await this.grabPhotoBlob();
+    if (blob) {
+      const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+      this.stageFile(
+        new File([blob], `foto-${Date.now()}.${ext}`, {
+          type: blob.type || 'image/jpeg',
+        }),
+      );
+    }
+    this.closeCamera();
+  }
+
+  /**
+   * Melhor foto possível. Tenta ``ImageCapture.takePhoto()`` (resolução de FOTO
+   * do sensor — geralmente maior que o preview; Chrome/Android). Sem suporte
+   * (Safari/iOS), cai pro frame do ``<video>``. Exporta JPEG q0.92: qualidade
+   * alta com arquivo pequeno (um PNG em 4K estouraria o limite de 10MB).
+   */
+  private async grabPhotoBlob(): Promise<Blob | null> {
+    const track = this.camStream?.getVideoTracks()[0];
+    const ImageCaptureCtor = (
+      globalThis as unknown as {
+        ImageCapture?: new (t: MediaStreamTrack) => { takePhoto(): Promise<Blob> };
+      }
+    ).ImageCapture;
+    if (track && ImageCaptureCtor) {
+      try {
+        const still = await new ImageCaptureCtor(track).takePhoto();
+        if (still && still.size > 0) {
+          return still;
+        }
+      } catch {
+        /* sem suporte real / negado → cai pro frame do vídeo */
+      }
+    }
+    const video = this.camVideo()?.nativeElement;
+    if (!video || !video.videoWidth) {
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.92),
+    );
+  }
+
+  protected cancelCamera(): void {
+    this.closeCamera();
+  }
+
+  private closeCamera(): void {
+    this.stopCamStream();
+    this.camOpen.set(false);
+    this.camReady.set(false);
+  }
+
+  /** Encerra as tracks da câmera (libera o LED/permissão de uso). */
+  private stopCamStream(): void {
+    this.camStream?.getTracks().forEach((t) => t.stop());
+    this.camStream = null;
   }
 
   /** Arrastou um arquivo sobre o compositor: realça a área e aceita o drop. */
