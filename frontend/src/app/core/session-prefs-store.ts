@@ -12,8 +12,6 @@ import { Injectable } from '@angular/core';
 export interface SessionPrefs {
   /** "Modo ao vivo": encaminha a digitação pro pane (autocomplete do CLI). */
   liveMode?: boolean;
-  /** Terminal congelado no histórico rolável (em vez do espelho ao vivo). */
-  historyMode?: boolean;
   /** Teclado de navegação (setas/Enter/Esc) aberto. */
   keypadOpen?: boolean;
   /** Tamanho da fonte do terminal (px) — por sessão (o global é só o default). */

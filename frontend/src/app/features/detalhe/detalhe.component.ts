@@ -641,29 +641,6 @@ import { ansiToHtml } from '../../shared/ansi-html';
             }
           </span>
         }
-        <button
-          type="button"
-          class="term-toggle"
-          [class.is-on]="historyMode()"
-          (click)="toggleHistory()"
-          [attr.aria-pressed]="historyMode()"
-          [title]="historyMode() ? 'Voltar ao espelho ao vivo' : 'Ver histórico rolável do terminal'"
-        >
-          @if (historyMode()) {
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" /><path d="M12 12 12 7M12 12l4 2" />
-            </svg>
-            Ao vivo
-          } @else {
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l3 2" />
-            </svg>
-            Histórico
-          }
-        </button>
-
         <!-- Tamanho da fonte do terminal: A− / A+ (persistido por aparelho). -->
         <div class="term-scroll">
           <button type="button" class="term-scroll-btn term-font-btn" (click)="bumpFont(-1)"
@@ -672,8 +649,8 @@ import { ansiToHtml } from '../../shared/ansi-html';
                   aria-label="Aumentar fonte" title="Aumentar fonte do terminal">A+</button>
         </div>
 
-        <!-- Rolagem do scrollback: ▲ sobe (entra no histórico se estiver ao
-             vivo, pois lá tem o histórico completo), ▼ desce. -->
+        <!-- Rolagem do scrollback: manda ▲/▼ direto pro agente (roda do mouse
+             via tmux), que redesenha o próprio histórico interno. -->
         <div class="term-scroll">
           <button type="button" class="term-scroll-btn" (click)="scrollTerm('up')"
                   aria-label="Rolar para cima" title="Subir (histórico do terminal)">
@@ -704,7 +681,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
         </div>
       }
 
-      <!-- Terminal: espelho ao vivo da tela atual do agente, ou histórico rolável -->
+      <!-- Terminal: espelho ao vivo da tela atual do agente. -->
       <div class="term mono" #term aria-label="Tela do terminal" (scroll)="onTermScroll()"
            (wheel)="onTermWheel($event)"
            (touchstart)="onTermTouchStart($event)"
@@ -712,9 +689,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
            (mouseup)="onTermSelect()"
            (touchend)="onTermSelect()"
            [style.fontSize.px]="termFont()">
-        @if (historyMode()) {
-          <pre class="term-screen" [innerHTML]="historyHtml()"></pre>
-        } @else if (bufMode()) {
+        @if (bufMode()) {
           <pre class="term-screen" [innerHTML]="bufHtml()"></pre>
         } @else if (screen().length === 0) {
           <div class="term-msg">Conectando ao terminal…</div>
@@ -748,7 +723,7 @@ import { ansiToHtml } from '../../shared/ansi-html';
 
         <!-- Pill "↓ ao vivo": aparece no modo ao vivo quando o usuário rolou
              p/ cima; toca → snap pro fim e retoma o stick. -->
-        @if (!historyMode() && (bufMode() || showLivePill())) {
+        @if (bufMode() || showLivePill()) {
           <button type="button" class="live-pill" (click)="snapToLive()" aria-label="Ir para o fim (ao vivo)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2034,22 +2009,6 @@ import { ansiToHtml } from '../../shared/ansi-html';
         font-weight: 700;
         font-family: inherit;
       }
-      .term-toggle {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        border: 1px solid #283230;
-        background: #14191a;
-        color: #8a90a0;
-        font-size: 11.5px;
-        font-weight: 600;
-        font-family: inherit;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: background 0.15s, color 0.15s, border-color 0.15s;
-      }
       /* Botão "⧉ artifact": abre o último artifact visto na sessão. */
       .term-artifact {
         display: inline-flex;
@@ -2100,14 +2059,6 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .artifact-menu-item:hover {
         background: #0e2730;
         color: #7dd3fc;
-      }
-      .term-toggle svg {
-        flex: none;
-      }
-      .term-toggle.is-on {
-        color: #00e4b4;
-        border-color: #1e3a30;
-        background: #0e221b;
       }
       .term {
         position: relative;
@@ -2897,20 +2848,7 @@ export class DetalheComponent implements AfterViewChecked {
     ),
   );
 
-  /**
-   * Modo "Histórico": congela o terminal mostrando o scrollback profundo
-   * (buscado sob demanda) em vez do espelho ao vivo. O usuário rola livremente;
-   * não há auto-refresh nem auto-scroll nesse modo. "Ao vivo" retoma o espelho.
-   */
-  protected readonly historyMode = signal<boolean>(false);
-  /** Texto do scrollback congelado (fonte do render no modo histórico). */
-  protected readonly historyText = signal<string>('');
-  protected readonly historyHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(
-      ansiToHtml(trimBlankEdges(this.historyText())),
-    ),
-  );
-  /** Pill "↓ ao vivo": visível no modo ao vivo quando o usuário rolou p/ cima. */
+  /** Pill "↓ ao vivo": visível quando o usuário rolou o agente p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
 
   /** Último artifact visto no espelho ENQUANTO esta tela está aberta. */
@@ -3125,15 +3063,7 @@ export class DetalheComponent implements AfterViewChecked {
         this.termFont.set(prefs.termFont ?? readTermFont());
         this.draft.set(this.drafts.get(sid));
         this.loadSession();
-        if (prefs.historyMode) {
-          // Sessão estava no histórico congelado: recarrega o scrollback profundo
-          // e recongela (enterHistory liga o historyMode e busca o texto).
-          this.historyMode.set(false);
-          this.enterHistory();
-        } else {
-          this.historyMode.set(false);
-          this.refreshScreen();
-        }
+        this.refreshScreen();
         // Ao abrir a sessão, foca o campo de mensagem (pronto pra digitar). Em
         // celular o teclado só abre com gesto — aqui é best-effort e não incomoda.
         this.focusMessageInput();
@@ -3156,9 +3086,9 @@ export class DetalheComponent implements AfterViewChecked {
         return;
       }
       const scr = this.sse.screens()[tn];
-      // Nos modos histórico/buffer o terminal fica congelado — não aplicamos
-      // frames novos (mas continuamos lendo o signal p/ não desinscrever o effect).
-      if (this.historyMode() || this.bufMode()) {
+      // No modo buffer o terminal fica congelado — não aplicamos frames novos
+      // (mas continuamos lendo o signal p/ não desinscrever o effect).
+      if (this.bufMode()) {
         return;
       }
       // Só aplica quando o worker EMPURROU um frame novo (``at`` mudou). Comparar
@@ -3181,8 +3111,8 @@ export class DetalheComponent implements AfterViewChecked {
     // Fallback: se o SSE cair, um poll lento (4s) garante que a tela não trava.
     // Aproveita p/ atualizar as tarefas (worker sincroniza ~6s).
     const poll = setInterval(() => {
-      // Nos modos histórico/buffer o terminal está congelado — só atualiza tarefas.
-      if (!this.historyMode() && !this.bufMode()) {
+      // No modo buffer o terminal está congelado — só atualiza tarefas.
+      if (!this.bufMode()) {
         this.refreshScreen();
       }
       this.loadTasks();
@@ -4543,64 +4473,6 @@ export class DetalheComponent implements AfterViewChecked {
       });
   }
 
-  /**
-   * Alterna entre espelho AO VIVO e HISTÓRICO. Ao ENTRAR no histórico, busca o
-   * scrollback profundo (fallback p/ o texto da tela visível), congela-o e
-   * desce p/ o fim (mais recente) — contínuo com onde o ao vivo parou, sem
-   * auto-refresh/scroll depois. Ao VOLTAR p/ o ao vivo, retoma e gruda no fim.
-   */
-  protected toggleHistory(): void {
-    if (this.historyMode()) {
-      this.exitHistory();
-    } else {
-      this.enterHistory();
-    }
-  }
-
-  /** Volta ao espelho ao vivo: retoma o stick e desce pro fim (última msg). */
-  private exitHistory(): void {
-    this.historyMode.set(false);
-    this.prefs.patch(this.id() ?? '', { historyMode: false }); // lembra por sessão
-    this.stickToBottom = true;
-    this.showLivePill.set(false);
-    this.jumpAgentToBottom(); // o agente pode estar rolado → Ctrl+End pro fim
-    this.refreshScreen(true); // força descer pro fim quando a tela nova chegar
-  }
-
-  /**
-   * Entra no modo histórico: carrega o scrollback profundo (frozen), começa no
-   * fim (contínuo com o ao vivo). ``scrollUpAfter`` rola uma página pra cima
-   * após carregar — usado quando o usuário pede "subir" estando ao vivo.
-   */
-  private enterHistory(): void {
-    const id = this.id();
-    if (!id) {
-      return;
-    }
-    this.historyText.set(this.screen()); // pré-carrega p/ não piscar vazio
-    this.historyMode.set(true);
-    this.prefs.patch(id, { historyMode: true }); // lembra por sessão
-    this.showLivePill.set(false);
-    this.api
-      .getScreen(id)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (resp) => {
-          this.historyText.set(resp.scrollback || resp.text || '');
-          queueMicrotask(() => this.scrollToBottom());
-        },
-        error: () => {
-          /* mantém o pré-carregado */
-        },
-      });
-  }
-
-  /**
-   * Botões ▲/▼: mandam evento de RODA DO MOUSE pro AGENTE, que redesenha o
-   * histórico no espelho — igual ao touchpad no Mac. (TUIs de tela alternada,
-   * ex.: Claude Code, guardam o scrollback dentro de si, não no tmux; por isso
-   * não dá pra rolar via tmux nem via o modo "Histórico".)
-   */
   /** Abre/fecha o teclado de navegação e lembra por sessão. */
   protected toggleKeypad(): void {
     const open = !this.keypadOpen();
@@ -4639,7 +4511,7 @@ export class DetalheComponent implements AfterViewChecked {
   private syncTermSize(): void {
     const el = this.termEl()?.nativeElement;
     const id = this.id();
-    if (!el || !id || this.historyMode() || this.bufMode()) {
+    if (!el || !id || this.bufMode()) {
       return;
     }
     const cw = this.measureCharWidth();
@@ -4689,9 +4561,6 @@ export class DetalheComponent implements AfterViewChecked {
    * de scroll infinito, como num terminal de verdade. Throttle p/ não floodar.
    */
   protected onTermWheel(ev: WheelEvent): void {
-    if (this.historyMode()) {
-      return; // no histórico congelado, rolagem nativa basta
-    }
     const el = this.termEl()?.nativeElement;
     if (!el || Math.abs(ev.deltaY) < 1) {
       return;
@@ -4717,9 +4586,6 @@ export class DetalheComponent implements AfterViewChecked {
    * mais recente (▼). Como o `wheel` não dispara no toque, replicamos aqui.
    */
   protected onTermTouchMove(ev: TouchEvent): void {
-    if (this.historyMode()) {
-      return;
-    }
     const el = this.termEl()?.nativeElement;
     if (!el) {
       return;
@@ -4797,6 +4663,12 @@ export class DetalheComponent implements AfterViewChecked {
     this.copyTimer = setTimeout(() => this.copied.set(false), 1500);
   }
 
+  /**
+   * Botões ▲/▼: mandam evento de RODA DO MOUSE pro AGENTE, que redesenha o
+   * próprio histórico interno — igual ao touchpad no Mac. (TUIs de tela
+   * alternada, ex.: Claude Code, guardam o scrollback dentro de si, não no
+   * tmux; por isso não dá pra rolar via tmux, só mandando o evento direto.)
+   */
   protected scrollTerm(dir: 'up' | 'down'): void {
     const id = this.id();
     if (!id) {
@@ -5004,9 +4876,6 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Atualiza a pill ↓ ao vivo conforme o usuário rola (só no modo ao vivo). */
   protected onTermScroll(): void {
-    if (this.historyMode()) {
-      return;
-    }
     if (this.bufMode()) {
       // Rolagem nativa dentro do buffer: perto do topo, busca mais histórico.
       if (this.bufAdjusting) {
