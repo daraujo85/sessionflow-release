@@ -32,12 +32,14 @@ export class WorkersStore {
     });
   }
 
-  /** Hostname amigável do host, ou `null` se desconhecido/sem host_id. */
+  /** Nome do host pra exibir: display_name (editado no Perfil) se houver,
+   * senão o hostname técnico. `null` se desconhecido/sem host_id. */
   hostname(hostId: string | null | undefined): string | null {
     if (!hostId) {
       return null;
     }
-    return this.workers().find((w) => w.host_id === hostId)?.hostname ?? null;
+    const w = this.workers().find((x) => x.host_id === hostId);
+    return w?.display_name || w?.hostname || null;
   }
 
   /**

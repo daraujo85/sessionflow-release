@@ -206,12 +206,28 @@ do worker remoto como proxy local.
      interna de scraping de uso (`sfusage-*`, ephemeral, auto-marca
      `stopped`) — comportamento esperado, não aparece no app
      (`_INTERNAL_PREFIXES`).
-   - **Worker parado depois da validação** (era um processo manual `nohup`,
-     não um serviço persistente) — rodar de novo é só repetir
-     `uv run python -m sessionflow_worker` na mesma pasta
-     (`/root/sessionflow/worker` no WSL2), ou formalizar com uma unit
-     systemd se for pra uso contínuo (`PORTABILITY.md` já tem o modelo).
-5. ⬜ Ajustes finos conforme a Fase 4 apontar problemas na prática.
+   - **Formalizado como serviço persistente** (2026-07-14, a pedido do
+     Diego — "quero ele sempre on que nem no Mac"): unit systemd
+     `/etc/systemd/system/sessionflow-worker.service` dentro do WSL2
+     (`Restart=always`, `WorkingDirectory=/root/sessionflow/worker`),
+     habilitada (`systemctl enable`) — sobrevive a queda do processo. Como o
+     WSL2 não sobe sozinho com o Windows, criei também uma tarefa agendada
+     do Windows (`schtasks /create ... /sc onlogon`) que dispara
+     `wsl.exe -d Ubuntu -u root -- true` no login do usuário, o que inicia a
+     distro (e, com ela, o systemd + o serviço). Equivalente ao `launchd` do
+     Mac. Validado: serviço reiniciado via `systemctl start`, gerou o MESMO
+     `host_id` de antes (persistido em arquivo), voltou a aparecer em
+     `GET /workers` como online.
+   - **Nome de exibição editável por host** (2026-07-14, a pedido do Diego —
+     hostnames técnicos tipo `DESKTOP-ASCBQRT` são feios): novo campo
+     `display_name` em `worker_status` (separado do `hostname` técnico, que
+     o heartbeat do worker nunca sobrescreve por acidente), endpoint
+     `PUT /workers/{host_id}/display-name`, e edição inline no Perfil (ícone
+     ✎ ao lado do nome, em qualquer host, principal ou não).
+     `WorkersStore.hostname()` (usado nos badges de Home/Sessões) já prefere
+     o `display_name` quando existir. Testado de ponta a ponta (renomear →
+     confirmar via `GET /workers` → limpar).
+5. ⬜ Ajustes finos conforme o uso real apontar problemas na prática.
 
 ## Testes / dúvidas a validar (Diego vai pedir aos poucos)
 

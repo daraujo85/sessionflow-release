@@ -333,6 +333,17 @@ export class ApiService {
       .pipe(this.items<WorkerStatus>());
   }
 
+  /** Define/limpa o nome de exibição de um host (Perfil). `null`/'' limpa. */
+  setWorkerDisplayName(
+    hostId: string,
+    displayName: string | null,
+  ): Observable<WorkerStatus> {
+    return this.http.put<WorkerStatus>(
+      this.url(`/workers/${hostId}/display-name`),
+      { display_name: displayName },
+    );
+  }
+
   /** Limites de uso reais por provider (hoje só Claude). */
   getUsage(): Observable<UsageInfo> {
     return this.http.get<UsageInfo>(this.url('/usage'));

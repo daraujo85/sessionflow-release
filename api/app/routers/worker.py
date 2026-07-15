@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter(tags=["worker"])
@@ -28,6 +28,10 @@ class WorkerOut(BaseModel):
 
     online: bool = False
     hostname: str | None = None
+    # Nome de EXIBIÇÃO do host (editável via PUT /workers/{host_id}/display-name),
+    # ex. "Notebook do Diego" em vez de "DESKTOP-ASCBQRT". None = usa o
+    # ``hostname`` técnico como fallback (comportamento de hoje).
+    display_name: str | None = None
     # Multi-host (AD-011): identidade + o que esse host consegue fazer.
     # ``None`` em docs antigos (pré-migração, worker ainda não reiniciou).
     host_id: str | None = None
@@ -36,6 +40,12 @@ class WorkerOut(BaseModel):
     uptime_seconds: float | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class WorkerDisplayName(BaseModel):
+    """Nome de exibição do host — vazio/None limpa (volta a mostrar o hostname)."""
+
+    display_name: str | None = None
 
 
 class ClaudeLimits(BaseModel):
@@ -68,6 +78,7 @@ def _to_worker_out(doc: dict) -> WorkerOut:
     return WorkerOut(
         online=online,
         hostname=doc.get("hostname"),
+        display_name=doc.get("display_name"),
         host_id=doc.get("_id") if doc.get("_id") != "worker" else None,
         platform=doc.get("platform"),
         capabilities=doc.get("capabilities"),
@@ -104,6 +115,26 @@ async def list_workers(request: Request) -> list[WorkerOut]:
         length=50
     )
     return [_to_worker_out(doc) for doc in docs]
+
+
+@router.put("/workers/{host_id}/display-name", response_model=WorkerOut)
+async def set_worker_display_name(
+    request: Request, host_id: str, body: WorkerDisplayName
+) -> WorkerOut:
+    """Define/limpa o nome de exibição de um host (Perfil). Não mexe no
+    ``hostname`` técnico — só o rótulo mostrado no app. Vazio/None limpa
+    (volta a mostrar o hostname)."""
+    db = request.app.state.mongo_db
+    coll = db[WORKER_STATUS_COLLECTION]
+    name = (body.display_name or "").strip()[:60] or None
+    doc = await coll.find_one_and_update(
+        {"_id": host_id},
+        {"$set": {"display_name": name}},
+        return_document=True,
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Host not found")
+    return _to_worker_out(doc)
 
 
 @router.get("/usage", response_model=UsageOut)
