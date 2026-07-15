@@ -64,7 +64,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from sessionflow_worker import milestones, transcriber
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
-from sessionflow_worker.rabbit import COMMANDS_QUEUE, EVENTS_QUEUE, publish
+from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
 from sessionflow_worker.state import SessionState
 from sessionflow_worker.tmux_runtime import TmuxRuntime, TmuxRuntimeError
 
@@ -272,6 +272,10 @@ class CommandConsumer:
         eventos e, em :meth:`run`, para consumir a fila de comandos).
     db:
         Database ``motor`` onde persistir o estado das sessões.
+    host_id:
+        Identidade deste host (multi-host) — usado pra (a) consumir só a
+        fila de comandos DESTE host e (b) estampar ``host_id`` nas sessões
+        que este worker CRIA (``_handle_create``).
     runtime:
         Runtime tmux (injetável; default cria um ``TmuxRuntime`` novo).
     collection:
@@ -285,12 +289,14 @@ class CommandConsumer:
         self,
         channel: aio_pika.abc.AbstractChannel,
         db: AsyncIOMotorDatabase,
+        host_id: str,
         runtime: TmuxRuntime | None = None,
         collection: str = SESSIONS_COLLECTION,
         server: libtmux.Server | None = None,
     ) -> None:
         self._channel = channel
         self._db = db
+        self._host_id = host_id
         self._runtime = runtime if runtime is not None else TmuxRuntime()
         self._collection = collection
         self._server = server if server is not None else self._runtime.server
@@ -580,6 +586,7 @@ class CommandConsumer:
                     "tmux_id": info.id,
                     "claude_session_id": claude_session_id,
                     "parent": parent,
+                    "host_id": self._host_id,
                     "updated_at": now,
                     "last_activity_at": now,
                 },
@@ -1658,7 +1665,7 @@ class CommandConsumer:
         recebe ``ack`` manual. Mensagens com JSON inválido são descartadas
         (``ack``) para não travar a fila.
         """
-        queue = await self._channel.get_queue(COMMANDS_QUEUE)
+        queue = await self._channel.get_queue(commands_queue_name(self._host_id))
         async with queue.iterator() as it:
             async for message in it:
                 async with message.process(ignore_processed=True):

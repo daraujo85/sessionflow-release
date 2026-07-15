@@ -158,7 +158,7 @@ async def ephemeral_queue() -> AsyncIterator[tuple]:
         pytest.skip("RabbitMQ não disponível.")
     try:
         ch = await conn.channel()
-        exchange = await rabbit.declare_topology(ch)
+        exchange = await rabbit.declare_topology(ch, "test-host")
         queue = await ch.declare_queue(
             f"sftest.output.{uuid.uuid4().hex}", auto_delete=True, exclusive=True
         )

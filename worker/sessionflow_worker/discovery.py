@@ -156,12 +156,14 @@ class Discovery:
         self,
         tmux: TmuxRuntime,
         db: AsyncIOMotorDatabase,
+        host_id: str,
         collection: str = SESSIONS_COLLECTION,
         events_collection: str = EVENTS_COLLECTION,
         channel: aio_pika.abc.AbstractChannel | None = None,
     ) -> None:
         self._tmux = tmux
         self._db = db
+        self._host_id = host_id
         self._collection = collection
         self._events_collection = events_collection
         self._channel = channel
@@ -361,6 +363,10 @@ class Discovery:
                 "display_name": info.name,
                 "origin": ORIGIN_EXTERNAL,
                 "created_at": now,
+                # Multi-host (AD-011): sessão descoberta pertence a ESTE host
+                # (o tmux que a expõe é local). Sessões pré-existentes (sem
+                # host_id) são migradas 1x no boot pelo heartbeat_loop.
+                "host_id": self._host_id,
             },
         }
 
@@ -572,11 +578,19 @@ class Discovery:
         """Marca como ``stopped`` sessões ativas ausentes do tmux.
 
         Emite um evento ``stopped`` / ``warning`` por sessão que transiciona.
+
+        **Multi-host (AD-011):** ``present_names`` só reflete o tmux DESTE
+        host — sem o filtro ``host_id`` abaixo, um segundo worker (outra
+        máquina) marcaria como "stopped" TODAS as sessões ativas de QUALQUER
+        outro host (elas nunca aparecem no seu tmux local). Sessões legadas
+        sem ``host_id`` (pré-migração) são cobertas pelo backfill do
+        ``heartbeat_loop`` no boot, então esse filtro é seguro desde o 1º ciclo.
         """
         now = _now()
         query = {
             "status": {"$in": ACTIVE_STATUSES},
             "tmux_name": {"$nin": list(present_names)},
+            "host_id": self._host_id,
         }
 
         # Coleta os nomes que vão transicionar ANTES do update p/ emitir eventos.
