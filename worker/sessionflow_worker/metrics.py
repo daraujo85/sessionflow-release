@@ -16,6 +16,7 @@ mostra "—"). Nunca escreve em ``~/.claude``.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -284,14 +285,45 @@ _PERIOD_WINDOWS = {
 }
 
 
+def _jsonl_for_session_id(
+    projects_root: Path, session_id: str
+) -> Path | None:
+    """Localiza o JSONL EXATO da sessão pelo UUID (``--session-id`` do launch).
+
+    Glob ``<projects_root>/*/<session_id>.jsonl`` — dispensa acertar o slug
+    do diretório (encode de ``work_dir``) e, principalmente, dispensa
+    ADIVINHAR por "mais recente na pasta". Isso importa muito quando VÁRIAS
+    sessões tmux compartilham o mesmo ``work_dir`` (comum: vários workers no
+    mesmo repo): sem o UUID, ``_latest_jsonl`` pegaria o arquivo mais
+    recentemente escrito na pasta INTEIRA, que pode pertencer a OUTRA sessão
+    — cada uma "roubando" as métricas (e o custo!) de qualquer conversa que
+    por acaso tenha sido a última a escrever ali, inflando o total agregado
+    da Home ao contar o mesmo gasto várias vezes sob nomes diferentes.
+    """
+    try:
+        matches = glob.glob(str(projects_root / "*" / f"{session_id}.jsonl"))
+    except OSError:
+        return None
+    return Path(matches[0]) if matches else None
+
+
 def claude_metrics_for(
     work_dir: str,
     projects_root: str | os.PathLike[str] | None = None,
+    session_id: str | None = None,
 ) -> dict | None:
     """Métricas REAIS da sessão Claude cujo ``cwd`` é ``work_dir``.
 
-    Encontra ``<projects_root>/<encode(work_dir)>``, pega o JSONL mais
-    recentemente modificado (sessão ativa) e computa o dicionário ``metrics``:
+    Quando ``session_id`` é dado (o ``claude_session_id`` salvo no doc desde
+    a criação — todo Claude é lançado com ``--session-id <uuid>`` fixo),
+    localiza o JSONL EXATO por esse UUID — preciso mesmo com várias sessões
+    tmux no mesmo diretório (ver ``_jsonl_for_session_id``). Sem
+    ``session_id`` (docs legados) cai no heurístico antigo: acha
+    ``<projects_root>/<encode(work_dir)>``, pega o JSONL mais recentemente
+    modificado (assume 1 sessão ativa por diretório — pode errar quando há
+    mais de uma).
+
+    Formato do dicionário ``metrics`` retornado:
 
     - ``model``: rótulo amigável (ou id cru) do ``message.model`` da última
       linha de usage (último turno do assistant).
@@ -312,13 +344,21 @@ def claude_metrics_for(
     """
     try:
         root = Path(projects_root) if projects_root is not None else DEFAULT_PROJECTS_ROOT
-        project_dir = root / _encode_work_dir(work_dir)
-        if not project_dir.is_dir():
-            return None
 
-        jsonl_path = _latest_jsonl(project_dir)
+        jsonl_path: Path | None = None
+        if session_id:
+            jsonl_path = _jsonl_for_session_id(root, session_id)
         if jsonl_path is None:
-            return None
+            # Fallback heurístico (doc legado sem session_id, ou UUID ainda
+            # não gravou nenhuma linha): melhor esforço, mesma limitação de
+            # sempre (pode pegar o arquivo errado se houver >1 sessão ativa
+            # no mesmo diretório).
+            project_dir = root / _encode_work_dir(work_dir)
+            if not project_dir.is_dir():
+                return None
+            jsonl_path = _latest_jsonl(project_dir)
+            if jsonl_path is None:
+                return None
 
         last_usage: dict | None = None
         last_model: str | None = None

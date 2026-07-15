@@ -269,10 +269,13 @@ class Discovery:
         # Estado anterior (antes do upsert) p/ detectar transições.
         prev = await coll.find_one(
             {"tmux_name": info.name},
-            projection={"status": 1, "screen_sig": 1},
+            projection={"status": 1, "screen_sig": 1, "claude_session_id": 1},
         )
         prev_status = prev.get("status") if prev else None
         prev_sig = prev.get("screen_sig") if prev else None
+        # UUID fixo da conversa Claude (``--session-id`` no launch) — usado
+        # pra localizar o JSONL EXATO da métrica (ver ``_agent_metrics``).
+        claude_session_id = prev.get("claude_session_id") if prev else None
 
         # Sessão viva = tmux presente E o AGENTE (claude/codex/...) ainda na
         # árvore de processos do pane. Antes era ``pane_pid is not None``, mas o
@@ -357,7 +360,7 @@ class Discovery:
         # Best-effort: falhar aqui NÃO pode derrubar a reconciliação. Quando
         # não há dado (agente sem extractor / sem work_dir / log ausente)
         # deixamos o campo ``metrics`` como ``None`` (o front mostra "—").
-        metrics = self._agent_metrics(info)
+        metrics = self._agent_metrics(info, claude_session_id)
         # Anexa os limites REAIS (% sessão/semana) só nas métricas CLAUDE — o
         # snapshot em ``host_usage`` é o /usage do Claude; anexar em métricas
         # codex (ou outro agente) misturaria rate-limit de um provedor com
@@ -567,19 +570,27 @@ class Discovery:
             except Exception:  # noqa: BLE001 - jarvis nunca derruba o ciclo
                 logger.debug("jarvis: agendamento falhou para %r", name, exc_info=True)
 
-    def _agent_metrics(self, info: SessionInfo) -> dict | None:
+    def _agent_metrics(
+        self, info: SessionInfo, claude_session_id: str | None
+    ) -> dict | None:
         """Métricas REAIS de contexto/tokens do agente (best-effort).
 
         Claude e Codex têm extractors dedicados (formatos de log bem
         diferentes — JSONL por projeto vs rollout por data, ver
         ``metrics.py``/``codex_metrics.py``); gemini/opencode ainda não têm
         (``None``). Sem ``work_dir`` também é ``None``. Nunca propaga exceção.
+
+        ``claude_session_id`` (UUID fixo do ``--session-id`` no launch, salvo
+        no doc desde a criação) é repassado pro extractor Claude pra achar o
+        JSONL EXATO — crítico quando várias sessões tmux compartilham o
+        mesmo ``work_dir`` (sem isso, cada uma "roubaria" a métrica de
+        qualquer conversa que por acaso foi a última a escrever na pasta).
         """
         if not info.work_dir:
             return None
         try:
             if info.agent_type is AgentType.CLAUDE:
-                return claude_metrics_for(info.work_dir)
+                return claude_metrics_for(info.work_dir, session_id=claude_session_id)
             if info.agent_type is AgentType.CODEX:
                 return codex_metrics_for(info.work_dir)
             return None

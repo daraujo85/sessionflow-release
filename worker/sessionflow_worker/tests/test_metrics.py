@@ -124,3 +124,63 @@ def test_1m_model_uses_million_context(tmp_path: Path) -> None:
 def test_encode_expands_home_and_replaces_dots(tmp_path: Path) -> None:
     encoded = _encode_work_dir("/Users/diego/Documents/projects/pvax")
     assert encoded == "-Users-diego-Documents-projects-pvax"
+
+
+def test_session_id_picks_exact_file_when_dir_is_shared(tmp_path: Path) -> None:
+    """Reproduz o bug real: 2 sessões tmux no MESMO work_dir.
+
+    Sem ``session_id``, ambas cairiam no heurístico "mais recente na pasta"
+    e leriam o MESMO arquivo (o de A, por ser o mais novo) — inflando o
+    custo total ao contar a mesma conversa duas vezes sob nomes diferentes.
+    Com ``session_id``, cada uma acha exatamente a sua.
+    """
+    work_dir = "/Users/diego/Documents/projects/shared-repo"
+    sid_a = "aaaaaaaa-0000-0000-0000-000000000000"
+    sid_b = "bbbbbbbb-0000-0000-0000-000000000000"
+    path_a = _write_session(
+        tmp_path,
+        work_dir,
+        [_usage_line(input_tokens=100, output_tokens=10)],
+        name=f"{sid_a}.jsonl",
+    )
+    path_b = _write_session(
+        tmp_path,
+        work_dir,
+        [_usage_line(input_tokens=999, output_tokens=1)],
+        name=f"{sid_b}.jsonl",
+    )
+    import os
+
+    os.utime(path_a, (1_000_000, 1_000_000))
+    os.utime(path_b, (2_000_000, 2_000_000))  # B é a "mais recente na pasta"
+
+    m_a = claude_metrics_for(work_dir, projects_root=tmp_path, session_id=sid_a)
+    m_b = claude_metrics_for(work_dir, projects_root=tmp_path, session_id=sid_b)
+
+    assert m_a is not None and m_b is not None
+    assert m_a["context_used"] == 100  # A não "rouba" a métrica de B
+    assert m_b["context_used"] == 999
+
+
+def test_session_id_missing_falls_back_to_latest_heuristic(tmp_path: Path) -> None:
+    """Doc legado sem ``claude_session_id`` ainda funciona (best-effort antigo)."""
+    work_dir = "/Users/diego/Documents/projects/legacy"
+    _write_session(
+        tmp_path, work_dir, [_usage_line(input_tokens=7, output_tokens=2)], name="old.jsonl"
+    )
+    m = claude_metrics_for(work_dir, projects_root=tmp_path, session_id=None)
+    assert m is not None
+    assert m["context_used"] == 7
+
+
+def test_session_id_not_found_falls_back_to_latest_heuristic(tmp_path: Path) -> None:
+    """UUID que ainda não tem JSONL (turno zero) cai no heurístico, não em None."""
+    work_dir = "/Users/diego/Documents/projects/fresh"
+    _write_session(
+        tmp_path, work_dir, [_usage_line(input_tokens=3, output_tokens=1)], name="real.jsonl"
+    )
+    m = claude_metrics_for(
+        work_dir, projects_root=tmp_path, session_id="never-written-yet"
+    )
+    assert m is not None
+    assert m["context_used"] == 3

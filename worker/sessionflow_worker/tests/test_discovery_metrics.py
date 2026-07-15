@@ -16,11 +16,12 @@ from sessionflow_worker.tmux_runtime import SessionInfo
 
 
 class _FakeColl:
-    def __init__(self) -> None:
+    def __init__(self, prev: dict | None = None) -> None:
         self.last_update: dict | None = None
+        self._prev = prev
 
     async def find_one(self, *_a, **_k):
-        return None
+        return self._prev
 
     async def update_one(self, _filter, update, upsert=False):
         self.last_update = update
@@ -66,7 +67,7 @@ async def test_metrics_written_for_claude_session(monkeypatch) -> None:
         "source": "claude_jsonl",
     }
     monkeypatch.setattr(
-        discovery_mod, "claude_metrics_for", lambda _wd: fake_metrics
+        discovery_mod, "claude_metrics_for", lambda _wd, **_kw: fake_metrics
     )
     # emit_event toca o DB falso; neutraliza para isolar o teste.
     monkeypatch.setattr(discovery_mod, "emit_event", _noop)
@@ -88,7 +89,7 @@ async def test_limits_attached_to_claude_metrics(monkeypatch) -> None:
     monkeypatch.setattr(
         discovery_mod,
         "claude_metrics_for",
-        lambda _wd: {"model": "Opus 4.8", "source": "claude_jsonl"},
+        lambda _wd, **_kw: {"model": "Opus 4.8", "source": "claude_jsonl"},
     )
     monkeypatch.setattr(discovery_mod, "emit_event", _noop)
 
@@ -113,7 +114,7 @@ async def test_limits_absent_when_no_host_usage(monkeypatch) -> None:
     monkeypatch.setattr(
         discovery_mod,
         "claude_metrics_for",
-        lambda _wd: {"model": "Opus 4.8", "source": "claude_jsonl"},
+        lambda _wd, **_kw: {"model": "Opus 4.8", "source": "claude_jsonl"},
     )
     monkeypatch.setattr(discovery_mod, "emit_event", _noop)
 
@@ -151,6 +152,31 @@ async def test_metrics_none_for_non_claude(monkeypatch) -> None:
 
     assert coll.last_update is not None
     assert coll.last_update["$set"]["metrics"] is None
+
+
+@pytest.mark.asyncio
+async def test_claude_session_id_passed_through_from_prev_doc(monkeypatch) -> None:
+    """O UUID salvo no doc anterior é repassado ao extractor (evita a sessão
+
+    'roubar' a métrica de outra que compartilha o mesmo work_dir — ver
+    ``metrics.py::_jsonl_for_session_id``).
+    """
+    coll = _FakeColl(prev={"claude_session_id": "sid-abc-123"})
+    disc = Discovery(tmux=object(), db=_FakeDB(coll), host_id="test-host")  # type: ignore[arg-type]
+
+    seen: dict = {}
+
+    def _fake(work_dir, **kw):
+        seen["work_dir"] = work_dir
+        seen["session_id"] = kw.get("session_id")
+        return {"model": "Opus 4.8", "source": "claude_jsonl"}
+
+    monkeypatch.setattr(discovery_mod, "claude_metrics_for", _fake)
+    monkeypatch.setattr(discovery_mod, "emit_event", _noop)
+
+    await disc._upsert_session(_claude_info())
+
+    assert seen["session_id"] == "sid-abc-123"
 
 
 async def _noop(*_a, **_k) -> None:
