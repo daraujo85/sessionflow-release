@@ -143,7 +143,8 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
                   [title]="h.online ? '' : 'Offline agora'"
                   (click)="hostId.set(h.host_id ?? null)"
                 >
-                  {{ h.display_name || h.hostname || '—' }}{{ h.online ? '' : ' (offline)' }}
+                  {{ h.emoji ? h.emoji + ' ' : '' }}{{ h.display_name || h.hostname || '—'
+                  }}{{ h.online ? '' : ' (offline)' }}
                 </button>
               }
             </div>

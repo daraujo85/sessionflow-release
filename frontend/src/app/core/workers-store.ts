@@ -42,6 +42,15 @@ export class WorkersStore {
     return w?.display_name || w?.hostname || null;
   }
 
+  /** Emoji do host (editado no Perfil), ou `null` se não definido/host
+   * desconhecido — quem consome decide o fallback (ícone genérico). */
+  emoji(hostId: string | null | undefined): string | null {
+    if (!hostId) {
+      return null;
+    }
+    return this.workers().find((w) => w.host_id === hostId)?.emoji || null;
+  }
+
   /**
    * O host suporta essa capability? **Fail-open** (retorna `true`) quando não
    * dá pra saber ainda — sessão sem `host_id` (legado raríssimo) ou lista de

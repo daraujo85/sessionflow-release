@@ -226,6 +226,9 @@ export interface WorkerStatus {
   hostname: string | null;
   /** Nome de exibição editável (Perfil) — `null` usa o `hostname` técnico. */
   display_name?: string | null;
+  /** Emoji editável (Perfil) — vira o identificador visual nos badges
+   * (substitui o ícone genérico) quando definido. `null` = sem emoji. */
+  emoji?: string | null;
   /** `null` em docs antigos (pré-migração multi-host, worker não reiniciou). */
   host_id?: string | null;
   platform?: string | null;

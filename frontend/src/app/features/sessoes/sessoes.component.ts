@@ -277,13 +277,17 @@ const FILTERS: readonly FilterChip[] = [
                     }
                     @if (hostBadge(s); as host) {
                       <span class="sf-host-chip" [title]="'Roda em: ' + host">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                             stroke-linejoin="round" aria-hidden="true">
-                          <rect x="3" y="4" width="18" height="8" rx="2" />
-                          <rect x="3" y="12" width="18" height="8" rx="2" />
-                          <path d="M7 8h.01M7 16h.01" />
-                        </svg>
+                        @if (hostEmoji(s); as emoji) {
+                          <span aria-hidden="true">{{ emoji }}</span>
+                        } @else {
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                               stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                               stroke-linejoin="round" aria-hidden="true">
+                            <rect x="3" y="4" width="18" height="8" rx="2" />
+                            <rect x="3" y="12" width="18" height="8" rx="2" />
+                            <path d="M7 8h.01M7 16h.01" />
+                          </svg>
+                        }
                         {{ host }}
                       </span>
                     }
@@ -1540,6 +1544,11 @@ export class SessoesComponent {
       return null;
     }
     return this.workers.hostname(s.host_id);
+  }
+
+  /** Emoji do host desta sessão (ex. 🍎/🦆), ou null pro ícone genérico. */
+  protected hostEmoji(s: Session): string | null {
+    return this.workers.emoji(s.host_id);
   }
 
   /** True se esta sessão foi DELEGADA por outra (tem um pai registrado). */
