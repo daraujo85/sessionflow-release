@@ -474,7 +474,12 @@ class CommandConsumer:
             return await self._emit(command_id, ctype, ok=True, **result)
         except (CommandError, TmuxRuntimeError, ValueError) as exc:
             # Falha esperada/tratada: marca como processado p/ não reentregar
-            # o mesmo erro em loop e segue vivo.
+            # o mesmo erro em loop e segue vivo. Logada (antes era silenciosa
+            # fora do evento publicado) pra não depender só do cliente ver o
+            # erro — facilita diagnosticar falhas de resume/create em campo.
+            logger.warning(
+                "comando %r (%s) falhou: %s", ctype, command_id, exc, exc_info=True
+            )
             if command_id:
                 self._processed.add(command_id)
             return await self._emit(
@@ -706,9 +711,15 @@ class CommandConsumer:
         if not name:
             raise CommandError("resume requer 'name'")
 
-        # Sessão AINDA VIVA (detached): sem TTY no worker não há attach real; só
-        # reconciliamos o estado (o attach é do cliente/UI).
-        if self._runtime.has_session(name):
+        # Sessão AINDA VIVA (agente de fato rodando no pane): sem TTY no worker
+        # não há attach real; só reconciliamos o estado (o attach é do
+        # cliente/UI). Checar só ``has_session`` não basta — o pane pode
+        # existir com um shell morto dentro (ex.: o agente falhou ao subir na
+        # 1ª tentativa, binário ausente etc.), daí "existir" não é "estar
+        # rodando" e precisa recriar/relançar mesmo assim.
+        if self._runtime.has_session(name) and self._runtime.agent_type(
+            name
+        ) is not AgentType.UNKNOWN:
             await self._sessions.update_one(
                 {"tmux_name": name},
                 {"$set": {"status": SessionState.RUNNING.value, "updated_at": _now()}},
@@ -716,12 +727,16 @@ class CommandConsumer:
             )
             return {"name": name, "note": "resumed (already alive)"}
 
-        # Sessão MORTA (stopped): recria + relança o agente.
+        # Sessão MORTA (stopped) ou pane vivo sem agente: recria/relança.
         return await self._recreate_and_relaunch(name)
 
     async def _recreate_and_relaunch(self, name: str) -> dict[str, Any]:
-        """Recria a sessão tmux morta e RELANÇA o agente, reusando os parâmetros
-        salvos no doc (work_dir / agent / model / effort). É o que "Retomar" faz.
+        """RELANÇA o agente, reusando os parâmetros salvos no doc (work_dir /
+        agent / model / effort). É o que "Retomar" faz.
+
+        Se o pane tmux já existe (mas sem agente vivo dentro), reaproveita o
+        pane e só reenvia o comando de lançamento — ``new_session`` recusa
+        criar em cima de um nome já existente.
         """
         doc = await self._sessions.find_one({"tmux_name": name})
         if not doc:
@@ -738,8 +753,13 @@ class CommandConsumer:
         model = doc.get("model")
         effort = doc.get("effort")
 
-        # new_session expande ``~`` e valida o diretório (erro tipado).
-        info = self._runtime.new_session(name, work_dir)
+        # new_session expande ``~`` e valida o diretório (erro tipado). Só cria
+        # um pane novo se não sobrou um (morto) do lançamento anterior.
+        tmux_id = None
+        if not self._runtime.has_session(name):
+            info = self._runtime.new_session(name, work_dir)
+            tmux_id = info.id
+
         # resume=True → retoma a conversa anterior. Com claude_session_id salvo,
         # usa --resume <uuid> (a conversa EXATA dessa sessão); senão cai no
         # --continue (sessões antigas, sujeitas a agarrar a conversa errada se
@@ -761,16 +781,22 @@ class CommandConsumer:
         self._send_keys(name, launch_cmd)
 
         now = _now()
+        set_fields: dict[str, Any] = {
+            "status": SessionState.RUNNING.value,
+            "updated_at": now,
+        }
+        if tmux_id is not None:
+            set_fields["tmux_id"] = tmux_id
         await self._sessions.update_one(
             {"tmux_name": name},
-            {"$set": {
-                "status": SessionState.RUNNING.value,
-                "tmux_id": info.id,
-                "updated_at": now,
-            }},
+            {"$set": set_fields},
             upsert=True,
         )
-        return {"name": name, "note": "recreated", "launch_cmd": launch_cmd}
+        return {
+            "name": name,
+            "note": "recreated" if tmux_id else "relaunched-in-pane",
+            "launch_cmd": launch_cmd,
+        }
 
     async def _await_agent_ready(self, name: str, timeout: float = 20.0) -> None:
         """Espera o agente (ex.: Claude Code) terminar de subir após um relaunch.
