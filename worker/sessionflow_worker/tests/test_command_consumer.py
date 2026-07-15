@@ -338,6 +338,37 @@ async def test_resume_existing_marks_running(
     assert doc["status"] == SessionState.RUNNING.value
 
 
+async def test_resume_relaunches_when_pane_alive_but_agent_dead(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Reproduz o bug real: o pane tmux sobrevive, mas o processo do agente
+
+    morreu logo após o lançamento (ex.: binário ausente na 1ª tentativa,
+    crash na subida) — sobra um shell comum dentro do pane. ``has_session``
+    sozinho não basta pra decidir "já tá rodando"; sem checar o agente, o
+    resume só marcava running sem relançar, e o discovery desfazia isso no
+    ciclo seguinte (sessão "não fica de pé e cai em seguida").
+    """
+    name = make_name()
+    await consumer.handle(
+        _cmd(
+            "create",
+            {"name": name, "agent_type": "claude", "work_dir": str(tmp_path)},
+        )
+    )
+    # O fake launch (`true`) já saiu: o pane existe mas sem agente vivo.
+    assert runtime.has_session(name) is True
+    assert runtime.agent_type(name) is cc_mod.AgentType.UNKNOWN
+
+    event = await consumer.handle(_cmd("resume", {"name": name}))
+    assert event["ok"] is True
+    assert event["note"] == "relaunched-in-pane"
+    assert len(patch_launch) == 2  # 1x no create + 1x no resume (relançou de verdade)
+
+    doc = await db[coll_name].find_one({"tmux_name": name})
+    assert doc["status"] == SessionState.RUNNING.value
+
+
 async def test_dedupe_by_command_id(
     consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
 ) -> None:

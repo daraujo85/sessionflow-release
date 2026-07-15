@@ -320,7 +320,6 @@ class Discovery:
 
         set_fields = {
             "tmux_name": info.name,
-            "agent_type": info.agent_type.value,
             "status": status_value,
             "activity": activity,
             "tmux_session_id": info.id,
@@ -336,6 +335,13 @@ class Discovery:
         # SessionFlow) com vazio.
         if info.work_dir:
             set_fields["work_dir"] = info.work_dir
+        # agent_type: só grava quando RECONHECIDO. Esse campo é o que o resume
+        # ("Retomar") usa pra saber qual CLI relançar — sobrescrever com
+        # "unknown" só porque o processo caiu num ciclo (ex.: binário ausente
+        # na 1ª tentativa, crash na subida) apaga essa informação e trava o
+        # resume pra sempre nessa sessão (agent_type 'unknown' não é lançável).
+        if info.agent_type is not AgentType.UNKNOWN:
+            set_fields["agent_type"] = info.agent_type.value
 
         # Marca atividade só quando a tela mudou de verdade (senão preserva o
         # last_activity_at anterior — não incluir no $set já mantém o valor).
