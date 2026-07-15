@@ -3,7 +3,11 @@
 # Serviços de dados (mongo, rabbitmq) sobem já: `docker compose up -d`
 # App (api, frontend) sobe quando o código existir: `docker compose --profile app up -d`
 # O Worker NÃO está aqui — roda no host (precisa de tmux/Whisper/Ollama).
-# Portas publicadas só em 127.0.0.1 (acesso externo é via container de túnel Cloudflare).
+# Portas publicadas só em 127.0.0.1, EXCETO mongo/rabbitmq (AMQP): abertas na
+# LAN (0.0.0.0) pra um worker rodando em outra máquina da mesma rede alcançar
+# (ambos já têm usuário/senha de app dedicados, não são credenciais default).
+# API/frontend seguem só em 127.0.0.1 (acesso externo é via container de túnel
+# Cloudflare já configurado fora deste compose — ver docs/multi-host-plan.md).
 # =============================================================================
 
 name: sessionflow
@@ -21,7 +25,7 @@ services:
       MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
       MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
     ports:
-      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
+      - "0.0.0.0:${MONGO_HOST_PORT:-27017}:27017"
     volumes:
       - mongo_data:/data/db
       - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
@@ -42,8 +46,8 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
     ports:
-      - "127.0.0.1:${RABBITMQ_HOST_PORT:-5672}:5672"      # AMQP
-      - "127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}:15672"  # management UI
+      - "0.0.0.0:${RABBITMQ_HOST_PORT:-5672}:5672"        # AMQP (LAN — worker remoto)
+      - "127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}:15672"  # management UI (só local)
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
