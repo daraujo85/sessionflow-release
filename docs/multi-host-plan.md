@@ -91,6 +91,17 @@ controlando as sessões do seu próprio host, sem features incompatíveis
     de criar. 476 docs legados (sem `host_id`, virariam duplicata
     permanente) foram limpos em produção — o scan periódico já os
     substituiu por versões com `host_id`.
+12. ✅ **RESOLVIDO (achado 2026-07-15)** — mesmo com o `host_id` certo, o
+    autocomplete do Windows voltou **vazio**: `dir_scanner.DEFAULT_ROOTS`
+    (`~/Documents/projects`, `~/dev`, `~/work`) é convenção Mac — nessa
+    máquina os projetos reais moram em `C:\repo` (`/mnt/c/repo` de dentro
+    do WSL2), que não bate com nenhuma raiz padrão. **Solução:** raízes de
+    scan viraram configuráveis por host via env `SESSIONFLOW_SCAN_ROOTS`
+    (lista separada por vírgula, no `.env` DAQUELE host) —
+    `runner._resolve_scan_roots()` lê a env e cai no `DEFAULT_ROOTS` de
+    sempre se ela não existir (Mac não precisa mudar nada). No Windows,
+    setei `SESSIONFLOW_SCAN_ROOTS=/mnt/c/repo` — 879 diretórios escaneados
+    depois do restart, autocomplete testado de ponta a ponta via API.
 
 ## Design proposto (rascunho — sujeito a mudar com os testes)
 

@@ -74,6 +74,21 @@ logger = logging.getLogger("sessionflow_worker.runner")
 # `.env` da raiz do repo: worker/sessionflow_worker/runner.py -> ../../../.env
 _ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
+
+def _resolve_scan_roots() -> list[Path]:
+    """Raízes do scan de diretórios (autocomplete) — configurável por host.
+
+    Multi-host (AD-011): ``dir_scanner.DEFAULT_ROOTS`` assume convenção Mac
+    (``~/Documents/projects``) — noutra máquina (ex.: Windows/WSL2, onde os
+    projetos reais moram em ``C:\\repo`` → ``/mnt/c/repo``) essas pastas
+    nem existem. ``SESSIONFLOW_SCAN_ROOTS`` (no ``.env`` DESTE host, lista
+    separada por vírgula) sobrescreve; sem a env, cai no default de sempre.
+    """
+    raw = os.environ.get("SESSIONFLOW_SCAN_ROOTS", "").strip()
+    if not raw:
+        return dir_scanner.DEFAULT_ROOTS
+    return [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
+
 # Parâmetros dos loops periódicos.
 DISCOVERY_INTERVAL = 5.0
 DIR_SCAN_INTERVAL = 300.0
@@ -527,7 +542,9 @@ async def _build_and_run(stop: asyncio.Event) -> None:
         asyncio.create_task(discovery.run_forever(interval=DISCOVERY_INTERVAL), name="discovery"),
         asyncio.create_task(consumer.run(), name="command_consumer"),
         asyncio.create_task(
-            dir_scanner.schedule_scan(db, DIR_SCAN_INTERVAL, host_id),
+            dir_scanner.schedule_scan(
+                db, DIR_SCAN_INTERVAL, host_id, roots=_resolve_scan_roots()
+            ),
             name="dir_scanner",
         ),
         asyncio.create_task(capture_loop(capture, db, runtime, host_id), name="capture_loop"),
