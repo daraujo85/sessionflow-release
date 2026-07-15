@@ -17,6 +17,7 @@ import { AuthService } from '../../core/auth.service';
 import { PwaInstallService } from '../../core/pwa-install.service';
 import { NotifyService } from '../../core/notify.service';
 import { EventCuesService, CueMode } from '../../core/event-cues.service';
+import { WorkersStore } from '../../core/workers-store';
 import {
   Session,
   SessionStatus,
@@ -107,6 +108,32 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           {{ connected() ? 'online' : 'offline' }}
         </span>
       </div>
+
+      <!-- Outros hosts (multi-host) — só aparece com >1 host ativo. -->
+      @for (w of otherWorkers(); track w.host_id) {
+        <div class="sf-worker">
+          <span
+            class="sf-worker-dot"
+            [class.sf-pulse]="w.online"
+            [style.background]="w.online ? '#34D399' : '#7A8090'"
+          ></span>
+          <div class="sf-worker-body">
+            <div class="sf-worker-label">Worker · {{ w.hostname ?? '—' }}</div>
+            <div class="sf-worker-meta">
+              {{ w.platform ?? '—' }} · uptime {{ formatUptimeFor(w) }}
+            </div>
+          </div>
+          <span
+            class="sf-worker-pill"
+            [style.color]="w.online ? '#34D399' : '#8A90A0'"
+            [style.background]="
+              w.online ? 'rgba(52,211,153,.14)' : 'rgba(138,144,160,.14)'
+            "
+          >
+            {{ w.online ? 'online' : 'offline' }}
+          </span>
+        </div>
+      }
 
       <!-- Stats -->
       <div class="sf-stats">
@@ -782,6 +809,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
 export class PerfilComponent implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly sse = inject(SseService);
+  protected readonly workers = inject(WorkersStore);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly pwa = inject(PwaInstallService);
@@ -830,6 +858,23 @@ export class PerfilComponent implements OnInit, OnDestroy {
     const up = w?.online ? formatUptime(w.uptime_seconds) : '—';
     return `${host} · uptime ${up}`;
   });
+
+  /**
+   * Outros hosts conhecidos (multi-host, AD-011), além do exibido no card
+   * principal acima — só quando há MAIS DE 1 host ativo no total.
+   */
+  readonly otherWorkers = computed(() => {
+    if (!this.workers.hasMultipleHosts()) {
+      return [];
+    }
+    const primaryHost = this.worker()?.hostname;
+    return this.workers.workers().filter((w) => w.hostname !== primaryHost);
+  });
+
+  /** Uptime formatado de um worker da lista `otherWorkers` (não o principal). */
+  protected formatUptimeFor(w: WorkerStatus): string {
+    return w.online ? formatUptime(w.uptime_seconds) : '—';
+  }
 
   /** Limites do Claude (barras de % sessão/semana), ou null se sem dados. */
   readonly claudeLimits = computed(() => this.usage()?.claude ?? null);
