@@ -837,6 +837,25 @@ async def resume_session(request: Request, session_id: str) -> SessionCreateAcce
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
 
+async def _resolve_terminal_host_id(request: Request) -> str | None:
+    """Host que sabe abrir terminal LOCAL de verdade (Terminal.app/osascript).
+
+    Hoje só o Mac tem essa capability. ``open_terminal`` de uma sessão de
+    QUALQUER host sempre roteia pra cá — a janela abre no Mac mesmo quando a
+    sessão é remota; o worker decide internamente (via ``session_host_id`` no
+    payload) se anexa local ou via SSH/túnel pro host certo. ``None`` se
+    nenhum worker declarou a capability (fallback: rota antiga, pro próprio
+    host da sessão — comportamento pré-existente, só funciona se for o Mac).
+    """
+    db = request.app.state.mongo_db
+    doc = await db[_WORKER_STATUS_COLLECTION].find_one(
+        {"capabilities.open_terminal": True},
+        sort=[("updated_at", -1)],
+        projection={"_id": 1},
+    )
+    return doc["_id"] if doc else None
+
+
 @router.post(
     "/{session_id}/open-terminal",
     response_model=SessionCreateAccepted,
@@ -847,7 +866,10 @@ async def open_terminal(request: Request, session_id: str) -> SessionCreateAccep
 
     O worker (no Mac) abre o Terminal.app já anexado à sessão tmux — vários
     clientes podem anexar a mesma sessão (espelhada), então app e terminal
-    mostram o MESMO conteúdo.
+    mostram o MESMO conteúdo. Multi-host (AD-011): sessões de OUTRO host
+    (ex.: Windows/WSL2) também abrem no Mac — o comando sempre vai pro
+    worker com capability ``open_terminal``, carregando ``session_host_id``
+    (o host REAL da sessão) pro worker decidir attach local vs SSH remoto.
     """
     tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
@@ -859,10 +881,11 @@ async def open_terminal(request: Request, session_id: str) -> SessionCreateAccep
         if doc
         else tmux_name
     )
+    terminal_host_id = await _resolve_terminal_host_id(request) or host_id
     command_id = await publish_command(
         settings,
         type="open_terminal",
-        payload={"name": tmux_name, "title": title},
-        host_id=host_id,
+        payload={"name": tmux_name, "title": title, "session_host_id": host_id},
+        host_id=terminal_host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
