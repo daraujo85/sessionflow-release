@@ -16,6 +16,7 @@ import { SseService } from '../../core/sse.service';
 import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
 import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
+import { WorkersStore } from '../../core/workers-store';
 
 /** One selectable filter chip. `status` undefined means "Todas". */
 interface FilterChip {
@@ -128,6 +129,24 @@ const FILTERS: readonly FilterChip[] = [
           </button>
         }
       </nav>
+
+      <!-- Filtro por host (multi-host) — só aparece com >1 host ativo. -->
+      @if (hostOptions().length > 0) {
+        <nav class="sf-chips" role="tablist" aria-label="Filtrar por host">
+          @for (host of hostOptions(); track host.id) {
+            <button
+              type="button"
+              role="tab"
+              class="sf-chip"
+              [class.is-active]="activeHostId() === host.id"
+              [attr.aria-selected]="activeHostId() === host.id"
+              (click)="selectHost(host.id)"
+            >
+              {{ host.label }}
+            </button>
+          }
+        </nav>
+      }
 
       @if (loading() && sessions().length === 0) {
         <p class="sf-msg">Carregando…</p>
@@ -254,6 +273,18 @@ const FILTERS: readonly FilterChip[] = [
                           <path d="M16 11l4 4-4 4" />
                         </svg>
                         delegada por {{ parentLabel(s) }}
+                      </span>
+                    }
+                    @if (hostBadge(s); as host) {
+                      <span class="sf-host-chip" [title]="'Roda em: ' + host">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                          <rect x="3" y="4" width="18" height="8" rx="2" />
+                          <rect x="3" y="12" width="18" height="8" rx="2" />
+                          <path d="M7 8h.01M7 16h.01" />
+                        </svg>
+                        {{ host }}
                       </span>
                     }
                     <span class="mono sf-dir">{{ s.work_dir || '—' }}</span>
@@ -853,6 +884,27 @@ const FILTERS: readonly FilterChip[] = [
       .sf-parent-chip svg {
         flex: none;
       }
+      /* Badge de host (multi-host) — só aparece com >1 host ativo. */
+      .sf-host-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #d4a373;
+        background: rgba(212, 163, 115, 0.12);
+        border: 1px solid rgba(212, 163, 115, 0.28);
+        padding: 2px 8px;
+        border-radius: 7px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sf-host-chip svg {
+        flex: none;
+      }
       .mono {
         font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
           Menlo, Consolas, monospace;
@@ -1047,6 +1099,7 @@ export class SessoesComponent {
   private readonly sse = inject(SseService);
   private readonly jarvis = inject(JarvisAudioService);
   private readonly router = inject(Router);
+  protected readonly workers = inject(WorkersStore);
 
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
   protected isSpeaking(s: Session): boolean {
@@ -1060,6 +1113,28 @@ export class SessoesComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly filters = FILTERS;
+
+  /** Filtro por host (multi-host, AD-011) — combina com o filtro de status. */
+  protected readonly activeHostId = signal<string | null>(null);
+
+  /** Hosts distintos presentes nas sessões carregadas — só quando há MAIS DE
+   * 1 host ativo no total (não polui a tela do caso comum de hoje). */
+  protected readonly hostOptions = computed(() => {
+    if (!this.workers.hasMultipleHosts()) {
+      return [];
+    }
+    const ids = new Set<string>();
+    for (const s of this.sessions()) {
+      if (s.host_id) {
+        ids.add(s.host_id);
+      }
+    }
+    return [...ids].map((id) => ({ id, label: this.workers.hostname(id) ?? id }));
+  });
+
+  protected selectHost(id: string): void {
+    this.activeHostId.set(this.activeHostId() === id ? null : id);
+  }
 
   /** Staggered entrance delay per list index, capped so long lists don't lag. */
   protected enterDelay(i: number): string {
@@ -1180,15 +1255,18 @@ export class SessoesComponent {
         : wanted
           ? list.filter((s) => s.status === wanted)
           : list;
+    // Filtro por host (multi-host) — combina (AND) com o filtro de status.
+    const hostId = this.activeHostId();
+    const byHost = hostId ? byFilter.filter((s) => s.host_id === hostId) : byFilter;
     // Busca por nome (case-insensitive) combinada com o filtro/chip ativo.
     const q = this.query().trim().toLowerCase();
     const filtered = q
-      ? byFilter.filter(
+      ? byHost.filter(
           (s) =>
             (s.tmux_name ?? '').toLowerCase().includes(q) ||
             (s.display_name ?? '').toLowerCase().includes(q),
         )
-      : byFilter;
+      : byHost;
     // Favoritas primeiro; dentro de cada grupo, por ÚLTIMO USO (mais recente no
     // topo) — assim a sessão que você acabou de parar fica à mão, sem sumir lá
     // embaixo por ordem alfabética.
@@ -1450,6 +1528,18 @@ export class SessoesComponent {
   /** Worker/sub-agente pela convenção de nome (mostra chip ⑂ worker). */
   protected isWorker(s: Session): boolean {
     return isWorkerSession(s.tmux_name ?? s.display_name);
+  }
+
+  /**
+   * Nome do host desta sessão (multi-host, AD-011) — só quando existe MAIS
+   * DE 1 host ativo (não polui a UI do caso comum de hoje, 1 host só).
+   * `null` esconde o chip (host desconhecido ou só 1 host no total).
+   */
+  protected hostBadge(s: Session): string | null {
+    if (!this.workers.hasMultipleHosts()) {
+      return null;
+    }
+    return this.workers.hostname(s.host_id);
   }
 
   /** True se esta sessão foi DELEGADA por outra (tem um pai registrado). */

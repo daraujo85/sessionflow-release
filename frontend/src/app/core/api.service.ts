@@ -325,6 +325,14 @@ export class ApiService {
     return this.http.get<WorkerStatus>(this.url('/worker'));
   }
 
+  /** Todos os hosts/workers conhecidos (multi-host, AD-011) — badge/filtro
+   * de host e gate de capabilities (TTS/"abrir no Mac"/transcrição). */
+  listWorkers(): Observable<WorkerStatus[]> {
+    return this.http
+      .get<WorkerStatus[] | { items: WorkerStatus[] }>(this.url('/workers'))
+      .pipe(this.items<WorkerStatus>());
+  }
+
   /** Limites de uso reais por provider (hoje só Claude). */
   getUsage(): Observable<UsageInfo> {
     return this.http.get<UsageInfo>(this.url('/usage'));

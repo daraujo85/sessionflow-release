@@ -21,6 +21,7 @@ import { SseService } from '../../core/sse.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
 import { SessionPrefsStore } from '../../core/session-prefs-store';
+import { WorkersStore } from '../../core/workers-store';
 import {
   AgentType,
   Session,
@@ -125,29 +126,31 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 </svg>
               </button>
             }
-            <button
-              type="button"
-              class="act act--jarvis"
-              [class.on]="!!session()?.jarvis"
-              (click)="toggleJarvis()"
-              [attr.aria-pressed]="!!session()?.jarvis"
-              aria-label="JARVIS: resumo falado desta sessão"
-              title="JARVIS — fala um resumo no celular quando a sessão concluir/aguardar"
-            >
-              @if (session()?.jarvis) {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
-                  <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
-                </svg>
-              } @else {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
-                  <path d="M22 9l-6 6M16 9l6 6" />
-                </svg>
-              }
-            </button>
+            @if (hostSupportsTts()) {
+              <button
+                type="button"
+                class="act act--jarvis"
+                [class.on]="!!session()?.jarvis"
+                (click)="toggleJarvis()"
+                [attr.aria-pressed]="!!session()?.jarvis"
+                aria-label="JARVIS: resumo falado desta sessão"
+                title="JARVIS — fala um resumo no celular quando a sessão concluir/aguardar"
+              >
+                @if (session()?.jarvis) {
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
+                  </svg>
+                } @else {
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                    <path d="M22 9l-6 6M16 9l6 6" />
+                  </svg>
+                }
+              </button>
+            }
             <button
               type="button"
               class="act act--ghost"
@@ -169,19 +172,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 </svg>
               }
             </button>
-            <button
-              type="button"
-              class="act act--ghost"
-              (click)="openInMac()"
-              aria-label="Abrir no terminal do Mac"
-              title="Abrir esta sessão num terminal do Mac (tmux attach, lado a lado)"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="2.5" y="4" width="19" height="16" rx="2" />
-                <path d="M6.5 9l3 3-3 3M13 15h4" />
-              </svg>
-            </button>
+            @if (hostSupportsOpenTerminal()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                (click)="openInMac()"
+                aria-label="Abrir no terminal do Mac"
+                title="Abrir esta sessão num terminal do Mac (tmux attach, lado a lado)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="2.5" y="4" width="19" height="16" rx="2" />
+                  <path d="M6.5 9l3 3-3 3M13 15h4" />
+                </svg>
+              </button>
+            }
             @if (isRunning()) {
               <button
                 type="button"
@@ -916,12 +921,14 @@ import { ansiToHtml } from '../../shared/ansi-html';
               </svg>
             </button>
           }
-          <sf-audio-recorder
-            class="mic"
-            [sessionId]="id()"
-            (transcribing)="onAudioTranscribing($event)"
-            (uploaded)="onAudioUploaded()"
-          ></sf-audio-recorder>
+          @if (hostSupportsTranscription()) {
+            <sf-audio-recorder
+              class="mic"
+              [sessionId]="id()"
+              (transcribing)="onAudioTranscribing($event)"
+              (uploaded)="onAudioUploaded()"
+            ></sf-audio-recorder>
+          }
         }
 
         <input
@@ -2619,6 +2626,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly sse = inject(SseService);
   private readonly drafts = inject(DraftStore);
   private readonly prefs = inject(SessionPrefsStore);
+  private readonly workers = inject(WorkersStore);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly location = inject(Location);
   private readonly shareSvc = inject(ShareSessionService);
@@ -2654,6 +2662,23 @@ export class DetalheComponent implements AfterViewChecked {
   );
 
   protected readonly session = signal<Session | null>(null);
+
+  /**
+   * Gate de capabilities (multi-host, AD-011): esconde botões de features
+   * que o HOST desta sessão não suporta (TTS/JARVIS, "abrir no Mac",
+   * transcrição de áudio). Fail-open (`WorkersStore.supports`) — sessão sem
+   * host_id ou lista de workers ainda não carregada não escondem nada.
+   */
+  protected readonly hostSupportsTts = computed(() =>
+    this.workers.supports(this.session()?.host_id, 'tts'),
+  );
+  protected readonly hostSupportsOpenTerminal = computed(() =>
+    this.workers.supports(this.session()?.host_id, 'open_terminal'),
+  );
+  protected readonly hostSupportsTranscription = computed(() =>
+    this.workers.supports(this.session()?.host_id, 'transcription'),
+  );
+
   /** Tarefas/marcos desta sessão (painel recolhível). */
   protected readonly tasks = signal<Task[]>([]);
   protected readonly tasksOpen = signal<boolean>(false);

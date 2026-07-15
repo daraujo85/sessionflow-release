@@ -121,6 +121,9 @@ export interface Session {
   metrics?: SessionMetrics | null;
   /** Instante da última ATIVIDADE real (tela mudou / input do usuário). ISO. */
   last_activity_at?: string | null;
+  /** Host (worker) dono desta sessão — multi-host (AD-011). Sessões antigas
+   * (pré-migração) sempre têm o campo, já backfilled pelo worker no boot. */
+  host_id?: string | null;
   [key: string]: unknown;
 }
 
@@ -203,10 +206,25 @@ export interface AppSettings {
   jarvis_all: boolean;
 }
 
-/** Status do Worker (host) — `GET /worker`. */
+/** O que este host consegue fazer — multi-host (AD-011). Decide quais botões/
+ * features aparecem no app pras sessões daquele host (TTS, "abrir no Mac",
+ * upload de áudio p/ transcrição). */
+export interface WorkerCapabilities {
+  platform: string;
+  tts: boolean;
+  transcription: boolean;
+  open_terminal: boolean;
+}
+
+/** Status de UM Worker (host) — `GET /worker` (o mais recente) e cada item
+ * de `GET /workers` (todos os hosts conhecidos). */
 export interface WorkerStatus {
   online: boolean;
   hostname: string | null;
+  /** `null` em docs antigos (pré-migração multi-host, worker não reiniciou). */
+  host_id?: string | null;
+  platform?: string | null;
+  capabilities?: WorkerCapabilities | null;
   uptime_seconds: number | null;
   started_at: string | null;
   updated_at: string | null;

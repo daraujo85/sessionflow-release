@@ -18,6 +18,7 @@ import { Session, SessionStatus, Task, TaskState } from '../../core/models';
 type TaskDisplayState = TaskState | 'paused';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
 import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
+import { WorkersStore } from '../../core/workers-store';
 
 /** Session statuses considered "active" on the home screen. */
 const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
@@ -241,6 +242,17 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                         <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
                       </svg>
                       {{ subAgentCount(s) }}
+                    </span>
+                  }
+                  @if (hostBadge(s); as host) {
+                    <span class="sf-host-chip" [title]="'Roda em: ' + host">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                           stroke-linejoin="round" aria-hidden="true">
+                        <rect x="3" y="4" width="18" height="8" rx="2" />
+                        <rect x="3" y="12" width="18" height="8" rx="2" />
+                        <path d="M7 8h.01M7 16h.01" />
+                      </svg>
                     </span>
                   }
                 </span>
@@ -958,6 +970,18 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 2px 5px;
         border-radius: 6px;
       }
+      /* Badge de host (multi-host) — compacto (só ícone + tooltip), só
+         aparece com >1 host ativo. */
+      .sf-host-chip {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #d4a373;
+        background: rgba(212, 163, 115, 0.14);
+        border: 1px solid rgba(212, 163, 115, 0.3);
+        padding: 2px 5px;
+        border-radius: 6px;
+      }
       /* Badge de sub-agents rodando (contador + tooltip com nomes) */
       .sf-subagents {
         flex: none;
@@ -1268,6 +1292,7 @@ export class InicioComponent implements OnInit {
   private readonly api = inject(ApiService);
   protected readonly sse = inject(SseService);
   private readonly jarvis = inject(JarvisAudioService);
+  protected readonly workers = inject(WorkersStore);
   private readonly router = inject(Router);
 
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
@@ -1777,6 +1802,17 @@ export class InicioComponent implements OnInit {
   /** Worker/sub-agente pela convenção de nome (chip ⑂). */
   isWorker(s: Session): boolean {
     return isWorkerSession(s.tmux_name ?? s.display_name);
+  }
+
+  /**
+   * Nome do host desta sessão (multi-host, AD-011) — só quando existe MAIS
+   * DE 1 host ativo (não polui o card do caso comum de hoje, 1 host só).
+   */
+  hostBadge(s: Session): string | null {
+    if (!this.workers.hasMultipleHosts()) {
+      return null;
+    }
+    return this.workers.hostname(s.host_id);
   }
 
   agentBg(s: Session): string {
