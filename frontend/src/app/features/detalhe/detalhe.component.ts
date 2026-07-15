@@ -94,6 +94,22 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 <span class="status-dot" [style.background]="statusMeta().dot"></span>
                 <span class="status-label">{{ statusMeta().label }}</span>
               </span>
+              @if (hostBadge(); as host) {
+                <span class="host-pill" [title]="'Roda em: ' + host">
+                  @if (hostEmoji(); as emoji) {
+                    <span aria-hidden="true">{{ emoji }}</span>
+                  } @else {
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="4" width="18" height="8" rx="2" />
+                      <rect x="3" y="12" width="18" height="8" rx="2" />
+                      <path d="M7 8h.01M7 16h.01" />
+                    </svg>
+                  }
+                  <span class="host-label">{{ host }}</span>
+                </span>
+              }
             </div>
             <div class="mono hdr-dir">{{ session()?.work_dir || '—' }}</div>
             @if (activeTask()) {
@@ -849,78 +865,102 @@ import { ansiToHtml } from '../../shared/ansi-html';
         <div class="composer">
         <!-- Botões de ação: ocultam ao focar o input (mais espaço pra digitar) -->
         @if (!inputFocused()) {
+          <!-- Só no celular (CSS): abre/fecha o menu "mais opções" suspenso
+               acima do compositor. No desktop fica sempre escondido — os
+               botões abaixo continuam inline como sempre. -->
           <button
             type="button"
-            class="live-toggle"
-            [class.is-on]="keypadOpen()"
-            (click)="toggleKeypad()"
-            [attr.aria-pressed]="keypadOpen()"
-            aria-label="Teclas de navegação (setas/Enter/Esc)"
-            title="Mostrar/ocultar teclas de navegação"
+            class="composer-more-toggle"
+            [class.is-on]="composerMoreOpen()"
+            (click)="toggleComposerMore()"
+            [attr.aria-pressed]="composerMoreOpen()"
+            aria-label="Mais opções (teclas, anexar, print, câmera)"
+            title="Mais opções"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="2" y="6" width="20" height="12" rx="2" />
-              <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+              <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
-          <button
-            type="button"
-            class="live-toggle"
-            [class.is-on]="liveMode()"
-            (click)="toggleLive()"
-            [attr.aria-pressed]="liveMode()"
-            aria-label="Modo ao vivo (encaminha o que você digita pro terminal)"
-            title="Modo ao vivo: mostra o autocomplete do CLI enquanto digita"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="attach"
-            [class.is-busy]="attaching()"
-            (click)="pickFile()"
-            aria-label="Anexar arquivo ou imagem"
-            title="Anexar arquivo/imagem para o agente"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
-            </svg>
-          </button>
-          @if (canScreenshot) {
+          @if (composerMoreOpen()) {
+            <!-- Só existe (e cobre a tela) enquanto o menu tá aberto — no
+                 desktop o botão acima nunca abre isso, então nunca renderiza. -->
+            <div class="composer-more-backdrop" (click)="composerMoreOpen.set(false)"></div>
+          }
+          <div class="composer-more" [class.is-open]="composerMoreOpen()">
             <button
               type="button"
-              class="attach"
-              (click)="takeShot()"
-              aria-label="Capturar área da tela e anexar"
-              title="Recortar um pedaço da tela e anexar (não vai pra galeria)"
+              class="live-toggle"
+              [class.is-on]="keypadOpen()"
+              (click)="toggleKeypad(); composerMoreOpen.set(false)"
+              [attr.aria-pressed]="keypadOpen()"
+              aria-label="Teclas de navegação (setas/Enter/Esc)"
+              title="Mostrar/ocultar teclas de navegação"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
-                <rect x="8.5" y="8.5" width="7" height="7" rx="1" />
+                <rect x="2" y="6" width="20" height="12" rx="2" />
+                <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
               </svg>
             </button>
-          }
-          @if (canCamera) {
             <button
               type="button"
-              class="attach"
-              (click)="openCamera()"
-              aria-label="Tirar foto com a câmera e anexar"
-              title="Tirar foto com a câmera para dar contexto ao agente"
+              class="live-toggle"
+              [class.is-on]="liveMode()"
+              (click)="toggleLive(); composerMoreOpen.set(false)"
+              [attr.aria-pressed]="liveMode()"
+              aria-label="Modo ao vivo (encaminha o que você digita pro terminal)"
+              title="Modo ao vivo: mostra o autocomplete do CLI enquanto digita"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                <circle cx="12" cy="13" r="4" />
+                <path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16" />
               </svg>
             </button>
-          }
+            <button
+              type="button"
+              class="attach"
+              [class.is-busy]="attaching()"
+              (click)="pickFile(); composerMoreOpen.set(false)"
+              aria-label="Anexar arquivo ou imagem"
+              title="Anexar arquivo/imagem para o agente"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m21.4 11.05-9.19 9.2a5 5 0 0 1-7.07-7.08l9.2-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.2a1.67 1.67 0 0 1-2.36-2.36l8.49-8.49" />
+              </svg>
+            </button>
+            @if (canScreenshot) {
+              <button
+                type="button"
+                class="attach"
+                (click)="takeShot(); composerMoreOpen.set(false)"
+                aria-label="Capturar área da tela e anexar"
+                title="Recortar um pedaço da tela e anexar (não vai pra galeria)"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
+                  <rect x="8.5" y="8.5" width="7" height="7" rx="1" />
+                </svg>
+              </button>
+            }
+            @if (canCamera) {
+              <button
+                type="button"
+                class="attach"
+                (click)="openCamera(); composerMoreOpen.set(false)"
+                aria-label="Tirar foto com a câmera e anexar"
+                title="Tirar foto com a câmera para dar contexto ao agente"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+              </button>
+            }
+          </div>
           @if (hostSupportsTranscription()) {
             <sf-audio-recorder
               class="mic"
@@ -1412,6 +1452,34 @@ import { ansiToHtml } from '../../shared/ansi-html';
         width: 7px;
         height: 7px;
         border-radius: 50%;
+      }
+      /* Host desta sessão (multi-host, AD-011) — mesma pegada visual da
+         status-pill, cor neutra pra não competir com o status. */
+      .host-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12.5px;
+        font-weight: 600;
+        padding: 5px 10px;
+        border-radius: 9px;
+        white-space: nowrap;
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--text-muted);
+        background: #ffffff0d;
+      }
+      .host-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      @media (max-width: 700px) {
+        .hdr-title .host-pill .host-label {
+          display: none;
+        }
       }
       .status-actions {
         margin-left: auto;
@@ -2436,6 +2504,86 @@ import { ansiToHtml } from '../../shared/ansi-html';
       .mic {
         flex: none;
       }
+      /* Menu "mais opções" (teclas/ao vivo/anexar/print/câmera): no desktop
+         é invisível — os botões vivem inline no compositor, como sempre.
+         Vira um popup só no celular (media query abaixo). */
+      .composer-more {
+        display: contents;
+      }
+      .composer-more-toggle {
+        display: none;
+      }
+      .composer-more-backdrop {
+        display: none;
+      }
+      /* Celular: some espaço pro input (a queixa era "espaço de escrever
+         pequeno") tirando os botões menos usados do compositor e agrupando
+         num menu suspenso pra cima, acionado por um botão "+". Mic fica à
+         esquerda do input, enviar à direita — só nessa largura; acima disso
+         o layout completo de sempre. */
+      @media (max-width: 700px) {
+        .composer {
+          position: relative;
+        }
+        .composer-more-toggle {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          order: 1;
+          flex: none;
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          border: 1px solid #283230;
+          background: #181c1b;
+          color: #8a90a0;
+          cursor: pointer;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
+        }
+        .composer-more-toggle.is-on {
+          color: #06231d;
+          background: linear-gradient(150deg, #2cecc4, #00a482);
+          border-color: transparent;
+        }
+        .composer-more-backdrop {
+          display: block;
+          position: fixed;
+          inset: 0;
+          z-index: 4;
+          background: transparent;
+        }
+        .composer-more {
+          display: none;
+          order: 5;
+          position: absolute;
+          bottom: calc(100% + 8px);
+          left: 0;
+          z-index: 5;
+          flex-wrap: wrap;
+          gap: 8px;
+          padding: 10px;
+          max-width: calc(100% - 20px);
+          border: 1px solid #283230;
+          border-radius: 14px;
+          background: #12181a;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+        }
+        .composer-more.is-open {
+          display: flex;
+        }
+        .mic {
+          order: 2;
+        }
+        .text-input {
+          order: 3;
+          height: 48px;
+          font-size: 15px;
+        }
+        .send {
+          order: 4;
+        }
+      }
       /* Ajusta o botão de mic herdado do componente compartilhado. */
       .inputbar ::ng-deep .sf-rec-btn {
         width: 44px;
@@ -2646,6 +2794,13 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly shareBusy = signal<boolean>(false);
   protected readonly shareCopied = signal<boolean>(false);
 
+  /** Menu "mais opções" do compositor — só existe visualmente no celular
+   * (CSS); no desktop os botões continuam sempre inline, sem esconder nada. */
+  protected readonly composerMoreOpen = signal<boolean>(false);
+  protected toggleComposerMore(): void {
+    this.composerMoreOpen.update((v) => !v);
+  }
+
   private readonly termEl = viewChild<ElementRef<HTMLDivElement>>('term');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgInput = viewChild<ElementRef<HTMLInputElement>>('msgInput');
@@ -2677,6 +2832,20 @@ export class DetalheComponent implements AfterViewChecked {
   );
   protected readonly hostSupportsTranscription = computed(() =>
     this.workers.supports(this.session()?.host_id, 'transcription'),
+  );
+
+  /**
+   * Host desta sessão (multi-host, AD-011) — só quando há MAIS DE 1 host
+   * ativo, mesmo critério usado no badge da Home.
+   */
+  protected readonly hostBadge = computed(() => {
+    if (!this.workers.hasMultipleHosts()) {
+      return null;
+    }
+    return this.workers.hostname(this.session()?.host_id);
+  });
+  protected readonly hostEmoji = computed(() =>
+    this.workers.emoji(this.session()?.host_id),
   );
 
   /** Tarefas/marcos desta sessão (painel recolhível). */
