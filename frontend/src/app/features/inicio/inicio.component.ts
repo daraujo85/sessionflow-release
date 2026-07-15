@@ -246,13 +246,17 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   }
                   @if (hostBadge(s); as host) {
                     <span class="sf-host-chip" [title]="'Roda em: ' + host">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                           stroke-linejoin="round" aria-hidden="true">
-                        <rect x="3" y="4" width="18" height="8" rx="2" />
-                        <rect x="3" y="12" width="18" height="8" rx="2" />
-                        <path d="M7 8h.01M7 16h.01" />
-                      </svg>
+                      @if (hostEmoji(s); as emoji) {
+                        <span aria-hidden="true">{{ emoji }}</span>
+                      } @else {
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                          <rect x="3" y="4" width="18" height="8" rx="2" />
+                          <rect x="3" y="12" width="18" height="8" rx="2" />
+                          <path d="M7 8h.01M7 16h.01" />
+                        </svg>
+                      }
                     </span>
                   }
                 </span>
@@ -444,13 +448,17 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               }
               @if (taskHostBadge(t); as host) {
                 <span class="sf-task-host" [title]="'Roda em: ' + host">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
-                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                       stroke-linejoin="round" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="8" rx="2" />
-                    <rect x="3" y="12" width="18" height="8" rx="2" />
-                    <path d="M7 8h.01M7 16h.01" />
-                  </svg>
+                  @if (taskHostEmoji(t); as emoji) {
+                    <span aria-hidden="true">{{ emoji }}</span>
+                  } @else {
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="4" width="18" height="8" rx="2" />
+                      <rect x="3" y="12" width="18" height="8" rx="2" />
+                      <path d="M7 8h.01M7 16h.01" />
+                    </svg>
+                  }
                 </span>
               }
               <span class="sf-task-session mono">{{ sessionShort(t) }}</span>
@@ -1235,6 +1243,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         display: inline-flex;
         align-items: center;
         color: #d4a373;
+        font-size: 11px;
       }
 
       /* Botão ▶ para iniciar tarefas 'todo'. */
@@ -1833,6 +1842,11 @@ export class InicioComponent implements OnInit {
     return this.workers.hostname(s.host_id);
   }
 
+  /** Emoji do host desta sessão (ex. 🍎/🦆), ou null pro ícone genérico. */
+  hostEmoji(s: Session): string | null {
+    return this.workers.emoji(s.host_id);
+  }
+
   agentBg(s: Session): string {
     return this.hexToRgba(this.agent(s).color, 0.16);
   }
@@ -1891,6 +1905,15 @@ export class InicioComponent implements OnInit {
     }
     const session = this.sessions().find((s) => s.tmux_name === t.session_id);
     return this.workers.hostname(session?.host_id);
+  }
+
+  /** Emoji do host desta tarefa (ex. 🍎/🦆), ou null pro ícone genérico. */
+  taskHostEmoji(t: Task): string | null {
+    if (!t.session_id) {
+      return null;
+    }
+    const session = this.sessions().find((s) => s.tmux_name === t.session_id);
+    return this.workers.emoji(session?.host_id);
   }
 
   // --- Navigation ---

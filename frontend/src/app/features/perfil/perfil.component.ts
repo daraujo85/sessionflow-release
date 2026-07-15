@@ -96,16 +96,28 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         ></span>
         <div class="sf-worker-body">
           @if (editingHostId() === primaryHostId() && primaryHostId()) {
-            <input
-              #editInput
-              class="sf-worker-edit-input mono"
-              [value]="editNameValue()"
-              (input)="editNameValue.set(editInput.value)"
-              (keydown.enter)="saveEditName(primaryHostId()!)"
-              (keydown.escape)="cancelEditName()"
-              placeholder="Nome deste host"
-              autofocus
-            />
+            <span class="sf-worker-edit-row">
+              <input
+                #editEmoji
+                class="sf-worker-edit-emoji mono"
+                [value]="editEmojiValue()"
+                (input)="editEmojiValue.set(editEmoji.value)"
+                (keydown.enter)="saveEditName(primaryHostId()!)"
+                (keydown.escape)="cancelEditName()"
+                placeholder="🍎"
+                maxlength="8"
+              />
+              <input
+                #editInput
+                class="sf-worker-edit-input mono"
+                [value]="editNameValue()"
+                (input)="editNameValue.set(editInput.value)"
+                (keydown.enter)="saveEditName(primaryHostId()!)"
+                (keydown.escape)="cancelEditName()"
+                placeholder="Nome deste host"
+                autofocus
+              />
+            </span>
             <span class="sf-worker-edit-acts">
               <button type="button" (click)="saveEditName(primaryHostId()!)">Salvar</button>
               <button type="button" (click)="cancelEditName()">Cancelar</button>
@@ -117,9 +129,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 <button
                   type="button"
                   class="sf-worker-edit-btn"
-                  (click)="startEditName(primaryHostId(), worker()?.display_name ?? null)"
-                  aria-label="Renomear este host"
-                  title="Renomear este host"
+                  (click)="startEditName(primaryHostId(), worker()?.display_name ?? null, worker()?.emoji ?? null)"
+                  aria-label="Renomear/trocar emoji deste host"
+                  title="Renomear/trocar emoji deste host"
                 >✎</button>
               }
             </div>
@@ -147,29 +159,46 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           ></span>
           <div class="sf-worker-body">
             @if (editingHostId() === w.host_id && w.host_id) {
-              <input
-                #editInput2
-                class="sf-worker-edit-input mono"
-                [value]="editNameValue()"
-                (input)="editNameValue.set(editInput2.value)"
-                (keydown.enter)="saveEditName(w.host_id!)"
-                (keydown.escape)="cancelEditName()"
-                placeholder="Nome deste host"
-                autofocus
-              />
+              <span class="sf-worker-edit-row">
+                <input
+                  #editEmoji2
+                  class="sf-worker-edit-emoji mono"
+                  [value]="editEmojiValue()"
+                  (input)="editEmojiValue.set(editEmoji2.value)"
+                  (keydown.enter)="saveEditName(w.host_id!)"
+                  (keydown.escape)="cancelEditName()"
+                  placeholder="🦆"
+                  maxlength="8"
+                />
+                <input
+                  #editInput2
+                  class="sf-worker-edit-input mono"
+                  [value]="editNameValue()"
+                  (input)="editNameValue.set(editInput2.value)"
+                  (keydown.enter)="saveEditName(w.host_id!)"
+                  (keydown.escape)="cancelEditName()"
+                  placeholder="Nome deste host"
+                  autofocus
+                />
+              </span>
               <span class="sf-worker-edit-acts">
                 <button type="button" (click)="saveEditName(w.host_id!)">Salvar</button>
                 <button type="button" (click)="cancelEditName()">Cancelar</button>
               </span>
             } @else {
               <div class="sf-worker-label">
-                Worker · {{ w.display_name || w.hostname || '—' }}
+                @if (w.emoji) {
+                  {{ w.emoji }}
+                } @else {
+                  Worker ·
+                }
+                {{ w.display_name || w.hostname || '—' }}
                 <button
                   type="button"
                   class="sf-worker-edit-btn"
-                  (click)="startEditName(w.host_id ?? null, w.display_name ?? null)"
-                  aria-label="Renomear este host"
-                  title="Renomear este host"
+                  (click)="startEditName(w.host_id ?? null, w.display_name ?? null, w.emoji ?? null)"
+                  aria-label="Renomear/trocar emoji deste host"
+                  title="Renomear/trocar emoji deste host"
                 >✎</button>
               </div>
               <div class="sf-worker-meta">
@@ -599,6 +628,22 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       .sf-worker-edit-btn:hover {
         color: #00e4b4;
       }
+      .sf-worker-edit-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .sf-worker-edit-emoji {
+        width: 44px;
+        flex: none;
+        text-align: center;
+        background: #14191a;
+        border: 1px solid #283230;
+        border-radius: 8px;
+        color: #f4f5f7;
+        font-size: 16px;
+        padding: 5px 4px;
+      }
       .sf-worker-edit-input {
         width: 100%;
         max-width: 260px;
@@ -608,7 +653,6 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: #f4f5f7;
         font-size: 14px;
         padding: 5px 9px;
-        margin-bottom: 4px;
       }
       .sf-worker-edit-acts {
         display: flex;
@@ -945,10 +989,11 @@ export class PerfilComponent implements OnInit, OnDestroy {
   readonly workerTitle = computed(() => {
     const w = this.worker();
     const host = w?.display_name || w?.hostname;
+    const prefix = w?.emoji ? `${w.emoji} ` : '';
     if (!this.connected()) {
       return 'Worker desconectado';
     }
-    return host ? `Worker · ${host}` : 'Worker conectado';
+    return host ? `${prefix}Worker · ${host}` : 'Worker conectado';
   });
 
   /** Host · uptime em mono — tempo real do worker, "—" quando desconhecido. */
@@ -979,28 +1024,36 @@ export class PerfilComponent implements OnInit, OnDestroy {
     return w.online ? formatUptime(w.uptime_seconds) : '—';
   }
 
-  // ── Editar nome de exibição do host (multi-host, AD-011) ────────────────
+  // ── Editar nome/emoji de exibição do host (multi-host, AD-011) ──────────
   /** host_id sendo editado agora, ou null (nenhum campo de edição aberto). */
   protected readonly editingHostId = signal<string | null>(null);
   protected readonly editNameValue = signal('');
+  /** Emoji do host em edição — ex. "🦆" pro Windows, "🍎" pro Mac. */
+  protected readonly editEmojiValue = signal('');
 
-  /** Abre o campo de edição pra este host, pré-preenchido com o nome atual. */
-  protected startEditName(hostId: string | null, currentDisplay: string | null): void {
+  /** Abre o campo de edição pra este host, pré-preenchido com nome/emoji atuais. */
+  protected startEditName(
+    hostId: string | null,
+    currentDisplay: string | null,
+    currentEmoji: string | null,
+  ): void {
     if (!hostId) {
       return;
     }
     this.editingHostId.set(hostId);
     this.editNameValue.set(currentDisplay ?? '');
+    this.editEmojiValue.set(currentEmoji ?? '');
   }
 
   protected cancelEditName(): void {
     this.editingHostId.set(null);
   }
 
-  /** Salva o nome (vazio = limpa, volta a mostrar o hostname técnico). */
+  /** Salva nome + emoji (vazio em cada um limpa, volta ao default). */
   protected saveEditName(hostId: string): void {
     const name = this.editNameValue().trim();
-    this.api.setWorkerDisplayName(hostId, name || null).subscribe({
+    const emoji = this.editEmojiValue().trim();
+    this.api.setWorkerDisplayName(hostId, name || null, emoji || null).subscribe({
       next: () => {
         this.editingHostId.set(null);
         this.workers.refresh();

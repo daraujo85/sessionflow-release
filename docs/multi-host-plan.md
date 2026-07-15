@@ -3,11 +3,14 @@
 > Status (2026-07-15): **TODAS as 4 fases implementadas e validadas**, mais
 > alguns retoques pedidos pelo Diego depois de usar na prática: nome de host
 > editável, worker do Windows como serviço persistente (sempre on), badge de
-> host nas Tarefas (não só nos cards de sessão), e — achado importante —
-> **o autocomplete de diretório também precisava ser escopado por host**
-> (mesmo bug de índice único que afetou `sessions`, agora corrigido em
-> `host_directories`). Ver também [`PORTABILITY.md`](../PORTABILITY.md) —
-> aquele doc cobre "rodar o worker fora do Mac" (1 host por vez); este cobre
+> host nas Tarefas (não só nos cards de sessão), emoji por host (🍎 Mac /
+> 🦆 Duck Server — vira o identificador visual nos badges, substitui o
+> ícone genérico), raízes de scan configuráveis por host, e — achado
+> importante — **o autocomplete de diretório também precisava ser escopado
+> por host** (mesmo bug de índice único que afetou `sessions`, agora
+> corrigido em `host_directories`). Ver também
+> [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre "rodar o worker
+> fora do Mac" (1 host por vez); este cobre
 > "vários hosts ativos ao mesmo tempo, cada um com suas sessões".
 
 ## Objetivo
@@ -254,9 +257,12 @@ do worker remoto como proxy local.
      confirmar via `GET /workers` → limpar).
 5. ✅ Ajustes de uso real (2026-07-15): nome de host editável, worker do
    Windows como serviço persistente, badge de host nas Tarefas, seletor de
-   host na tela de criar sessão, e correção do autocomplete de diretório
-   (achado #11 acima) — todos a pedido do Diego depois de usar o Perfil e a
-   tela de criar sessão na prática.
+   host na tela de criar sessão, correção do autocomplete de diretório
+   (achado #11 acima), raízes de scan configuráveis (achado #12), e emoji
+   por host (🍎 Mac / 🦆 Duck Server — vira o identificador visual nos
+   badges de sessão/tarefa, substituindo o ícone genérico) — todos a
+   pedido do Diego depois de usar o Perfil e a tela de criar sessão na
+   prática.
 
 ## Testes / dúvidas a validar (Diego vai pedir aos poucos)
 

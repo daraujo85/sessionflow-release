@@ -32,6 +32,10 @@ class WorkerOut(BaseModel):
     # ex. "Notebook do Diego" em vez de "DESKTOP-ASCBQRT". None = usa o
     # ``hostname`` técnico como fallback (comportamento de hoje).
     display_name: str | None = None
+    # Emoji do host (editável junto do nome) — ex. "🦆" pro Windows, "🍎" pro
+    # Mac. Vira o identificador visual nos badges (substitui o ícone
+    # genérico) — diferencia tarefa/sessão por host num relance.
+    emoji: str | None = None
     # Multi-host (AD-011): identidade + o que esse host consegue fazer.
     # ``None`` em docs antigos (pré-migração, worker ainda não reiniciou).
     host_id: str | None = None
@@ -43,9 +47,10 @@ class WorkerOut(BaseModel):
 
 
 class WorkerDisplayName(BaseModel):
-    """Nome de exibição do host — vazio/None limpa (volta a mostrar o hostname)."""
+    """Nome/emoji de exibição do host — vazio/None limpa (volta ao default)."""
 
     display_name: str | None = None
+    emoji: str | None = None
 
 
 class ClaudeLimits(BaseModel):
@@ -79,6 +84,7 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         online=online,
         hostname=doc.get("hostname"),
         display_name=doc.get("display_name"),
+        emoji=doc.get("emoji"),
         host_id=doc.get("_id") if doc.get("_id") != "worker" else None,
         platform=doc.get("platform"),
         capabilities=doc.get("capabilities"),
@@ -121,15 +127,21 @@ async def list_workers(request: Request) -> list[WorkerOut]:
 async def set_worker_display_name(
     request: Request, host_id: str, body: WorkerDisplayName
 ) -> WorkerOut:
-    """Define/limpa o nome de exibição de um host (Perfil). Não mexe no
-    ``hostname`` técnico — só o rótulo mostrado no app. Vazio/None limpa
-    (volta a mostrar o hostname)."""
+    """Define/limpa o nome e o emoji de exibição de um host (Perfil). Não
+    mexe no ``hostname`` técnico — só o rótulo/ícone mostrados no app.
+    Vazio/None em cada campo limpa (volta ao default: hostname / ícone
+    genérico). O request manda os DOIS campos juntos (mesmo editando só um
+    na UI) — evita que salvar o nome apague o emoji já definido, e vice-versa."""
     db = request.app.state.mongo_db
     coll = db[WORKER_STATUS_COLLECTION]
     name = (body.display_name or "").strip()[:60] or None
+    # Emoji: aceita só 1-2 "caracteres" visuais (emoji simples ou composto
+    # com modificador/ZWJ) — corta agressivo pra não virar um textão no lugar
+    # de um ícone. Não valida que É emoji de fato (best-effort, é cosmético).
+    emoji = (body.emoji or "").strip()[:8] or None
     doc = await coll.find_one_and_update(
         {"_id": host_id},
-        {"$set": {"display_name": name}},
+        {"$set": {"display_name": name, "emoji": emoji}},
         return_document=True,
     )
     if not doc:
