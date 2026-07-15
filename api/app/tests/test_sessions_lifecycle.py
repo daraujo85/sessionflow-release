@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aio_pika
@@ -250,6 +250,62 @@ async def test_resume_publishes_command(settings, drain_commands):
     assert msg is not None
     assert msg["type"] == "resume"
     assert msg["payload"] == {"name": name}
+
+
+@pytest.mark.integration
+async def test_kill_offline_host_marks_stopped(settings):
+    """Host sem heartbeat recente: kill marca 'stopped' direto no Mongo.
+
+    Reproduz o caso real (host Windows/WSL2 desligado): sem worker vivo pra
+    processar o comando, a sessão ficaria presa em running/detached pra
+    sempre. O comando ainda é publicado (best-effort, caso o host volte) —
+    numa fila de host de TESTE dedicada (não a legada que ``drain_commands``
+    deste módulo escuta), então drenamos essa fila manualmente aqui.
+    """
+    host_id = f"test-host-offline-{uuid.uuid4().hex[:8]}"
+    name = f"killoff-{uuid.uuid4().hex[:8]}"
+    session_id = await _seed(settings, "running", name)
+
+    client_mongo = AsyncIOMotorClient(settings.effective_mongo_uri)
+    sessions_coll = client_mongo[settings.mongo_db][settings.sessions_collection]
+    worker_status_coll = client_mongo[settings.mongo_db]["worker_status"]
+    await sessions_coll.update_one(
+        {"_id": ObjectId(session_id)}, {"$set": {"host_id": host_id}}
+    )
+    # Heartbeat BEM antigo (host offline) — mais velho que ONLINE_WINDOW_SECONDS.
+    stale = datetime.now(UTC) - timedelta(hours=1)
+    await worker_status_coll.update_one(
+        {"_id": host_id}, {"$set": {"updated_at": stale}}, upsert=True
+    )
+
+    connection = await aio_pika.connect_robust(settings.effective_rabbitmq_uri)
+    try:
+        channel = await connection.channel()
+        exchange = await channel.declare_exchange(
+            EXCHANGE_NAME, aio_pika.ExchangeType.DIRECT, durable=True
+        )
+        queue_name = f"{COMMANDS_QUEUE}.{host_id}"
+        queue = await channel.declare_queue(queue_name, durable=True)
+        await queue.bind(exchange, routing_key=queue_name)
+
+        app = create_app(settings=settings)
+        async with await _client(app) as client:
+            async with app.router.lifespan_context(app):
+                resp = await client.delete(f"/sessions/{session_id}")
+
+        assert resp.status_code == 202
+        command_id = resp.json()["command_id"]
+        msg = await queue.get(no_ack=False, fail=False)
+        assert msg is not None  # ainda publica, best-effort
+        await msg.ack()
+        assert json.loads(msg.body)["command_id"] == command_id
+
+        doc = await sessions_coll.find_one({"_id": ObjectId(session_id)})
+        assert doc["status"] == "stopped"
+    finally:
+        await worker_status_coll.delete_one({"_id": host_id})
+        client_mongo.close()
+        await connection.close()
 
 
 @pytest.mark.integration

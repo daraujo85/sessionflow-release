@@ -55,6 +55,24 @@ class SessionsRepository:
         res = await self._collection.delete_one({"_id": oid})
         return res.deleted_count > 0
 
+    async def mark_stopped(self, session_id: str) -> bool:
+        """Marca a sessão como ``stopped`` diretamente (sem depender do worker).
+
+        Usado quando o host da sessão está offline: não há worker vivo pra
+        processar o comando ``kill``, então o usuário ficaria com a sessão
+        presa em "running/detached" pra sempre. Best-effort — não mata
+        processo real (o host já não está acessível de qualquer forma).
+        """
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return False
+        res = await self._collection.update_one(
+            {"_id": oid},
+            {"$set": {"status": "stopped", "agent_pid": None}},
+        )
+        return res.matched_count > 0
+
     async def set_share(
         self, session_id: str, token: str, expires_at: Any
     ) -> bool:

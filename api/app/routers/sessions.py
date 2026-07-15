@@ -24,6 +24,7 @@ from app import share
 from app.publishers.command_publisher import publish_command
 from app.repositories.sessions_repo import SessionsRepository
 from app.repositories.uploads_repo import UploadsRepository
+from app.routers.worker import ONLINE_WINDOW_SECONDS, WORKER_STATUS_COLLECTION
 
 # Validade do link compartilhável: além de morrer ao parar/apagar a sessão, o
 # link caduca sozinho depois disso (segurança).
@@ -399,10 +400,40 @@ async def _require_route(request: Request, session_id: str) -> tuple[str, str | 
     return doc["tmux_name"], doc.get("host_id")
 
 
+async def _is_host_online(request: Request, host_id: str | None) -> bool:
+    """``host_id`` tem heartbeat recente em ``worker_status``?
+
+    Sem ``host_id`` (sessão legada) considera online — não há como checar, e
+    era o comportamento de sempre (fallback do ``publish_command``).
+    """
+    if not host_id:
+        return True
+    db = request.app.state.mongo_db
+    doc = await db[WORKER_STATUS_COLLECTION].find_one(
+        {"_id": host_id}, projection={"updated_at": 1}
+    )
+    updated = doc.get("updated_at") if doc else None
+    if updated is None:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - updated).total_seconds() < ONLINE_WINDOW_SECONDS
+
+
 @router.delete("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
 async def kill_session(request: Request, session_id: str) -> SessionCreateAccepted:
-    """Encerra (para) a sessão: mata o tmux mas MANTÉM o registro (histórico)."""
+    """Encerra (para) a sessão: mata o tmux mas MANTÉM o registro (histórico).
+
+    Host OFFLINE (sem heartbeat): não há worker vivo pra processar o
+    comando — a sessão ficaria presa em "running/detached" pra sempre. Marca
+    ``stopped`` direto no Mongo (best-effort; não há processo real
+    alcançável de qualquer forma) e publica o comando mesmo assim, pro caso
+    do host voltar e ainda existir algo pra encerrar de verdade.
+    """
     tmux_name, host_id = await _require_route(request, session_id)
+    if not await _is_host_online(request, host_id):
+        repo = _get_repo(request)
+        await repo.mark_stopped(session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
         settings, type="kill", payload={"name": tmux_name}, host_id=host_id
