@@ -61,6 +61,8 @@ class SessionOut(BaseModel):
     # Rótulo fino do que o agente está fazendo (derivado da tela pelo worker).
     activity: str | None = None
     origin: str | None = None
+    # Host dono da sessão (multi-host, AD-011) — badge/filtro no frontend.
+    host_id: str | None = None
     tmux_session_id: str | None = None
     agent_pid: int | None = None
     last_seen_at: datetime | None = None
