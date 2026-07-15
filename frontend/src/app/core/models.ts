@@ -221,6 +221,8 @@ export interface WorkerCapabilities {
 export interface WorkerStatus {
   online: boolean;
   hostname: string | null;
+  /** Nome de exibição editável (Perfil) — `null` usa o `hostname` técnico. */
+  display_name?: string | null;
   /** `null` em docs antigos (pré-migração multi-host, worker não reiniciou). */
   host_id?: string | null;
   platform?: string | null;

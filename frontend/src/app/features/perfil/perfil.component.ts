@@ -95,8 +95,36 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           [style.background]="connected() ? '#34D399' : '#7A8090'"
         ></span>
         <div class="sf-worker-body">
-          <div class="sf-worker-label">{{ workerTitle() }}</div>
-          <div class="sf-worker-meta">{{ workerMeta() }}</div>
+          @if (editingHostId() === primaryHostId() && primaryHostId()) {
+            <input
+              #editInput
+              class="sf-worker-edit-input mono"
+              [value]="editNameValue()"
+              (input)="editNameValue.set(editInput.value)"
+              (keydown.enter)="saveEditName(primaryHostId()!)"
+              (keydown.escape)="cancelEditName()"
+              placeholder="Nome deste host"
+              autofocus
+            />
+            <span class="sf-worker-edit-acts">
+              <button type="button" (click)="saveEditName(primaryHostId()!)">Salvar</button>
+              <button type="button" (click)="cancelEditName()">Cancelar</button>
+            </span>
+          } @else {
+            <div class="sf-worker-label">
+              {{ workerTitle() }}
+              @if (primaryHostId()) {
+                <button
+                  type="button"
+                  class="sf-worker-edit-btn"
+                  (click)="startEditName(primaryHostId(), worker()?.display_name ?? null)"
+                  aria-label="Renomear este host"
+                  title="Renomear este host"
+                >✎</button>
+              }
+            </div>
+            <div class="sf-worker-meta">{{ workerMeta() }}</div>
+          }
         </div>
         <span
           class="sf-worker-pill"
@@ -118,10 +146,36 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             [style.background]="w.online ? '#34D399' : '#7A8090'"
           ></span>
           <div class="sf-worker-body">
-            <div class="sf-worker-label">Worker · {{ w.hostname ?? '—' }}</div>
-            <div class="sf-worker-meta">
-              {{ w.platform ?? '—' }} · uptime {{ formatUptimeFor(w) }}
-            </div>
+            @if (editingHostId() === w.host_id && w.host_id) {
+              <input
+                #editInput2
+                class="sf-worker-edit-input mono"
+                [value]="editNameValue()"
+                (input)="editNameValue.set(editInput2.value)"
+                (keydown.enter)="saveEditName(w.host_id!)"
+                (keydown.escape)="cancelEditName()"
+                placeholder="Nome deste host"
+                autofocus
+              />
+              <span class="sf-worker-edit-acts">
+                <button type="button" (click)="saveEditName(w.host_id!)">Salvar</button>
+                <button type="button" (click)="cancelEditName()">Cancelar</button>
+              </span>
+            } @else {
+              <div class="sf-worker-label">
+                Worker · {{ w.display_name || w.hostname || '—' }}
+                <button
+                  type="button"
+                  class="sf-worker-edit-btn"
+                  (click)="startEditName(w.host_id ?? null, w.display_name ?? null)"
+                  aria-label="Renomear este host"
+                  title="Renomear este host"
+                >✎</button>
+              </div>
+              <div class="sf-worker-meta">
+                {{ w.platform ?? '—' }} · uptime {{ formatUptimeFor(w) }}
+              </div>
+            }
           </div>
           <span
             class="sf-worker-pill"
@@ -514,6 +568,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-size: 15px;
         font-weight: 600;
         color: #f4f5f7;
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
       .sf-worker-meta {
         font-size: 12.5px;
@@ -527,6 +584,48 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 4px 9px;
         border-radius: 8px;
         flex: none;
+      }
+      /* Renomear host (multi-host, AD-011) */
+      .sf-worker-edit-btn {
+        appearance: none;
+        background: none;
+        border: none;
+        color: #7a8090;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 0 2px;
+        line-height: 1;
+      }
+      .sf-worker-edit-btn:hover {
+        color: #00e4b4;
+      }
+      .sf-worker-edit-input {
+        width: 100%;
+        max-width: 260px;
+        background: #14191a;
+        border: 1px solid #283230;
+        border-radius: 8px;
+        color: #f4f5f7;
+        font-size: 14px;
+        padding: 5px 9px;
+        margin-bottom: 4px;
+      }
+      .sf-worker-edit-acts {
+        display: flex;
+        gap: 8px;
+      }
+      .sf-worker-edit-acts button {
+        appearance: none;
+        background: none;
+        border: none;
+        color: #00e4b4;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        padding: 0;
+      }
+      .sf-worker-edit-acts button:last-child {
+        color: #7a8090;
       }
 
       /* Stats */
@@ -834,7 +933,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
   private readonly sessions = signal<Session[]>([]);
 
   /** Status REAL do Worker (heartbeat do host) — null antes de carregar. */
-  private readonly worker = signal<WorkerStatus | null>(null);
+  protected readonly worker = signal<WorkerStatus | null>(null);
   /** Limites de uso reais (hoje só Claude). */
   private readonly usage = signal<UsageInfo | null>(null);
 
@@ -844,7 +943,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
   );
 
   readonly workerTitle = computed(() => {
-    const host = this.worker()?.hostname;
+    const w = this.worker();
+    const host = w?.display_name || w?.hostname;
     if (!this.connected()) {
       return 'Worker desconectado';
     }
@@ -854,10 +954,13 @@ export class PerfilComponent implements OnInit, OnDestroy {
   /** Host · uptime em mono — tempo real do worker, "—" quando desconhecido. */
   readonly workerMeta = computed(() => {
     const w = this.worker();
-    const host = w?.hostname ?? '—';
+    const host = w?.display_name || w?.hostname || '—';
     const up = w?.online ? formatUptime(w.uptime_seconds) : '—';
     return `${host} · uptime ${up}`;
   });
+
+  /** host_id do worker principal (card de cima) — pra habilitar a edição de nome. */
+  protected readonly primaryHostId = computed(() => this.worker()?.host_id ?? null);
 
   /**
    * Outros hosts conhecidos (multi-host, AD-011), além do exibido no card
@@ -874,6 +977,43 @@ export class PerfilComponent implements OnInit, OnDestroy {
   /** Uptime formatado de um worker da lista `otherWorkers` (não o principal). */
   protected formatUptimeFor(w: WorkerStatus): string {
     return w.online ? formatUptime(w.uptime_seconds) : '—';
+  }
+
+  // ── Editar nome de exibição do host (multi-host, AD-011) ────────────────
+  /** host_id sendo editado agora, ou null (nenhum campo de edição aberto). */
+  protected readonly editingHostId = signal<string | null>(null);
+  protected readonly editNameValue = signal('');
+
+  /** Abre o campo de edição pra este host, pré-preenchido com o nome atual. */
+  protected startEditName(hostId: string | null, currentDisplay: string | null): void {
+    if (!hostId) {
+      return;
+    }
+    this.editingHostId.set(hostId);
+    this.editNameValue.set(currentDisplay ?? '');
+  }
+
+  protected cancelEditName(): void {
+    this.editingHostId.set(null);
+  }
+
+  /** Salva o nome (vazio = limpa, volta a mostrar o hostname técnico). */
+  protected saveEditName(hostId: string): void {
+    const name = this.editNameValue().trim();
+    this.api.setWorkerDisplayName(hostId, name || null).subscribe({
+      next: () => {
+        this.editingHostId.set(null);
+        this.workers.refresh();
+        // O card principal usa o signal `worker` (não o WorkersStore) — se
+        // for ele que editamos, refaz o fetch pra refletir na hora.
+        if (this.worker()?.host_id === hostId) {
+          this.reloadWorker();
+        }
+      },
+      error: () => {
+        /* mantém o campo aberto pro usuário tentar de novo */
+      },
+    });
   }
 
   /** Limites do Claude (barras de % sessão/semana), ou null se sem dados. */
