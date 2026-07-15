@@ -358,17 +358,25 @@ class CommandConsumer:
             return "en"
         return None  # idioma desconhecido: deixa o Whisper auto-detectar.
 
-    async def _handle_open_terminal(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Abre a sessão num Terminal do Mac (``tmux attach``) p/ uso lado a lado.
+    def _remote_ssh_config(self) -> tuple[str, str, str, str] | None:
+        """Config do SSH p/ abrir terminal de sessão de OUTRO host (via túnel).
 
-        O worker roda no Mac, então usamos ``osascript`` p/ abrir o Terminal.app
-        (ou o app em ``SESSIONFLOW_TERMINAL_APP``) numa nova janela já anexada à
-        sessão tmux. Vários clientes podem anexar a mesma sessão (espelhada), de
-        modo que o que aparece no app e no terminal é o MESMO. Best-effort.
+        ``None`` se este worker não tem o acesso remoto configurado — nesse
+        caso ``_handle_open_terminal`` recusa com erro claro em vez de tentar
+        e falhar silenciosamente. Só o worker do Mac declara isso hoje (é o
+        único com Terminal.app/osascript); os envs apontam pro proxy local
+        ``cloudflared access tcp`` do túnel do host remoto.
         """
-        name = payload.get("name")
-        if not name:
-            raise CommandError("open_terminal requer 'name'")
+        host = os.environ.get("SESSIONFLOW_REMOTE_SSH_HOST")
+        port = os.environ.get("SESSIONFLOW_REMOTE_SSH_PORT")
+        user = os.environ.get("SESSIONFLOW_REMOTE_SSH_USER")
+        if not (host and port and user):
+            return None
+        distro = os.environ.get("SESSIONFLOW_REMOTE_WSL_DISTRO", "Ubuntu")
+        return host, port, user, distro
+
+    def _local_attach_cmd(self, name: str) -> str:
+        """Monta ``tmux [-L socket] attach -t <name>`` da sessão NESTE host."""
         if not self._runtime.has_session(name):
             raise CommandError(f"sessão tmux {name!r} não existe")
 
@@ -394,7 +402,54 @@ class CommandConsumer:
         parts += ["attach", "-t", name]
         # shlex.quote usa aspas SIMPLES p/ nomes com espaço (ex. "3 2 1 BANK"),
         # então a string não tem aspas duplas → segura dentro do AppleScript.
-        attach_cmd = " ".join(shlex.quote(p) for p in parts)
+        return " ".join(shlex.quote(p) for p in parts)
+
+    def _remote_attach_cmd(self, name: str) -> str:
+        """Monta o SSH (via túnel Cloudflare) que anexa numa sessão de OUTRO host.
+
+        Passa pelo proxy local ``cloudflared access tcp`` (não pela LAN direta
+        — ver ``_remote_ssh_config``), então funciona de qualquer rede. O SSH
+        do Windows cai no ``cmd.exe`` por padrão; ``wsl.exe -d <distro> --
+        tmux attach`` roda o tmux de dentro do WSL2 a partir daí.
+        """
+        config = self._remote_ssh_config()
+        if config is None:
+            raise CommandError(
+                "abrir terminal de outro host requer SESSIONFLOW_REMOTE_SSH_"
+                "HOST/PORT/USER configurados neste worker"
+            )
+        host, port, user, distro = config
+        parts = [
+            "ssh", "-o", "StrictHostKeyChecking=no", "-p", port,
+            f"{user}@{host}", "-t",
+            "wsl.exe", "-d", distro, "--", "tmux", "attach", "-t", name,
+        ]
+        return " ".join(shlex.quote(p) for p in parts)
+
+    async def _handle_open_terminal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Abre a sessão num Terminal do Mac (``tmux attach``) p/ uso lado a lado.
+
+        O worker roda no Mac, então usamos ``osascript`` p/ abrir o Terminal.app
+        (ou o app em ``SESSIONFLOW_TERMINAL_APP``) numa nova janela já anexada à
+        sessão tmux. Vários clientes podem anexar a mesma sessão (espelhada), de
+        modo que o que aparece no app e no terminal é o MESMO. Best-effort.
+
+        ``session_host_id`` no payload (multi-host, AD-011): a API SEMPRE roteia
+        ``open_terminal`` pro worker do Mac (só ele tem Terminal.app/osascript),
+        mesmo quando a sessão é de OUTRO host — esse campo diz qual é o host
+        real da sessão. Diferente do ``self._host_id`` (o Mac) → a janela abre
+        aqui, mas o comando dentro dela é um SSH (via túnel) pro host certo,
+        não um ``tmux attach`` local (que atacaria o tmux ERRADO).
+        """
+        name = payload.get("name")
+        if not name:
+            raise CommandError("open_terminal requer 'name'")
+
+        session_host_id = payload.get("session_host_id")
+        if session_host_id and session_host_id != self._host_id:
+            attach_cmd = self._remote_attach_cmd(name)
+        else:
+            attach_cmd = self._local_attach_cmd(name)
 
         # Título amigável da aba (nome de exibição) p/ achar entre várias abas.
         # Sanitiza: sem aspas duplas/quebras (vai embutido em string AppleScript).

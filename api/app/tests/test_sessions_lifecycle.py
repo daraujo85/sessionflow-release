@@ -309,6 +309,74 @@ async def test_kill_offline_host_marks_stopped(settings):
 
 
 @pytest.mark.integration
+async def test_open_terminal_routes_to_mac_even_for_remote_session(settings):
+    """Sessão de um host SEM open_terminal (ex.: Windows) ainda assim abre
+
+    no worker que TEM a capability (o Mac) — não no host da própria sessão.
+    O payload carrega ``session_host_id`` pra esse worker saber que precisa
+    montar um attach remoto (SSH), não local.
+    """
+    mac_host_id = f"test-host-mac-{uuid.uuid4().hex[:8]}"
+    win_host_id = f"test-host-win-{uuid.uuid4().hex[:8]}"
+    name = f"openterm-{uuid.uuid4().hex[:8]}"
+    session_id = await _seed(settings, "running", name)
+
+    client_mongo = AsyncIOMotorClient(settings.effective_mongo_uri)
+    sessions_coll = client_mongo[settings.mongo_db][settings.sessions_collection]
+    worker_status_coll = client_mongo[settings.mongo_db]["worker_status"]
+    await sessions_coll.update_one(
+        {"_id": ObjectId(session_id)}, {"$set": {"host_id": win_host_id}}
+    )
+    now = datetime.now(UTC)
+    await worker_status_coll.update_one(
+        {"_id": mac_host_id},
+        {"$set": {"updated_at": now, "capabilities": {"open_terminal": True}}},
+        upsert=True,
+    )
+    await worker_status_coll.update_one(
+        {"_id": win_host_id},
+        {"$set": {"updated_at": now, "capabilities": {"open_terminal": False}}},
+        upsert=True,
+    )
+
+    connection = await aio_pika.connect_robust(settings.effective_rabbitmq_uri)
+    try:
+        channel = await connection.channel()
+        exchange = await channel.declare_exchange(
+            EXCHANGE_NAME, aio_pika.ExchangeType.DIRECT, durable=True
+        )
+        mac_queue_name = f"{COMMANDS_QUEUE}.{mac_host_id}"
+        mac_queue = await channel.declare_queue(mac_queue_name, durable=True)
+        await mac_queue.bind(exchange, routing_key=mac_queue_name)
+        win_queue_name = f"{COMMANDS_QUEUE}.{win_host_id}"
+        win_queue = await channel.declare_queue(win_queue_name, durable=True)
+        await win_queue.bind(exchange, routing_key=win_queue_name)
+
+        app = create_app(settings=settings)
+        async with await _client(app) as client:
+            async with app.router.lifespan_context(app):
+                resp = await client.post(f"/sessions/{session_id}/open-terminal")
+
+        assert resp.status_code == 202
+        command_id = resp.json()["command_id"]
+
+        msg = await mac_queue.get(no_ack=False, fail=False)
+        assert msg is not None, "comando não foi pro worker com open_terminal (Mac)"
+        body = json.loads(msg.body)
+        await msg.ack()
+        assert body["command_id"] == command_id
+        assert body["payload"]["session_host_id"] == win_host_id
+
+        no_msg = await win_queue.get(no_ack=False, fail=False)
+        assert no_msg is None, "comando NÃO deveria ir pro host da própria sessão"
+    finally:
+        await worker_status_coll.delete_one({"_id": mac_host_id})
+        await worker_status_coll.delete_one({"_id": win_host_id})
+        client_mongo.close()
+        await connection.close()
+
+
+@pytest.mark.integration
 async def test_kill_missing_not_found(settings):
     app = create_app(settings=settings)
     missing_id = str(ObjectId())
