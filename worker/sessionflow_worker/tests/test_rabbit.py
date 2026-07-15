@@ -17,9 +17,10 @@ async def test_declare_topology_is_idempotent() -> None:
     conn = await rabbit.connect()
     try:
         channel = await conn.channel()
+        host_id = f"test-host-{uuid.uuid4().hex}"
         # Duas chamadas seguidas não devem falhar (idempotência).
-        exchange1 = await rabbit.declare_topology(channel)
-        exchange2 = await rabbit.declare_topology(channel)
+        exchange1 = await rabbit.declare_topology(channel, host_id)
+        exchange2 = await rabbit.declare_topology(channel, host_id)
         assert exchange1.name == rabbit.EXCHANGE_NAME
         assert exchange2.name == rabbit.EXCHANGE_NAME
     finally:
@@ -31,7 +32,7 @@ async def test_publish_and_consume_roundtrip() -> None:
     conn = await rabbit.connect()
     try:
         channel = await conn.channel()
-        await rabbit.declare_topology(channel)
+        await rabbit.declare_topology(channel, f"test-host-{uuid.uuid4().hex}")
 
         # Fila/rota de teste efêmera p/ não vazar nas filas reais.
         routing_key = f"sessionflow.test.{uuid.uuid4().hex}"
@@ -58,17 +59,19 @@ async def test_publish_and_consume_roundtrip() -> None:
 
 @pytest.mark.integration
 async def test_publish_to_commands_queue() -> None:
-    """Publica de fato na fila real sessionflow.commands e consome de volta."""
+    """Publica de fato na fila de comandos DE UM HOST e consome de volta."""
     conn = await rabbit.connect()
     try:
         channel = await conn.channel()
-        await rabbit.declare_topology(channel)
+        host_id = f"test-host-{uuid.uuid4().hex}"
+        await rabbit.declare_topology(channel, host_id)
 
         nonce = uuid.uuid4().hex
         payload = {"cmd": "noop", "nonce": nonce}
-        await rabbit.publish(channel, rabbit.COMMANDS_QUEUE, payload)
+        queue_name = rabbit.commands_queue_name(host_id)
+        await rabbit.publish(channel, queue_name, payload)
 
-        queue = await channel.get_queue(rabbit.COMMANDS_QUEUE)
+        queue = await channel.get_queue(queue_name)
         incoming = await asyncio.wait_for(queue.get(timeout=5), timeout=5)
         assert incoming is not None
         assert json.loads(incoming.body)["nonce"] == nonce

@@ -1,8 +1,10 @@
-"""Read endpoints: Worker status (`GET /worker`) e limites de uso (`GET /usage`).
+"""Read endpoints: Worker status (`GET /worker`, `GET /workers`) e limites de
+uso (`GET /usage`).
 
-O Worker (no host) faz heartbeat em ``worker_status`` (hostname/started_at/
-updated_at) e raspa o ``/usage`` do Claude em ``host_usage``. Estes endpoints
-expõem esses dados REAIS para o Perfil — nada é fabricado.
+Cada Worker (1 por host, AD-011) faz heartbeat em ``worker_status`` — 1 doc
+por host (``_id=host_id``), com hostname/platform/capabilities/started_at/
+updated_at — e raspa o ``/usage`` do Claude em ``host_usage``. Estes
+endpoints expõem esses dados REAIS para o Perfil — nada é fabricado.
 """
 
 from __future__ import annotations
@@ -22,10 +24,15 @@ ONLINE_WINDOW_SECONDS = 30.0
 
 
 class WorkerOut(BaseModel):
-    """Status do Worker para o card do Perfil."""
+    """Status de UM Worker/host para o card do Perfil."""
 
     online: bool = False
     hostname: str | None = None
+    # Multi-host (AD-011): identidade + o que esse host consegue fazer.
+    # ``None`` em docs antigos (pré-migração, worker ainda não reiniciou).
+    host_id: str | None = None
+    platform: str | None = None
+    capabilities: dict | None = None
     uptime_seconds: float | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
@@ -52,12 +59,7 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-@router.get("/worker", response_model=WorkerOut)
-async def get_worker(request: Request) -> WorkerOut:
-    db = request.app.state.mongo_db
-    doc = await db[WORKER_STATUS_COLLECTION].find_one({"_id": "worker"})
-    if not doc:
-        return WorkerOut(online=False)
+def _to_worker_out(doc: dict) -> WorkerOut:
     now = datetime.now(timezone.utc)
     updated = _aware(doc.get("updated_at"))
     started = _aware(doc.get("started_at"))
@@ -66,10 +68,42 @@ async def get_worker(request: Request) -> WorkerOut:
     return WorkerOut(
         online=online,
         hostname=doc.get("hostname"),
+        host_id=doc.get("_id") if doc.get("_id") != "worker" else None,
+        platform=doc.get("platform"),
+        capabilities=doc.get("capabilities"),
         uptime_seconds=uptime,
         started_at=started,
         updated_at=updated,
     )
+
+
+@router.get("/worker", response_model=WorkerOut)
+async def get_worker(request: Request) -> WorkerOut:
+    """Status de UM worker — retrocompat (telas que ainda não sabem de
+    multi-host). Multi-host (AD-011): não existe mais um único ``_id="worker"``
+    fixo — pega o de ``updated_at`` mais recente (aproximação de "o host mais
+    ativo agora"). Use `GET /workers` pra ver TODOS."""
+    db = request.app.state.mongo_db
+    doc = await db[WORKER_STATUS_COLLECTION].find_one(
+        {}, sort=[("updated_at", -1)]
+    )
+    if not doc:
+        return WorkerOut(online=False)
+    return _to_worker_out(doc)
+
+
+@router.get("/workers", response_model=list[WorkerOut])
+async def list_workers(request: Request) -> list[WorkerOut]:
+    """Status de TODOS os workers/hosts conhecidos (multi-host, AD-011).
+
+    Base pro badge/filtro de host no frontend (fase futura do plano
+    multi-host) — hoje sem consumidor na UI, mas já exposto pra inspeção/testes.
+    """
+    db = request.app.state.mongo_db
+    docs = await db[WORKER_STATUS_COLLECTION].find({}).sort("updated_at", -1).to_list(
+        length=50
+    )
+    return [_to_worker_out(doc) for doc in docs]
 
 
 @router.get("/usage", response_model=UsageOut)

@@ -225,6 +225,7 @@ async def test_discovery_emits_created_event(
     discovery = Discovery(
         runtime,
         db,
+        "test-host",
         collection=sessions_coll,
         events_collection=coll_name,
         channel=None,

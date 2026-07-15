@@ -147,7 +147,7 @@ async def channel() -> AsyncIterator:
     conn = await rabbit.connect()
     try:
         ch = await conn.channel()
-        await rabbit.declare_topology(ch)
+        await rabbit.declare_topology(ch, "test-host")
         yield ch
     finally:
         await conn.close()
@@ -241,7 +241,7 @@ async def api_server(coll_name: str) -> AsyncIterator[str]:
 @pytest.fixture
 async def consumer(channel, db, runtime, coll_name) -> CommandConsumer:
     return CommandConsumer(
-        channel=channel, db=db, runtime=runtime, collection=coll_name
+        channel=channel, db=db, host_id="test-host", runtime=runtime, collection=coll_name
     )
 
 
@@ -310,7 +310,7 @@ async def test_e2e_create_running_then_kill_stopped(
     assert len(patch_launch) == 1
 
     # === c. Discovery reconcilia tmux <-> Mongo (real) ================
-    report = await Discovery(runtime, db, collection=coll_name).reconcile_once()
+    report = await Discovery(runtime, db, "test-host", collection=coll_name).reconcile_once()
     assert report.discovered + report.updated >= 1
 
     # === d. GET /sessions (HTTP real) -> sessão aparece running =======
@@ -341,7 +341,7 @@ async def test_e2e_create_running_then_kill_stopped(
     assert runtime.has_session(session_name) is False
 
     # Discovery reconcilia: confirma stopped (idempotente com o kill handler).
-    await Discovery(runtime, db, collection=coll_name).reconcile_once()
+    await Discovery(runtime, db, "test-host", collection=coll_name).reconcile_once()
 
     # GET /sessions/{id} (HTTP real) -> stopped.
     status, final = _http("GET", f"{base}/sessions/{session_id}")

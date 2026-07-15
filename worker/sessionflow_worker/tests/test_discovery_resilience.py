@@ -47,7 +47,7 @@ class _FakeDB:
 
 def _make_discovery(infos: list[SessionInfo]) -> Discovery:
     # db é tocado só por db[collection]; o resto é substituído nos testes.
-    return Discovery(_FakeTmux(infos), db=_FakeDB())  # type: ignore[arg-type]
+    return Discovery(_FakeTmux(infos), db=_FakeDB(), host_id="test-host")  # type: ignore[arg-type]
 
 
 async def test_reconcile_tolerates_session_vanishing_during_upsert() -> None:

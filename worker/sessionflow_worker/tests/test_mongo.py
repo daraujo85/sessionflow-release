@@ -55,19 +55,19 @@ async def db(coll_name):
 @pytest.mark.integration
 async def test_ensure_indexes_and_crud(db, coll_name) -> None:
     created = await ensure_indexes(db, collection=coll_name)
-    assert "uq_tmux_name_active" in created
+    assert "uq_host_tmux_name_active" in created
     assert "ix_status" in created
     assert "ix_updated_at" in created
 
     # Os índices realmente existem na coleção.
     info = await db[coll_name].index_information()
-    assert "uq_tmux_name_active" in info
+    assert "uq_host_tmux_name_active" in info
     assert "ix_status" in info
     assert "ix_updated_at" in info
 
     # O índice único parcial tem o partialFilterExpression esperado.
-    assert info["uq_tmux_name_active"].get("unique") is True
-    pfe = info["uq_tmux_name_active"]["partialFilterExpression"]
+    assert info["uq_host_tmux_name_active"].get("unique") is True
+    pfe = info["uq_host_tmux_name_active"]["partialFilterExpression"]
     assert set(pfe["status"]["$in"]) == set(ACTIVE_STATUSES)
     assert "stopped" not in pfe["status"]["$in"]
 
@@ -105,14 +105,43 @@ async def test_unique_index_allows_multiple_stopped(db, coll_name) -> None:
 
 @pytest.mark.integration
 async def test_unique_index_blocks_duplicate_active(db, coll_name) -> None:
-    """Duas sessões ativas com o mesmo ``tmux_name`` violam a unicidade."""
+    """Duas sessões ativas com o mesmo ``tmux_name`` (MESMO host) violam a
+    unicidade."""
     await ensure_indexes(db, collection=coll_name)
 
     now = datetime.now(timezone.utc)
     await db[coll_name].insert_one(
-        {"tmux_name": "live", "status": "running", "updated_at": now}
+        {"tmux_name": "live", "status": "running", "host_id": "host-a", "updated_at": now}
     )
     with pytest.raises(DuplicateKeyError):
         await db[coll_name].insert_one(
-            {"tmux_name": "live", "status": "waiting_input", "updated_at": now}
+            {
+                "tmux_name": "live",
+                "status": "waiting_input",
+                "host_id": "host-a",
+                "updated_at": now,
+            }
         )
+
+
+@pytest.mark.integration
+async def test_unique_index_allows_same_tmux_name_different_hosts(
+    db, coll_name
+) -> None:
+    """Multi-host (AD-011): dois HOSTS podem ter uma sessão ativa com o MESMO
+    ``tmux_name`` — a unicidade agora é por ``(host_id, tmux_name)``, não mais
+    só ``tmux_name``. Antes desse índice composto isso quebraria com
+    ``DuplicateKeyError``."""
+    await ensure_indexes(db, collection=coll_name)
+
+    now = datetime.now(timezone.utc)
+    await db[coll_name].insert_one(
+        {"tmux_name": "main", "status": "running", "host_id": "host-a", "updated_at": now}
+    )
+    # Não levanta — host diferente, mesmo tmux_name.
+    await db[coll_name].insert_one(
+        {"tmux_name": "main", "status": "running", "host_id": "host-b", "updated_at": now}
+    )
+
+    count = await db[coll_name].count_documents({"tmux_name": "main"})
+    assert count == 2

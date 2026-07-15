@@ -85,7 +85,7 @@ def make_name(runtime: TmuxRuntime) -> Iterator[Callable[[], str]]:
 
 @pytest.fixture
 def discovery(runtime: TmuxRuntime, db, coll_name: str) -> Discovery:
-    return Discovery(runtime, db, collection=coll_name)
+    return Discovery(runtime, db, "test-host", collection=coll_name)
 
 
 async def test_external_session_discovered_as_external(

@@ -85,12 +85,21 @@ async def settings():
         client.close()
 
 
+#: Multi-host (AD-011): ``create`` sem ``host_id`` explícito resolve pro
+#: worker mais recentemente ativo — na stack local isso é o worker REAL (não
+#: um mock), então testar sem host_id faria o comando cair na fila do worker
+#: de produção (e ele tentaria de fato criar uma sessão tmux de teste!). Os
+#: testes de ``create`` abaixo passam esse host_id explícito no payload pra
+#: isolar do worker real; ``drain_commands`` escuta a fila correspondente.
+_TEST_HOST_ID = "test-host-sessions-create"
+
+
 @pytest_asyncio.fixture
 async def drain_commands(settings):
-    """Consume/ack messages left in ``sessionflow.commands`` after a test.
+    """Consume/ack messages left in the TEST host's commands queue.
 
     Yields a helper that fetches the published message matching a given
-    ``command_id`` (acking it so it does not reach the Worker), then on
+    ``command_id`` (acking it so it does not reach the real Worker), then on
     teardown purges any other test message this run may have published.
     """
     connection = await aio_pika.connect_robust(settings.effective_rabbitmq_uri)
@@ -99,8 +108,9 @@ async def drain_commands(settings):
     exchange = await channel.declare_exchange(
         EXCHANGE_NAME, aio_pika.ExchangeType.DIRECT, durable=True
     )
-    queue = await channel.declare_queue(COMMANDS_QUEUE, durable=True)
-    await queue.bind(exchange, routing_key=COMMANDS_QUEUE)
+    queue_name = f"{COMMANDS_QUEUE}.{_TEST_HOST_ID}"
+    queue = await channel.declare_queue(queue_name, durable=True)
+    await queue.bind(exchange, routing_key=queue_name)
 
     drained: list[dict] = []
 
@@ -157,6 +167,7 @@ async def test_create_valid_publishes_command(settings, drain_commands):
         "work_dir": "/tmp/work",
         "model": "opus",
         "effort": "high",
+        "host_id": _TEST_HOST_ID,
     }
     async with await _client(app) as client:
         async with app.router.lifespan_context(app):
@@ -186,6 +197,7 @@ async def test_create_gemini_ignores_effort(settings, drain_commands):
         "work_dir": "/tmp/work",
         "model": "gemini-pro",
         "effort": "high",
+        "host_id": _TEST_HOST_ID,
     }
     async with await _client(app) as client:
         async with app.router.lifespan_context(app):
@@ -232,7 +244,12 @@ async def test_create_duplicate_stopped_name_allowed(settings, drain_commands):
     client.close()
 
     app = create_app(settings=settings)
-    payload = {"name": name, "agent_type": "claude", "work_dir": "/tmp/work"}
+    payload = {
+        "name": name,
+        "agent_type": "claude",
+        "work_dir": "/tmp/work",
+        "host_id": _TEST_HOST_ID,
+    }
     async with await _client(app) as client:
         async with app.router.lifespan_context(app):
             resp = await client.post("/sessions", json=payload)

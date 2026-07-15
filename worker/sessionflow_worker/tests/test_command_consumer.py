@@ -99,7 +99,7 @@ async def channel() -> AsyncIterator:
     conn = await rabbit.connect()
     try:
         ch = await conn.channel()
-        exchange = await rabbit.declare_topology(ch)
+        exchange = await rabbit.declare_topology(ch, "test-host")
         # Fila efêmera própria bindada ANTES de qualquer emit, na routing key
         # de eventos. O worker não declara mais a fila durável homônima
         # ``sessionflow.events``; cada teste captura os eventos aqui.
@@ -132,7 +132,7 @@ def patch_launch(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
 @pytest.fixture
 async def consumer(channel, db, runtime, coll_name) -> CommandConsumer:
     return CommandConsumer(
-        channel=channel, db=db, runtime=runtime, collection=coll_name
+        channel=channel, db=db, host_id="test-host", runtime=runtime, collection=coll_name
     )
 
 

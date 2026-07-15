@@ -54,7 +54,7 @@ def _claude_info(work_dir: str = "~/Documents/projects/pvax") -> SessionInfo:
 @pytest.mark.asyncio
 async def test_metrics_written_for_claude_session(monkeypatch) -> None:
     coll = _FakeColl()
-    disc = Discovery(tmux=object(), db=_FakeDB(coll))  # type: ignore[arg-type]
+    disc = Discovery(tmux=object(), db=_FakeDB(coll), host_id="test-host")  # type: ignore[arg-type]
 
     fake_metrics = {
         "model": "Opus 4.8",
@@ -83,7 +83,7 @@ async def test_metrics_written_for_claude_session(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_limits_attached_to_claude_metrics(monkeypatch) -> None:
     coll = _FakeColl()
-    disc = Discovery(tmux=object(), db=_FakeDB(coll))  # type: ignore[arg-type]
+    disc = Discovery(tmux=object(), db=_FakeDB(coll), host_id="test-host")  # type: ignore[arg-type]
 
     monkeypatch.setattr(
         discovery_mod,
@@ -108,7 +108,7 @@ async def test_limits_attached_to_claude_metrics(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_limits_absent_when_no_host_usage(monkeypatch) -> None:
     coll = _FakeColl()
-    disc = Discovery(tmux=object(), db=_FakeDB(coll))  # type: ignore[arg-type]
+    disc = Discovery(tmux=object(), db=_FakeDB(coll), host_id="test-host")  # type: ignore[arg-type]
 
     monkeypatch.setattr(
         discovery_mod,
@@ -126,7 +126,7 @@ async def test_limits_absent_when_no_host_usage(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_metrics_none_for_non_claude(monkeypatch) -> None:
     coll = _FakeColl()
-    disc = Discovery(tmux=object(), db=_FakeDB(coll))  # type: ignore[arg-type]
+    disc = Discovery(tmux=object(), db=_FakeDB(coll), host_id="test-host")  # type: ignore[arg-type]
 
     monkeypatch.setattr(discovery_mod, "emit_event", _noop)
     # claude_metrics_for NÃO deve ser chamado p/ não-claude; se for, falha.

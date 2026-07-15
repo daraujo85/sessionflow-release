@@ -78,17 +78,27 @@ async def ensure_indexes(
     """Cria os índices da coleção ``sessions``.
 
     Índices:
-        - ``tmux_name`` único parcial (apenas sessões não-``stopped``).
+        - ``(host_id, tmux_name)`` único parcial (apenas sessões não-``stopped``).
         - ``status``.
         - ``updated_at``.
+
+    **Multi-host (AD-011):** o único era só em ``tmux_name`` — duas sessões
+    ATIVAS com o mesmo nome em hosts DIFERENTES quebrariam essa constraint
+    (nomes de sessão são escolhidos por host, sem coordenação entre eles). O
+    índice antigo (``uq_tmux_name_active``) é removido (best-effort) e
+    substituído pelo composto — a unicidade agora é por host, não global.
 
     ``collection`` permite injetar um nome alternativo (útil em testes que
     não podem criar um DB próprio). Retorna os nomes dos índices garantidos.
     """
+    try:
+        await db[collection].drop_index("uq_tmux_name_active")
+    except Exception:  # noqa: BLE001 - índice pode não existir (install novo)
+        pass
     indexes = [
         IndexModel(
-            [("tmux_name", ASCENDING)],
-            name="uq_tmux_name_active",
+            [("host_id", ASCENDING), ("tmux_name", ASCENDING)],
+            name="uq_host_tmux_name_active",
             unique=True,
             partialFilterExpression={"status": {"$in": ACTIVE_STATUSES}},
         ),

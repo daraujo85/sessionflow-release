@@ -116,6 +116,10 @@ class SessionCreate(BaseModel):
     # tmux_name da sessão PAI (quem delegou). Opcional; usado pela orquestração
     # multi-provedor (`sf delegate`) para linkar pai→filho.
     parent: str | None = None
+    # Host ONDE criar a sessão (multi-host, AD-011). None = auto-resolve pro
+    # worker mais recentemente ativo (comportamento de hoje, 1 host só). Um
+    # picker de host no frontend (fase futura) passaria isso explicitamente.
+    host_id: str | None = None
 
 
 class SessionCreateAccepted(BaseModel):
@@ -221,6 +225,28 @@ def _get_repo(request: Request) -> SessionsRepository:
     return SessionsRepository(db, settings.sessions_collection)
 
 
+# Coleção de heartbeat dos workers (multi-host, AD-011) — mesmo nome fixo do
+# worker (``runner.WORKER_STATUS_COLLECTION``); não é isolável por testes
+# porque representa infra REAL do host, não dados de sessão.
+_WORKER_STATUS_COLLECTION = "worker_status"
+
+
+async def _resolve_default_host_id(request: Request) -> str | None:
+    """Host ONDE criar uma sessão nova, quando o cliente não escolheu um
+    (``SessionCreate.host_id`` ausente).
+
+    Pega o worker com ``updated_at`` mais recente em ``worker_status`` —
+    aproximação razoável de "o host ativo" enquanto não existe um picker de
+    host no frontend (fase futura do plano multi-host). ``None`` se nenhum
+    worker jamais fez heartbeat (``publish_command`` cai no fallback legado).
+    """
+    db = request.app.state.mongo_db
+    doc = await db[_WORKER_STATUS_COLLECTION].find_one(
+        {}, sort=[("updated_at", -1)], projection={"_id": 1}
+    )
+    return doc["_id"] if doc else None
+
+
 # Prefixos de sessões INTERNAS do worker (scraping efêmero) — nunca exibidas.
 _INTERNAL_PREFIXES = ("sfusage-", "sfmodel-", "sftest-")
 
@@ -275,7 +301,10 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
         "parent": (body.parent or "").strip() or None,
     }
     settings = request.app.state.settings
-    command_id = await publish_command(settings, type="create", payload=payload)
+    target_host_id = body.host_id or await _resolve_default_host_id(request)
+    command_id = await publish_command(
+        settings, type="create", payload=payload, host_id=target_host_id
+    )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
 
@@ -349,20 +378,32 @@ async def revoke_share_link(request: Request, session_id: str) -> ShareLinkOut:
 
 async def _require_tmux_name(request: Request, session_id: str) -> str:
     """Fetch a session by id and return its ``tmux_name`` or raise 404."""
+    tmux_name, _host_id = await _require_route(request, session_id)
+    return tmux_name
+
+
+async def _require_route(request: Request, session_id: str) -> tuple[str, str | None]:
+    """Fetch a session by id and return ``(tmux_name, host_id)`` or raise 404.
+
+    ``host_id`` (multi-host, AD-011) decide pra qual fila ``publish_command``
+    roteia o comando — vem do doc da sessão; ``None`` em sessões antigas sem
+    o campo ainda (``publish_command`` cai no fallback legado nesse caso, o
+    que só deveria acontecer antes do 1º boot do worker pós-migração).
+    """
     repo = _get_repo(request)
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return doc["tmux_name"]
+    return doc["tmux_name"], doc.get("host_id")
 
 
 @router.delete("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
 async def kill_session(request: Request, session_id: str) -> SessionCreateAccepted:
     """Encerra (para) a sessão: mata o tmux mas MANTÉM o registro (histórico)."""
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
-        settings, type="kill", payload={"name": tmux_name}
+        settings, type="kill", payload={"name": tmux_name}, host_id=host_id
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -373,7 +414,7 @@ async def kill_session(request: Request, session_id: str) -> SessionCreateAccept
 async def purge_session(request: Request, session_id: str) -> SessionCreateAccepted:
     """ELIMINA a sessão de vez: mata o tmux (se vivo) e REMOVE o registro +
     dados relacionados. Some do app e do host (diferente de encerrar)."""
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     # Remove o registro NA HORA (some da lista imediatamente, sem flicker de
     # 'apaguei e voltou'); o worker ainda mata o tmux no host e limpa os dados
@@ -381,7 +422,7 @@ async def purge_session(request: Request, session_id: str) -> SessionCreateAccep
     repo = _get_repo(request)
     await repo.delete_session(session_id)
     command_id = await publish_command(
-        settings, type="delete", payload={"name": tmux_name}
+        settings, type="delete", payload={"name": tmux_name}, host_id=host_id
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -465,10 +506,13 @@ async def rename_session(
     if not new_name:
         raise HTTPException(status_code=422, detail="new name must not be empty")
 
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
-        settings, type="rename", payload={"old": tmux_name, "new": new_name}
+        settings,
+        type="rename",
+        payload={"old": tmux_name, "new": new_name},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -489,12 +533,13 @@ async def send_input(
     if not text:
         raise HTTPException(status_code=422, detail="text must not be empty")
 
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
         settings,
         type="input",
         payload={"name": tmux_name, "text": text, "enter": body.enter},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -514,10 +559,13 @@ async def send_key(
     if key not in ALLOWED_KEYS:
         raise HTTPException(status_code=422, detail=f"key inválida: {body.key!r}")
 
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
-        settings, type="key", payload={"name": tmux_name, "key": key}
+        settings,
+        type="key",
+        payload={"name": tmux_name, "key": key},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -529,12 +577,13 @@ async def resize_session(
     request: Request, session_id: str, body: SessionResize
 ) -> SessionCreateAccepted:
     """Redimensiona o pane do tmux p/ caber na área do cliente (reflow do agente)."""
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
         settings,
         type="resize",
         payload={"name": tmux_name, "cols": body.cols, "rows": body.rows},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -586,6 +635,7 @@ async def instruct_milestones(request: Request, session_id: str) -> dict:
             "text": milestones_instruction(tmux_name),
             "enter": True,
         },
+        host_id=doc.get("host_id"),
     )
     await db[settings.sessions_collection].update_one(
         {"tmux_name": tmux_name},
@@ -606,7 +656,7 @@ async def upload_audio(
     records an ``uploads`` document and publishes an ``audio`` command so the
     Worker can pick the file up.
     """
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
 
     ext = Path(file.filename or "").suffix.lstrip(".") or "bin"
@@ -626,6 +676,7 @@ async def upload_audio(
         settings,
         type="audio",
         payload={"name": tmux_name, "path": path_str, "upload_id": upload_id},
+        host_id=host_id,
     )
     return AudioUploadAccepted(
         command_id=command_id, upload_id=upload_id, status="accepted"
@@ -663,7 +714,7 @@ async def upload_file(
             detail=f"máximo de {MAX_ATTACHMENTS} anexos por envio",
         )
 
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
 
     target_dir = Path(settings.uploads_dir) / session_id
@@ -703,6 +754,7 @@ async def upload_file(
             "upload_id": upload_ids[0],
             "caption": caption_clean or None,
         },
+        host_id=host_id,
     )
     return AudioUploadAccepted(
         command_id=command_id, upload_id=upload_ids[0], status="accepted"
@@ -721,7 +773,7 @@ async def switch_agent(
     mesmo tmux/registro/histórico. O worker faz o handoff de contexto: pede um
     resumo ao agente atual, encerra-o sem matar o tmux, sobe o novo provedor
     no mesmo pane e injeta o contexto (202: processo roda em background)."""
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     # Gemini não tem dimensão de esforço (mesma regra do create).
     effort = None if body.agent_type == AgentType.gemini else body.effort
     settings = request.app.state.settings
@@ -734,6 +786,7 @@ async def switch_agent(
             "model": body.model,
             "effort": effort,
         },
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -743,10 +796,10 @@ async def switch_agent(
 )
 async def resume_session(request: Request, session_id: str) -> SessionCreateAccepted:
     """Resume a detached/stopped session (TMUX-11)."""
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
-        settings, type="resume", payload={"name": tmux_name}
+        settings, type="resume", payload={"name": tmux_name}, host_id=host_id
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
@@ -763,7 +816,7 @@ async def open_terminal(request: Request, session_id: str) -> SessionCreateAccep
     clientes podem anexar a mesma sessão (espelhada), então app e terminal
     mostram o MESMO conteúdo.
     """
-    tmux_name = await _require_tmux_name(request, session_id)
+    tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     # Título amigável (display name) p/ a aba do terminal — facilita achar.
     repo = _get_repo(request)
@@ -777,5 +830,6 @@ async def open_terminal(request: Request, session_id: str) -> SessionCreateAccep
         settings,
         type="open_terminal",
         payload={"name": tmux_name, "title": title},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")

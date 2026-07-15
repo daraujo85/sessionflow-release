@@ -76,21 +76,24 @@ async def test_capturable_sessions_includes_all_active(db, coll_name: str) -> No
                 "tmux_name": "sf-active",
                 "origin": ORIGIN_SESSIONFLOW,
                 "status": "running",
+                "host_id": "test-host",
             },
             {
                 "tmux_name": "ext-active",
                 "origin": ORIGIN_EXTERNAL,
                 "status": "running",
+                "host_id": "test-host",
             },
             {
                 "tmux_name": "sf-stopped",
                 "origin": ORIGIN_SESSIONFLOW,
                 "status": "stopped",
+                "host_id": "test-host",
             },
         ]
     )
 
-    names = await runner._capturable_sessions(db, collection=coll_name)
+    names = await runner._capturable_sessions(db, "test-host", collection=coll_name)
 
     assert set(names) == {"sf-active", "ext-active"}  # ambas ativas capturadas
     assert "sf-stopped" not in names  # inativa nunca capturada
@@ -106,7 +109,7 @@ async def test_reconcile_once_via_runtime_does_not_explode(
     Como a coleção é dedicada/dropada, o estado real do usuário fica intacto.
     """
     runtime = TmuxRuntime()
-    discovery = Discovery(runtime, db, collection=coll_name)
+    discovery = Discovery(runtime, db, "test-host", collection=coll_name)
 
     report = await discovery.reconcile_once()
 

@@ -15,30 +15,30 @@ from sessionflow_worker import runner
 async def test_watchdog_raises_after_consecutive_zeros(monkeypatch) -> None:
     """0 consumidores por ``grace`` checagens seguidas → ConsumerStalled."""
     counts = iter([0, 0])
-    monkeypatch.setattr(runner, "_commands_consumer_count", lambda: next(counts))
+    monkeypatch.setattr(runner, "_commands_consumer_count", lambda queue_name: next(counts))
 
     with pytest.raises(runner.ConsumerStalled):
-        await runner.consumer_watchdog(interval=0, grace=2)
+        await runner.consumer_watchdog("test-host", interval=0, grace=2)
 
 
 async def test_watchdog_positive_resets_streak(monkeypatch) -> None:
     """Um count > 0 zera o contador; só zeros SEGUIDOS disparam o rebuild."""
     # 0 (misses=1) -> 5 (reset) -> 0 (1) -> 0 (2 => raise). Consome os 4.
     counts = iter([0, 5, 0, 0])
-    monkeypatch.setattr(runner, "_commands_consumer_count", lambda: next(counts))
+    monkeypatch.setattr(runner, "_commands_consumer_count", lambda queue_name: next(counts))
 
     with pytest.raises(runner.ConsumerStalled):
-        await runner.consumer_watchdog(interval=0, grace=2)
+        await runner.consumer_watchdog("test-host", interval=0, grace=2)
 
 
 async def test_watchdog_none_does_not_count(monkeypatch) -> None:
     """``None`` (mgmt indisponível) não conta como zero nem reseta a sequência."""
     # 0 (misses=1) -> None (ignora, segue 1) -> 0 (misses=2 => raise).
     counts = iter([0, None, 0])
-    monkeypatch.setattr(runner, "_commands_consumer_count", lambda: next(counts))
+    monkeypatch.setattr(runner, "_commands_consumer_count", lambda queue_name: next(counts))
 
     with pytest.raises(runner.ConsumerStalled):
-        await runner.consumer_watchdog(interval=0, grace=2)
+        await runner.consumer_watchdog("test-host", interval=0, grace=2)
 
 
 def test_mgmt_url_and_auth_from_amqp_uri(monkeypatch) -> None:
@@ -50,12 +50,12 @@ def test_mgmt_url_and_auth_from_amqp_uri(monkeypatch) -> None:
     monkeypatch.setenv("RABBITMQ_VHOST", "/")
     monkeypatch.delenv("RABBITMQ_URI", raising=False)
 
-    built = runner._mgmt_queue_url_and_auth()
+    built = runner._mgmt_queue_url_and_auth("sessionflow.commands.test-host")
     assert built is not None
     url, authorization = built
     # vhost "/" -> %2F, e o nome da fila preservado.
     assert url == (
-        "http://127.0.0.1:15672/api/queues/%2F/sessionflow.commands"
+        "http://127.0.0.1:15672/api/queues/%2F/sessionflow.commands.test-host"
     )
     # Senha URL-encoded (p%40ss) é decodificada antes do Basic.
     import base64
@@ -69,4 +69,4 @@ def test_mgmt_url_and_auth_none_without_uri(monkeypatch) -> None:
     """Sem URI configurada, retorna None (watchdog vira no-op)."""
     monkeypatch.delenv("RABBITMQ_URI_HOST", raising=False)
     monkeypatch.delenv("RABBITMQ_URI", raising=False)
-    assert runner._mgmt_queue_url_and_auth() is None
+    assert runner._mgmt_queue_url_and_auth("sessionflow.commands.test-host") is None

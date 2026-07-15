@@ -51,6 +51,7 @@ from sessionflow_worker import dir_scanner, jarvis
 from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
 from sessionflow_worker.events import emit_event
+from sessionflow_worker.host_identity import capabilities_for, detect_platform, get_host_id
 from sessionflow_worker.model_discovery import (
     cache_is_fresh,
     discover_all_data,
@@ -64,7 +65,7 @@ from sessionflow_worker.mongo import (
 )
 from sessionflow_worker.milestones import sync_session
 from sessionflow_worker.output_capture import OutputCapture
-from sessionflow_worker.rabbit import COMMANDS_QUEUE, connect, declare_topology
+from sessionflow_worker.rabbit import connect, commands_queue_name, declare_topology
 from sessionflow_worker.tmux_runtime import TmuxRuntime
 from sessionflow_worker.usage import persist_usage, scrape_usage
 
@@ -105,8 +106,8 @@ class ConsumerStalled(RuntimeError):
     """Consumer de comandos sumiu da fila (0 consumidores) — força rebuild."""
 
 
-def _mgmt_queue_url_and_auth() -> tuple[str, str] | None:
-    """Monta a URL da mgmt API p/ a fila de comandos + header Basic.
+def _mgmt_queue_url_and_auth(queue_name: str) -> tuple[str, str] | None:
+    """Monta a URL da mgmt API p/ a fila de comandos DESTE HOST + header Basic.
 
     Deriva usuário/senha/host da URI AMQP (``RABBITMQ_URI_HOST`` >
     ``RABBITMQ_URI``) e troca a porta pela da mgmt (``RABBITMQ_MGMT_HOST_PORT``,
@@ -126,21 +127,21 @@ def _mgmt_queue_url_and_auth() -> tuple[str, str] | None:
     mgmt_port = os.environ.get("RABBITMQ_MGMT_HOST_PORT", "15672")
     vhost = os.environ.get("RABBITMQ_VHOST", "/")
     vhost_enc = urllib.parse.quote(vhost, safe="")
-    queue_enc = urllib.parse.quote(COMMANDS_QUEUE, safe="")
+    queue_enc = urllib.parse.quote(queue_name, safe="")
     url = f"http://{host}:{mgmt_port}/api/queues/{vhost_enc}/{queue_enc}"
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return url, f"Basic {token}"
 
 
-def _commands_consumer_count() -> int | None:
-    """Nº de consumidores na fila ``sessionflow.commands`` (via mgmt API).
+def _commands_consumer_count(queue_name: str) -> int | None:
+    """Nº de consumidores na fila de comandos DESTE HOST (via mgmt API).
 
     Bloqueante (urllib) — chamar via ``asyncio.to_thread``. Retorna ``None`` em
     QUALQUER falha (mgmt fora, timeout, JSON inesperado): o watchdog trata
     ``None`` como "não dá pra afirmar" e NÃO age, evitando derrubar o worker por
     uma falha do próprio check.
     """
-    built = _mgmt_queue_url_and_auth()
+    built = _mgmt_queue_url_and_auth(queue_name)
     if built is None:
         return None
     url, authorization = built
@@ -157,26 +158,30 @@ def _commands_consumer_count() -> int | None:
 
 
 async def consumer_watchdog(
-    interval: float = _WATCHDOG_INTERVAL, grace: int = _WATCHDOG_GRACE
+    host_id: str,
+    interval: float = _WATCHDOG_INTERVAL,
+    grace: int = _WATCHDOG_GRACE,
 ) -> None:
-    """Vigia se a fila de comandos ainda tem consumidor vivo (auto-cura).
+    """Vigia se a fila de comandos DESTE HOST ainda tem consumidor vivo
+    (auto-cura).
 
     A cada ``interval`` consulta o broker. ``count > 0`` zera o contador;
     ``count == 0`` por ``grace`` checagens seguidas levanta ``ConsumerStalled``
     (→ rebuild via :func:`run`). ``count is None`` (não deu pra checar) é
     ignorado — não conta como falha.
     """
+    queue_name = commands_queue_name(host_id)
     misses = 0
     while True:
         await asyncio.sleep(interval)
-        count = await asyncio.to_thread(_commands_consumer_count)
+        count = await asyncio.to_thread(_commands_consumer_count, queue_name)
         if count is None:
             continue  # mgmt indisponível/erro do check: não afirma nada.
         if count > 0:
             if misses:
                 logger.info(
                     "watchdog: consumer de %s de volta (%d consumidor(es))",
-                    COMMANDS_QUEUE,
+                    queue_name,
                     count,
                 )
             misses = 0
@@ -184,13 +189,13 @@ async def consumer_watchdog(
         misses += 1
         logger.warning(
             "watchdog: 0 consumidores em %s (%d/%d)",
-            COMMANDS_QUEUE,
+            queue_name,
             misses,
             grace,
         )
         if misses >= grace:
             raise ConsumerStalled(
-                f"{COMMANDS_QUEUE} sem consumidor após {grace} checagens; rebuild"
+                f"{queue_name} sem consumidor após {grace} checagens; rebuild"
             )
 
 
@@ -210,17 +215,24 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 async def _capturable_sessions(
     db: AsyncIOMotorDatabase,
+    host_id: str,
     collection: str = SESSIONS_COLLECTION,
 ) -> list[str]:
-    """Nomes tmux das sessões que PODEM ser capturadas.
+    """Nomes tmux das sessões DESTE HOST que PODEM ser capturadas.
 
     Critério: qualquer sessão com status ativo (≠ ``stopped``), inclusive as
     externas (reais do usuário). O ``pipe-pane`` é READ-ONLY (apenas tee do
     output novo para um arquivo), não altera input nem o que a sessão exibe —
     é o que torna o monitoramento das sessões reais funcional (MVP).
+
+    Filtro por ``host_id`` (AD-011): sem ele, dois hosts com uma sessão tmux
+    de MESMO NOME colidiriam (o worker do host B tentaria capturar/gravar
+    por cima do doc da sessão do host A). ``runtime.has_session`` já filtra
+    a maioria dos casos (nomes só existem no tmux local), mas o filtro no
+    Mongo fecha a lacuna de colisão de nome entre hosts.
     """
     cursor = db[collection].find(
-        {"status": {"$in": ACTIVE_STATUSES}},
+        {"status": {"$in": ACTIVE_STATUSES}, "host_id": host_id},
         projection={"tmux_name": 1},
     )
     return [doc["tmux_name"] async for doc in cursor if doc.get("tmux_name")]
@@ -230,6 +242,7 @@ async def capture_loop(
     capture: OutputCapture,
     db: AsyncIOMotorDatabase,
     runtime: TmuxRuntime,
+    host_id: str,
     interval: float = CAPTURE_INTERVAL,
     collection: str = SESSIONS_COLLECTION,
 ) -> None:
@@ -242,7 +255,7 @@ async def capture_loop(
     started: set[str] = set()
     while True:
         try:
-            names = await _capturable_sessions(db, collection)
+            names = await _capturable_sessions(db, host_id, collection)
         except Exception:  # noqa: BLE001 - Mongo pode oscilar; loga e segue.
             logger.exception("capture_loop: falha ao listar sessões capturáveis")
             await asyncio.sleep(interval)
@@ -352,14 +365,18 @@ MILESTONES_INTERVAL = 6.0
 
 async def milestones_loop(
     db: AsyncIOMotorDatabase,
+    host_id: str,
     channel=None,
     interval: float = MILESTONES_INTERVAL,
 ) -> None:
-    """Sincroniza os MARCOS (``.sessionflow/milestones.json``) das sessões ativas.
+    """Sincroniza os MARCOS (``.sessionflow/milestones.json``) das sessões
+    ativas DESTE HOST.
 
     Para cada sessão ativa com ``work_dir``, lê o arquivo de marcos e reflete na
     coleção ``tasks`` (que a Home mostra). Best-effort: falha por sessão não
-    derruba o loop.
+    derruba o loop. Filtro por ``host_id`` (AD-011): ``work_dir`` é um caminho
+    de arquivo LOCAL — ler o de uma sessão de outro host sempre falharia (e já
+    era tolerado silenciosamente), mas o filtro evita o trabalho/erro à toa.
     """
     coll = db[SESSIONS_COLLECTION]
     while True:
@@ -368,6 +385,7 @@ async def milestones_loop(
                 {
                     "status": {"$in": list(ACTIVE_STATUSES)},
                     "work_dir": {"$nin": [None, ""]},
+                    "host_id": host_id,
                 },
                 projection={"tmux_name": 1, "work_dir": 1},
             ).to_list(length=200)
@@ -407,15 +425,42 @@ async def milestones_loop(
         await asyncio.sleep(interval)
 
 
-async def heartbeat_loop(
-    db: AsyncIOMotorDatabase, interval: float = HEARTBEAT_INTERVAL
-) -> None:
-    """Publica o status do Worker (hostname + boot) p/ a API mostrar no Perfil.
+async def _backfill_legacy_host_id(db: AsyncIOMotorDatabase, host_id: str) -> None:
+    """Migração 1x (idempotente): sessões sem ``host_id`` pertencem a ESTE host.
 
-    Faz upsert de 1 doc (``_id="worker"``) com ``hostname``/``started_at``/
-    ``updated_at`` a cada ``interval``. ``started_at`` reflete o boot DESTE
-    processo (re-setado a cada restart) → uptime correto; ``updated_at`` recente
-    indica que o worker está vivo (online).
+    Multi-host (AD-011): antes desta feature, nenhuma sessão tinha `host_id` —
+    todas eram, na prática, do único worker que existia. Rodar isso no boot
+    garante que elas continuem sendo geridas por ESTE worker (o de sempre)
+    mesmo depois de um segundo host entrar em cena. É no-op depois da 1ª vez
+    (não sobra doc sem `host_id` pra migrar de novo).
+    """
+    coll = db[SESSIONS_COLLECTION]
+    result = await coll.update_many(
+        {"host_id": {"$exists": False}}, {"$set": {"host_id": host_id}}
+    )
+    if result.modified_count:
+        logger.info(
+            "backfill: %d sessão(ões) legada(s) migrada(s) p/ host_id=%s",
+            result.modified_count,
+            host_id,
+        )
+
+
+async def heartbeat_loop(
+    db: AsyncIOMotorDatabase,
+    host_id: str,
+    platform: str,
+    capabilities: dict,
+    interval: float = HEARTBEAT_INTERVAL,
+) -> None:
+    """Publica o status DESTE WORKER (multi-host) p/ a API mostrar no Perfil.
+
+    Faz upsert de 1 doc **por host** (``_id=host_id``, não mais um único
+    ``_id="worker"`` fixo) com ``hostname``/``platform``/``capabilities``/
+    ``started_at``/``updated_at`` a cada ``interval``. ``started_at`` reflete o
+    boot DESTE processo (re-setado a cada restart) → uptime correto;
+    ``updated_at`` recente indica que o worker está vivo (online). Múltiplos
+    workers (hosts diferentes) não pisam um no doc do outro.
     """
     coll = db[WORKER_STATUS_COLLECTION]
     hostname = socket.gethostname()
@@ -423,10 +468,12 @@ async def heartbeat_loop(
     pid = os.getpid()
     while True:
         await coll.update_one(
-            {"_id": "worker"},
+            {"_id": host_id},
             {
                 "$set": {
                     "hostname": hostname,
+                    "platform": platform,
+                    "capabilities": capabilities,
                     "started_at": started,
                     "updated_at": datetime.now(timezone.utc),
                     "pid": pid,
@@ -443,21 +490,32 @@ async def _build_and_run(stop: asyncio.Event) -> None:
     Levanta exceção se a infra cair — o caller (:func:`run`) trata com backoff.
     A conexão Rabbit é fechada no finally; o cliente Mongo também.
     """
+    host_id = get_host_id()
+    host_platform = detect_platform()
+    caps = capabilities_for(host_platform)
+    logger.info(
+        "Identidade do host: host_id=%s platform=%s capabilities=%s",
+        host_id,
+        host_platform,
+        caps,
+    )
+
     db = get_db()
     await ensure_indexes(db)
     logger.info("Mongo conectado e índices garantidos (db=%s)", db.name)
+    await _backfill_legacy_host_id(db, host_id)
 
     connection = await connect()
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=10)
-    await declare_topology(channel)
-    logger.info("Rabbit conectado e topologia declarada")
+    await declare_topology(channel, host_id)
+    logger.info("Rabbit conectado e topologia declarada (fila do host: %s)", host_id)
 
     runtime = TmuxRuntime()
     logger.info("TmuxRuntime inicializado")
 
-    discovery = Discovery(runtime, db, channel=channel)
-    consumer = CommandConsumer(channel, db, runtime=runtime)
+    discovery = Discovery(runtime, db, host_id, channel=channel)
+    consumer = CommandConsumer(channel, db, host_id, runtime=runtime)
     capture = OutputCapture(runtime, db, channel=channel)
     logger.info("Componentes montados: Discovery, CommandConsumer, OutputCapture")
 
@@ -472,12 +530,12 @@ async def _build_and_run(stop: asyncio.Event) -> None:
             dir_scanner.schedule_scan(db, interval_seconds=DIR_SCAN_INTERVAL),
             name="dir_scanner",
         ),
-        asyncio.create_task(capture_loop(capture, db, runtime), name="capture_loop"),
+        asyncio.create_task(capture_loop(capture, db, runtime, host_id), name="capture_loop"),
         asyncio.create_task(model_discovery_loop(db), name="model_discovery"),
         asyncio.create_task(usage_loop(db), name="usage_loop"),
-        asyncio.create_task(heartbeat_loop(db), name="heartbeat"),
-        asyncio.create_task(milestones_loop(db, channel=channel), name="milestones"),
-        asyncio.create_task(consumer_watchdog(), name="consumer_watchdog"),
+        asyncio.create_task(heartbeat_loop(db, host_id, host_platform, caps), name="heartbeat"),
+        asyncio.create_task(milestones_loop(db, host_id, channel=channel), name="milestones"),
+        asyncio.create_task(consumer_watchdog(host_id), name="consumer_watchdog"),
         asyncio.create_task(_stopper(), name="stopper"),
     ]
     logger.info("Worker no ar: %d tasks rodando", len(tasks) - 1)

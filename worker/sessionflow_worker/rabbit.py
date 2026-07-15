@@ -2,10 +2,13 @@
 
 Transporte do SessionFlow sobre RabbitMQ via ``aio-pika``.
 
-Topologia (AD-010, isolamento por prefixo ``sessionflow``):
+Topologia (AD-010/AD-011, isolamento por prefixo ``sessionflow``):
     - exchange direct ``sessionflow`` (durable)
-    - fila ``sessionflow.commands`` (API -> Worker), bindada à routing key
-      homônima ``sessionflow.commands``
+    - fila ``sessionflow.commands.<host_id>`` (API -> Worker DAQUELE host),
+      bindada à routing key homônima. Cada worker só bind/consome a SUA
+      própria fila — dois workers (hosts diferentes) NUNCA competem pela
+      mesma fila, o que evitaria um comando de um host ser entregue ao
+      worker errado (round-robin do RabbitMQ). Ver ``docs/multi-host-plan.md``.
     - routing key ``sessionflow.events`` (Worker -> API): os eventos são
       PUBLICADOS no exchange com essa routing key. A fila consumidora é a
       ``sessionflow.sse``, declarada/bindada pela própria API
@@ -30,6 +33,18 @@ from dotenv import load_dotenv
 
 EXCHANGE_NAME = "sessionflow"
 COMMANDS_QUEUE = "sessionflow.commands"
+
+
+def commands_queue_name(host_id: str) -> str:
+    """Nome da fila/routing key de comandos DESTE host — ``<base>.<host_id>``.
+
+    Cada worker declara e consome só a própria fila; o publisher (API)
+    resolve o ``host_id`` alvo (da sessão) e publica com essa routing key —
+    isso é o que garante que um comando só chega ao worker certo.
+    """
+    return f"{COMMANDS_QUEUE}.{host_id}"
+
+
 # ``EVENTS_QUEUE`` é, na prática, a ROUTING KEY usada pelos publishers de
 # eventos (command_consumer._emit, output_capture._publish, discovery). NÃO há
 # fila homônima declarada pelo worker: a fila consumidora é a ``sessionflow.sse``
@@ -67,14 +82,15 @@ async def connect(uri: str | None = None) -> aio_pika.abc.AbstractRobustConnecti
 
 async def declare_topology(
     channel: aio_pika.abc.AbstractChannel,
+    host_id: str,
 ) -> aio_pika.abc.AbstractExchange:
-    """Declara exchange e a fila de comandos + bind. Idempotente.
+    """Declara exchange e a fila de comandos DESTE HOST + bind. Idempotente.
 
-    Declara apenas a fila ``sessionflow.commands`` (consumida pelo worker). A
-    routing key ``sessionflow.events`` é só de PUBLICAÇÃO: a fila consumidora
-    (``sessionflow.sse``) é declarada/bindada pela API. NÃO declaramos aqui a
-    fila durável homônima ``sessionflow.events`` porque ninguém a consome e ela
-    acumulava mensagens indefinidamente.
+    Declara só a fila ``sessionflow.commands.<host_id>`` (consumida por ESTE
+    worker). A routing key ``sessionflow.events`` é só de PUBLICAÇÃO: a fila
+    consumidora (``sessionflow.sse``) é declarada/bindada pela API. NÃO
+    declaramos aqui a fila durável homônima ``sessionflow.events`` porque
+    ninguém a consome e ela acumulava mensagens indefinidamente.
 
     Retorna o exchange ``sessionflow`` para reuso por publishers.
     """
@@ -84,8 +100,9 @@ async def declare_topology(
         durable=True,
     )
 
-    queue = await channel.declare_queue(COMMANDS_QUEUE, durable=True)
-    await queue.bind(exchange, routing_key=COMMANDS_QUEUE)
+    queue_name = commands_queue_name(host_id)
+    queue = await channel.declare_queue(queue_name, durable=True)
+    await queue.bind(exchange, routing_key=queue_name)
 
     return exchange
 
