@@ -32,6 +32,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from sessionflow_worker import jarvis
 from sessionflow_worker.agent_launcher import AgentType
+from sessionflow_worker.codex_metrics import codex_metrics_for
 from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
 from sessionflow_worker.metrics import claude_metrics_for
 from sessionflow_worker.output_capture import (
@@ -350,16 +351,22 @@ class Discovery:
             if screen_changed:
                 set_fields["last_activity_at"] = now
 
-        # Métricas REAIS da janela de contexto (só sessões Claude com work_dir).
-        # É leitura de 1 arquivo JSONL por ciclo — barato; computamos sempre.
+        # Métricas REAIS da janela de contexto (sessões Claude e Codex com
+        # work_dir — gemini/opencode ainda não têm extractor).
+        # É leitura de 1 arquivo por ciclo — barato; computamos sempre.
         # Best-effort: falhar aqui NÃO pode derrubar a reconciliação. Quando
-        # não há dado (não-claude / sem work_dir / JSONL ausente) deixamos o
-        # campo ``metrics`` como ``None`` (o front mostra "—").
-        metrics = self._claude_metrics(info)
-        # Anexa os limites REAIS (% sessão/semana) às métricas das sessões
-        # claude, quando há snapshot recente em ``host_usage``. Se não houver
-        # ``metrics`` (não-claude / sem JSONL), ``limits`` fica ausente.
-        if metrics is not None and limits is not None:
+        # não há dado (agente sem extractor / sem work_dir / log ausente)
+        # deixamos o campo ``metrics`` como ``None`` (o front mostra "—").
+        metrics = self._agent_metrics(info)
+        # Anexa os limites REAIS (% sessão/semana) só nas métricas CLAUDE — o
+        # snapshot em ``host_usage`` é o /usage do Claude; anexar em métricas
+        # codex (ou outro agente) misturaria rate-limit de um provedor com
+        # tokens/contexto de outro, uma info sem sentido pra quem está vendo.
+        if (
+            metrics is not None
+            and limits is not None
+            and info.agent_type is AgentType.CLAUDE
+        ):
             metrics["limits"] = limits
         set_fields["metrics"] = metrics
 
@@ -560,19 +567,25 @@ class Discovery:
             except Exception:  # noqa: BLE001 - jarvis nunca derruba o ciclo
                 logger.debug("jarvis: agendamento falhou para %r", name, exc_info=True)
 
-    def _claude_metrics(self, info: SessionInfo) -> dict | None:
-        """Métricas REAIS de contexto para sessões Claude (best-effort).
+    def _agent_metrics(self, info: SessionInfo) -> dict | None:
+        """Métricas REAIS de contexto/tokens do agente (best-effort).
 
-        Retorna ``None`` para sessões não-Claude, sem ``work_dir``, ou se a
-        leitura do JSONL falhar — nunca propaga exceção.
+        Claude e Codex têm extractors dedicados (formatos de log bem
+        diferentes — JSONL por projeto vs rollout por data, ver
+        ``metrics.py``/``codex_metrics.py``); gemini/opencode ainda não têm
+        (``None``). Sem ``work_dir`` também é ``None``. Nunca propaga exceção.
         """
-        if info.agent_type is not AgentType.CLAUDE or not info.work_dir:
+        if not info.work_dir:
             return None
         try:
-            return claude_metrics_for(info.work_dir)
+            if info.agent_type is AgentType.CLAUDE:
+                return claude_metrics_for(info.work_dir)
+            if info.agent_type is AgentType.CODEX:
+                return codex_metrics_for(info.work_dir)
+            return None
         except Exception:  # noqa: BLE001 - métricas nunca derrubam o ciclo
             logger.debug(
-                "métricas Claude falharam para %r", info.name, exc_info=True
+                "métricas do agente falharam para %r", info.name, exc_info=True
             )
             return None
 
