@@ -442,6 +442,17 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
                 </button>
               }
+              @if (taskHostBadge(t); as host) {
+                <span class="sf-task-host" [title]="'Roda em: ' + host">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="8" rx="2" />
+                    <rect x="3" y="12" width="18" height="8" rx="2" />
+                    <path d="M7 8h.01M7 16h.01" />
+                  </svg>
+                </span>
+              }
               <span class="sf-task-session mono">{{ sessionShort(t) }}</span>
             </div>
             </div>
@@ -1218,6 +1229,13 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      /* Badge de host da tarefa (multi-host) — compacto, só ícone + tooltip. */
+      .sf-task-host {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #d4a373;
+      }
 
       /* Botão ▶ para iniciar tarefas 'todo'. */
       .sf-task-play {
@@ -1861,6 +1879,18 @@ export class InicioComponent implements OnInit {
   /** Nome da sessão da tarefa (chip à direita) — nome real, sem cortar a 6. */
   sessionShort(t: Task): string {
     return t.session_id ?? '';
+  }
+
+  /**
+   * Host da sessão dona desta tarefa (multi-host, AD-011) — só quando há
+   * MAIS DE 1 host ativo (não polui a lista do caso comum de hoje).
+   */
+  taskHostBadge(t: Task): string | null {
+    if (!this.workers.hasMultipleHosts() || !t.session_id) {
+      return null;
+    }
+    const session = this.sessions().find((s) => s.tmux_name === t.session_id);
+    return this.workers.hostname(session?.host_id);
   }
 
   // --- Navigation ---

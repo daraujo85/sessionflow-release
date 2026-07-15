@@ -78,11 +78,12 @@ def test_filter_empty_query_orders_by_mtime_desc(tmp_path: Path) -> None:
 
 def test_to_suggestion_collapses_home() -> None:
     path = Path.home() / "dev" / "myproj"
-    suggestion = to_suggestion(path)
+    suggestion = to_suggestion(path, "test-host")
     assert suggestion["name"] == "myproj"
     assert suggestion["path"] == "~/dev/myproj"
     assert suggestion["parent"] == "~/dev"
     assert suggestion["root"] == "~/dev"
+    assert suggestion["host_id"] == "test-host"
 
 
 def test_default_roots_are_under_home() -> None:

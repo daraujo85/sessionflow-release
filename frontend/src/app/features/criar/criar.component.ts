@@ -9,6 +9,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { ApiService } from '../../core/api.service';
 import { AgentModel, AgentType, CreateSessionPayload, Directory } from '../../core/models';
 import { AGENT_META, AgentMeta } from '../../shared/status-color';
+import { WorkersStore } from '../../core/workers-store';
 
 /** Reasoning-effort options (hidden for the gemini agent). */
 type Effort = 'Baixo' | 'Médio' | 'Alto' | 'Máximo';
@@ -114,6 +115,35 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
                   (click)="effort.set(e)"
                 >
                   {{ e }}
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Host onde criar (multi-host) — só aparece com >1 host ativo. -->
+        @if (hostOptions().length > 0) {
+          <div class="field">
+            <span class="label">Rodar em</span>
+            <div class="chips">
+              <button
+                type="button"
+                class="chip"
+                [class.selected]="hostId() === null"
+                (click)="hostId.set(null)"
+              >
+                Auto
+              </button>
+              @for (h of hostOptions(); track h.host_id) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.selected]="hostId() === h.host_id"
+                  [disabled]="!h.online"
+                  [title]="h.online ? '' : 'Offline agora'"
+                  (click)="hostId.set(h.host_id ?? null)"
+                >
+                  {{ h.display_name || h.hostname || '—' }}{{ h.online ? '' : ' (offline)' }}
                 </button>
               }
             </div>
@@ -403,6 +433,7 @@ export class CriarComponent {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  protected readonly workers = inject(WorkersStore);
 
   /** Static option lists exposed to the template. */
   readonly agents = AGENTS;
@@ -420,6 +451,13 @@ export class CriarComponent {
   readonly freeModel = signal<string>('');
   readonly effort = signal<Effort | null>(null);
   readonly workDir = signal('');
+  /** Host ONDE criar (multi-host, AD-011). `null` = auto (worker mais ativo). */
+  readonly hostId = signal<string | null>(null);
+  /** Hosts conhecidos, pro seletor — só quando há MAIS DE 1 (não polui a
+   * tela do caso comum de hoje, 1 host só). */
+  readonly hostOptions = computed(() =>
+    this.workers.hasMultipleHosts() ? this.workers.workers() : [],
+  );
 
   // --- Models (fetched per agent) ---
   readonly models = signal<AgentModel[]>([]);
@@ -460,7 +498,7 @@ export class CriarComponent {
       .pipe(
         debounceTime(250),
         distinctUntilChanged(),
-        switchMap((q) => this.api.searchDirectories(q)),
+        switchMap((q) => this.api.searchDirectories(q, this.hostId())),
         takeUntilDestroyed(),
       )
       .subscribe({
@@ -579,6 +617,7 @@ export class CriarComponent {
       model: modelValue || null,
       // effort is null for gemini or when nothing is selected.
       effort: isGemini ? null : (this.effort() ?? null),
+      host_id: this.hostId(),
     };
 
     this.api.createSession(payload).subscribe({

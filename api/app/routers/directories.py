@@ -42,9 +42,14 @@ async def search_directories(
     request: Request,
     q: str = Query(default="", description="Substring to match on path/name"),
     limit: int = Query(default=6, ge=1, le=50),
+    host_id: str | None = Query(
+        default=None,
+        description="Host onde a sessão será criada (multi-host, AD-011) — "
+        "escopa as sugestões pra esse host. Omitido = busca em todos.",
+    ),
 ) -> DirectoryListOut:
     repo = _get_repo(request)
-    docs = await repo.search(q, limit=limit)
+    docs = await repo.search(q, limit=limit, host_id=host_id)
     items = [DirectoryOut.model_validate(doc) for doc in docs]
     no_match = bool(q.strip()) and not items
     return DirectoryListOut(items=items, no_match=no_match)

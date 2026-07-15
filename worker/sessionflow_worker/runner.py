@@ -527,7 +527,7 @@ async def _build_and_run(stop: asyncio.Event) -> None:
         asyncio.create_task(discovery.run_forever(interval=DISCOVERY_INTERVAL), name="discovery"),
         asyncio.create_task(consumer.run(), name="command_consumer"),
         asyncio.create_task(
-            dir_scanner.schedule_scan(db, interval_seconds=DIR_SCAN_INTERVAL),
+            dir_scanner.schedule_scan(db, DIR_SCAN_INTERVAL, host_id),
             name="dir_scanner",
         ),
         asyncio.create_task(capture_loop(capture, db, runtime, host_id), name="capture_loop"),
