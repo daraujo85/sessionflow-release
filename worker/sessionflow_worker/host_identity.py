@@ -63,16 +63,31 @@ def detect_platform() -> str:
 def capabilities_for(plat: str) -> dict:
     """Deriva as CAPABILITIES anunciadas pro frontend, a partir da plataforma.
 
-    Espelha o mapeamento do ``PORTABILITY.md``: TTS/transcrição/"abrir no
-    Mac" são macOS-only hoje. ``tts`` também é ``True`` fora do Mac quando
-    ``SESSIONFLOW_JARVIS_TTS=api`` está setado (a API hospedada funciona de
-    qualquer plataforma — só o fallback local ``say``/XTTS é mac-only).
+    "abrir no Mac" é macOS-only de verdade (osascript+Terminal.app). TTS e
+    transcrição, porém, não são tecnicamente presas ao Mac — são presas ao
+    que está rodando LOCALMENTE naquele host:
+
+    - ``tts``: ``True`` no Mac (servidor XTTS local de sempre), ou quando
+      ``SESSIONFLOW_JARVIS_TTS=api`` (API hospedada, qualquer plataforma), ou
+      quando ``SESSIONFLOW_HOST_TTS=1`` — declarado por um host que subiu seu
+      PRÓPRIO servidor XTTS local (ex.: Windows/WSL2 com GPU NVIDIA rodando
+      ``coqui-tts`` em CUDA na mesma porta que o ``jarvis.py`` já espera).
+    - ``transcription``: ``True`` no Mac (mlx-whisper) ou quando
+      ``SESSIONFLOW_HOST_TRANSCRIPTION=1`` — declarado por um host com
+      backend CUDA (``faster-whisper``) configurado (ver ``transcriber.py``).
+
+    Esses dois envs são o host "avisando" que já tem a infra local no ar;
+    não fazemos probe de rede aqui (capabilities são calculadas 1x no boot).
     """
     tts_via_api = os.environ.get("SESSIONFLOW_JARVIS_TTS", "").strip().lower() == "api"
+    tts_local = os.environ.get("SESSIONFLOW_HOST_TTS", "").strip().lower() in ("1", "true")
+    transcription_local = os.environ.get(
+        "SESSIONFLOW_HOST_TRANSCRIPTION", ""
+    ).strip().lower() in ("1", "true")
     is_darwin = plat == "darwin"
     return {
         "platform": plat,
-        "tts": is_darwin or tts_via_api,
-        "transcription": is_darwin,  # mlx-whisper é Apple Silicon only (hoje)
+        "tts": is_darwin or tts_via_api or tts_local,
+        "transcription": is_darwin or transcription_local,
         "open_terminal": is_darwin,  # "abrir no Mac" via osascript
     }
