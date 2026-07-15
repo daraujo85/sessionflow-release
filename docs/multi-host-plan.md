@@ -1,14 +1,14 @@
 # Plano: múltiplos hosts (Mac + Windows/WSL2)
 
-> Status (2026-07-15): **TODAS as 4 fases implementadas e validadas** —
-> inclusive com um worker de VERDADE rodando ao mesmo tempo no Mac e numa
-> máquina Windows/WSL2 de teste, sem nenhuma interferência entre os dois
-> (fila própria por host, capabilities corretas, sessões reais intactas).
-> O worker de teste foi parado depois da validação (era processo manual, não
-> serviço persistente) — plano fica pronto pra uso real quando quiser.
-> Ver também [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre "rodar
-> o worker fora do Mac" (1 host por vez); este cobre "vários hosts ativos ao
-> mesmo tempo, cada um com suas sessões".
+> Status (2026-07-15): **TODAS as 4 fases implementadas e validadas**, mais
+> alguns retoques pedidos pelo Diego depois de usar na prática: nome de host
+> editável, worker do Windows como serviço persistente (sempre on), badge de
+> host nas Tarefas (não só nos cards de sessão), e — achado importante —
+> **o autocomplete de diretório também precisava ser escopado por host**
+> (mesmo bug de índice único que afetou `sessions`, agora corrigido em
+> `host_directories`). Ver também [`PORTABILITY.md`](../PORTABILITY.md) —
+> aquele doc cobre "rodar o worker fora do Mac" (1 host por vez); este cobre
+> "vários hosts ativos ao mesmo tempo, cada um com suas sessões".
 
 ## Objetivo
 
@@ -77,6 +77,20 @@ controlando as sessões do seu próprio host, sem features incompatíveis
     `host_id`. Avaliado: são dados da CONTA Claude, não da máquina — dois
     hosts com a mesma conta devem ver os mesmos modelos/limites mesmo.
     Nome sugere "por host" mas é intencionalmente compartilhado.
+11. ✅ **RESOLVIDO (achado 2026-07-15, mesma família do achado #4)** —
+    `host_directories` (cache do autocomplete de "Diretório de trabalho" na
+    tela de criar sessão) tinha o MESMO problema de índice único só em
+    `path`: dois hosts com o mesmo caminho relativo (ex.:
+    `~/Documents/projects/foo`) colidiriam no upsert, e a busca não tinha
+    como escopar por host — o autocomplete misturaria diretórios de
+    máquinas diferentes (ex.: sugerir um caminho do Mac pra uma sessão que
+    vai rodar no Windows). **Solução:** `dir_scanner.py` estampa `host_id`
+    em cada sugestão; índice único virou `(host_id, path)` composto;
+    `GET /directories` aceita `host_id` opcional (fallback = busca em
+    todos, comportamento antigo); frontend passa o host escolhido na tela
+    de criar. 476 docs legados (sem `host_id`, virariam duplicata
+    permanente) foram limpos em produção — o scan periódico já os
+    substituiu por versões com `host_id`.
 
 ## Design proposto (rascunho — sujeito a mudar com os testes)
 
@@ -227,7 +241,11 @@ do worker remoto como proxy local.
      `WorkersStore.hostname()` (usado nos badges de Home/Sessões) já prefere
      o `display_name` quando existir. Testado de ponta a ponta (renomear →
      confirmar via `GET /workers` → limpar).
-5. ⬜ Ajustes finos conforme o uso real apontar problemas na prática.
+5. ✅ Ajustes de uso real (2026-07-15): nome de host editável, worker do
+   Windows como serviço persistente, badge de host nas Tarefas, seletor de
+   host na tela de criar sessão, e correção do autocomplete de diretório
+   (achado #11 acima) — todos a pedido do Diego depois de usar o Perfil e a
+   tela de criar sessão na prática.
 
 ## Testes / dúvidas a validar (Diego vai pedir aos poucos)
 

@@ -95,16 +95,21 @@ def _safe_mtime(path: Path) -> float:
         return 0.0
 
 
-def to_suggestion(path: Path) -> dict:
-    """Estrutura amigável p/ a API: ``{path, parent, name, root}``.
+def to_suggestion(path: Path, host_id: str) -> dict:
+    """Estrutura amigável p/ a API: ``{path, parent, name, root, host_id}``.
 
-    Caminhos sob o home são colapsados com ``~``.
+    Caminhos sob o home são colapsados com ``~``. ``host_id`` (multi-host,
+    AD-011) marca de qual host é esse diretório — sem isso, o mesmo caminho
+    relativo (ex.: ``~/Documents/projects/foo``) existindo em DOIS hosts
+    colidiria no upsert (chave única era só ``path``), e o autocomplete
+    misturaria diretórios de máquinas diferentes sem distinção.
     """
     return {
         "path": _collapse_home(path),
         "parent": _collapse_home(path.parent),
         "name": path.name,
         "root": _collapse_home(path.parent),
+        "host_id": host_id,
     }
 
 
@@ -121,38 +126,49 @@ async def _ensure_path_index(
     db: AsyncIOMotorDatabase,
     collection: str,
 ) -> None:
-    """Garante o índice único em ``path`` (idempotente)."""
+    """Garante o índice único em ``(host_id, path)`` (idempotente).
+
+    Multi-host (AD-011): era só ``path`` — dois hosts com o mesmo caminho
+    relativo colidiriam no upsert. O índice antigo (``uq_path``) é removido
+    (best-effort) e substituído pelo composto.
+    """
+    try:
+        await db[collection].drop_index("uq_path")
+    except Exception:  # noqa: BLE001 - índice pode não existir (install novo)
+        pass
     await db[collection].create_index(
-        [("path", ASCENDING)],
-        name="uq_path",
+        [("host_id", ASCENDING), ("path", ASCENDING)],
+        name="uq_host_path",
         unique=True,
     )
 
 
 async def persist_scan(
     db: AsyncIOMotorDatabase,
+    host_id: str,
     roots: list[Path] = DEFAULT_ROOTS,
     collection: str = HOST_DIRECTORIES_COLLECTION,
 ) -> int:
     """Varre ``roots`` e faz upsert idempotente das sugestões em Mongo.
 
-    Roda ``scan_roots``, converte via ``to_suggestion`` e faz upsert por
-    ``path`` (chave única) na coleção dada, gravando também ``scanned_at``.
-    Garante o índice único em ``path`` antes do upsert. Reexecuções não
-    duplicam: o mesmo ``path`` apenas atualiza ``scanned_at``.
+    Roda ``scan_roots``, converte via ``to_suggestion`` (estampando
+    ``host_id``) e faz upsert por ``(host_id, path)`` (chave única composta)
+    na coleção dada, gravando também ``scanned_at``. Garante o índice antes
+    do upsert. Reexecuções não duplicam: o mesmo ``(host_id, path)`` apenas
+    atualiza ``scanned_at``.
 
     Retorna o número de documentos upsertados (inseridos + atualizados).
     """
     await _ensure_path_index(db, collection)
 
-    suggestions = [to_suggestion(p) for p in scan_roots(roots)]
+    suggestions = [to_suggestion(p, host_id) for p in scan_roots(roots)]
     if not suggestions:
         return 0
 
     now = datetime.now(timezone.utc)
     operations = [
         UpdateOne(
-            {"path": s["path"]},
+            {"host_id": host_id, "path": s["path"]},
             {"$set": {**s, "scanned_at": now}},
             upsert=True,
         )
@@ -166,6 +182,7 @@ async def persist_scan(
 async def schedule_scan(
     db: AsyncIOMotorDatabase,
     interval_seconds: float,
+    host_id: str,
     roots: list[Path] = DEFAULT_ROOTS,
     collection: str = HOST_DIRECTORIES_COLLECTION,
 ) -> None:
@@ -175,5 +192,5 @@ async def schedule_scan(
     cancelamento da task.
     """
     while True:
-        await persist_scan(db, roots=roots, collection=collection)
+        await persist_scan(db, host_id, roots=roots, collection=collection)
         await asyncio.sleep(interval_seconds)

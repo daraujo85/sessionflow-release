@@ -196,6 +196,9 @@ export interface CreateSessionPayload {
   work_dir: string;
   model: string | null;
   effort: string | null;
+  /** Host ONDE criar (multi-host, AD-011). Ausente = auto-resolve pro
+   * worker mais recentemente ativo (comportamento de hoje, 1 host só). */
+  host_id?: string | null;
 }
 
 /** Config geral do app — `GET/PUT /settings`. */

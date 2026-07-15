@@ -391,10 +391,16 @@ export class ApiService {
 
   // --- Directories ---
 
-  searchDirectories(q?: string): Observable<Directory[]> {
+  /** `hostId` (multi-host, AD-011) escopa as sugestões pro host onde a
+   * sessão vai ser criada — sem isso, o autocomplete mistura diretórios de
+   * máquinas diferentes. Omitido = busca em todos (fallback). */
+  searchDirectories(q?: string, hostId?: string | null): Observable<Directory[]> {
     let params = new HttpParams();
     if (q) {
       params = params.set('q', q);
+    }
+    if (hostId) {
+      params = params.set('host_id', hostId);
     }
     return this.http
       .get<{ items: Directory[] }>(this.url('/directories'), { params })
