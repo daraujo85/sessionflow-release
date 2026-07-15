@@ -411,10 +411,18 @@ class CommandConsumer:
         # determinística, sem depender de Acessibilidade. (Para abas de verdade,
         # o iTerm2 expõe ``create tab`` no AppleScript — trocar via
         # SESSIONFLOW_TERMINAL_APP se um dia for instalado.)
+        #
+        # ORDEM IMPORTA: ``do script`` ANTES de ``activate``. Com o Terminal.app
+        # fechado, ``activate`` sozinho já lança o app, que abre sua janela
+        # padrão (shell em branco); o ``do script`` seguinte então abre uma
+        # SEGUNDA janela (a anexada) — resultado: duas janelas por clique.
+        # Chamando ``do script`` primeiro, ele lança o Terminal (se preciso) E
+        # roda o comando na mesma janela criada pro lançamento — uma só.
+        # ``activate`` depois só traz a janela existente pra frente.
         script = (
             f'tell application "{term_app}"\n'
-            f"  activate\n"
             f'  set _t to do script "{attach_cmd}"\n'
+            f"  activate\n"
             f"  try\n"
             f'    set custom title of _t to "{title}"\n'
             f"  end try\n"
