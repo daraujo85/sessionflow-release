@@ -1,14 +1,14 @@
 # Plano: múltiplos hosts (Mac + Windows/WSL2)
 
-> Status (2026-07-14): **Fases 1 e 2 implementadas, testadas e em produção
-> no Mac** (host_id + capabilities + fila por host + rede LAN/túnel). Falta
-> a **Fase 3 (frontend: badge de host + gate de capabilities)** e a **Fase 4
-> (rodar o worker de fato no Windows)** — essa última só depende de decisão
+> Status (2026-07-15): **Fases 1, 2 e 3 implementadas, testadas e em
+> produção no Mac** (host_id + capabilities + fila por host + rede LAN/túnel
+> + frontend com badge/filtro de host e gate de capabilities). Falta só a
+> **Fase 4 (rodar o worker de fato no Windows)** — depende de decisão
 > operacional (instalar `uv` no WSL2 e apontar `MONGO_URI_HOST`/
-> `RABBITMQ_URI_HOST` pra LAN ou pro túnel), o código já suporta. Ver também
-> [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre "rodar o worker
-> fora do Mac" (1 host por vez); este cobre "vários hosts ativos ao mesmo
-> tempo, cada um com suas sessões".
+> `RABBITMQ_URI_HOST` pra LAN ou pro túnel), o código já suporta de ponta a
+> ponta. Ver também [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre
+> "rodar o worker fora do Mac" (1 host por vez); este cobre "vários hosts
+> ativos ao mesmo tempo, cada um com suas sessões".
 
 ## Objetivo
 
@@ -180,9 +180,12 @@ do worker remoto como proxy local.
    Junto: índice composto `(host_id, tmux_name)` + backfill automático
    (3743 sessões migradas) + correção do bug crítico em
    `_mark_missing_stopped`.
-3. ⬜ **Pendente** — Frontend: badge de host (quando >1 host ativo) + gate de
-   capabilities (esconder TTS/"abrir no Mac"/transcrição quando o host da
-   sessão não suporta). `GET /workers` já expõe tudo que o frontend precisa.
+3. ✅ **Feito** — Frontend: badge de host (Home/Sessões, só quando >1 host
+   ativo), filtro por host em Sessões, gate de capabilities (esconde
+   JARVIS/TTS, "abrir no Mac" e o gravador de áudio/transcrição quando o
+   host da sessão não suporta) em `detalhe.component.ts`, e Perfil listando
+   todos os hosts conhecidos. Novo `WorkersStore` compartilhado
+   (`core/workers-store.ts`), fail-open por padrão. `tsc`/`ng build` OK.
 4. ⬜ **Pendente** — Rodar o worker de fato numa segunda máquina (WSL2)
    apontando pra stack. Pré-requisitos já resolvidos (rede LAN/túnel
    testados, `uv`/tmux/python já no WSL2 da máquina de teste) — só falta
