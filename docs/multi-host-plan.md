@@ -1,14 +1,14 @@
 # Plano: múltiplos hosts (Mac + Windows/WSL2)
 
-> Status (2026-07-15): **Fases 1, 2 e 3 implementadas, testadas e em
-> produção no Mac** (host_id + capabilities + fila por host + rede LAN/túnel
-> + frontend com badge/filtro de host e gate de capabilities). Falta só a
-> **Fase 4 (rodar o worker de fato no Windows)** — depende de decisão
-> operacional (instalar `uv` no WSL2 e apontar `MONGO_URI_HOST`/
-> `RABBITMQ_URI_HOST` pra LAN ou pro túnel), o código já suporta de ponta a
-> ponta. Ver também [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre
-> "rodar o worker fora do Mac" (1 host por vez); este cobre "vários hosts
-> ativos ao mesmo tempo, cada um com suas sessões".
+> Status (2026-07-15): **TODAS as 4 fases implementadas e validadas** —
+> inclusive com um worker de VERDADE rodando ao mesmo tempo no Mac e numa
+> máquina Windows/WSL2 de teste, sem nenhuma interferência entre os dois
+> (fila própria por host, capabilities corretas, sessões reais intactas).
+> O worker de teste foi parado depois da validação (era processo manual, não
+> serviço persistente) — plano fica pronto pra uso real quando quiser.
+> Ver também [`PORTABILITY.md`](../PORTABILITY.md) — aquele doc cobre "rodar
+> o worker fora do Mac" (1 host por vez); este cobre "vários hosts ativos ao
+> mesmo tempo, cada um com suas sessões".
 
 ## Objetivo
 
@@ -186,10 +186,31 @@ do worker remoto como proxy local.
    host da sessão não suporta) em `detalhe.component.ts`, e Perfil listando
    todos os hosts conhecidos. Novo `WorkersStore` compartilhado
    (`core/workers-store.ts`), fail-open por padrão. `tsc`/`ng build` OK.
-4. ⬜ **Pendente** — Rodar o worker de fato numa segunda máquina (WSL2)
-   apontando pra stack. Pré-requisitos já resolvidos (rede LAN/túnel
-   testados, `uv`/tmux/python já no WSL2 da máquina de teste) — só falta
-   decidir rede (LAN vs túnel) pro caso de uso real e instalar o worker lá.
+4. ✅ **Feito (validado, depois parado)** — Worker real rodado na máquina
+   Windows/WSL2 de teste (2026-07-14), via LAN direta:
+   - Código do worker copiado por SSH (tar via stdin, sem git/credenciais no
+     host de teste); `.env` MÍNIMO criado só com `MONGO_URI_HOST`/
+     `RABBITMQ_URI_HOST` (IP da LAN do Mac) — não copiei o `.env` completo
+     do projeto (tem segredos que o worker não usa).
+   - `uv sync` instalou as deps; `uv run python -m sessionflow_worker` subiu
+     de verdade: **`host_id` novo, `platform=wsl2`, capabilities corretas
+     (tts/transcription/open_terminal todos `false`)** — exatamente como
+     projetado, sem precisar de nenhum código específico pra essa máquina.
+   - **Validado com os DOIS workers rodando ao mesmo tempo**: `GET /workers`
+     mostrou os 2 hosts online; RabbitMQ com 2 filas
+     (`sessionflow.commands.<host_id>` do Mac e do Windows), **1 consumidor
+     cada, 0 mensagens** — zero competição. As 6 sessões reais do Mac
+     continuaram intactas (contadas antes/depois) — o bug do
+     `_mark_missing_stopped` (achado #7) realmente não se repetiu.
+   - Único efeito colateral observado: o worker novo rodou sua rotina
+     interna de scraping de uso (`sfusage-*`, ephemeral, auto-marca
+     `stopped`) — comportamento esperado, não aparece no app
+     (`_INTERNAL_PREFIXES`).
+   - **Worker parado depois da validação** (era um processo manual `nohup`,
+     não um serviço persistente) — rodar de novo é só repetir
+     `uv run python -m sessionflow_worker` na mesma pasta
+     (`/root/sessionflow/worker` no WSL2), ou formalizar com uma unit
+     systemd se for pra uso contínuo (`PORTABILITY.md` já tem o modelo).
 5. ⬜ Ajustes finos conforme a Fase 4 apontar problemas na prática.
 
 ## Testes / dúvidas a validar (Diego vai pedir aos poucos)
