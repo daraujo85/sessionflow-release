@@ -3877,6 +3877,19 @@ export class DetalheComponent implements AfterViewChecked {
       this.paneBuffer = '';
       return;
     }
+    // Caixa vazia (sem anexo, sem modo ao vivo): Enviar == apertar Enter no
+    // terminal — aceita prompts tipo "Press Enter to continue"/confirma
+    // seleção de menu, em vez de não fazer nada (o botão fica desabilitado
+    // aqui, mas o Enter físico no campo chega em send() do mesmo jeito).
+    if (!this.draft().trim() && !this.sending() && !this.attaching()) {
+      this.showHint('Enviando…');
+      this.markWorkingLocal();
+      this.api
+        .sendKey(id, 'enter')
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: () => this.refreshBurst(), error: () => this.clearHint() });
+      return;
+    }
     if (!this.canSend()) {
       return;
     }
