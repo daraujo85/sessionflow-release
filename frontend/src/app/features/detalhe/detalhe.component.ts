@@ -296,11 +296,27 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 
       <!-- Modo split: duas sessões lado a lado (painel leve, ver
            SessionPanelComponent) — some com o resto do corpo via CSS
-           (.overlay.split-active) sem mexer no template normal abaixo. -->
+           (.overlay.split-active) sem mexer no template normal abaixo.
+           Divisor arrastável: arraste pra dar mais espaço a um lado (horizontal
+           no desktop, vertical quando empilha no celular); duplo-toque no
+           divisor volta pro 50/50. -->
       @if (compareId(); as cmp) {
-        <div class="split-view">
-          <app-session-panel [sessionId]="id()" (closeRequested)="exitSplit()" />
-          <app-session-panel [sessionId]="cmp" (closeRequested)="exitSplit()" />
+        <div class="split-view" #splitViewEl [class.dragging]="splitDragging()">
+          <div class="split-pane" [style.flex]="splitFlexA()">
+            <app-session-panel [sessionId]="id()" (closeRequested)="exitSplit()" />
+          </div>
+          <div
+            class="split-divider"
+            (pointerdown)="onSplitDividerDown($event)"
+            (dblclick)="resetSplitRatio()"
+            aria-label="Arraste pra redimensionar os painéis; duplo-toque reseta 50/50"
+            role="separator"
+          >
+            <span class="split-grip"></span>
+          </div>
+          <div class="split-pane" [style.flex]="splitFlexB()">
+            <app-session-panel [sessionId]="cmp" (closeRequested)="exitSplit()" />
+          </div>
         </div>
       }
 
@@ -1151,17 +1167,59 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         flex-direction: row;
         flex: 1;
         min-height: 0;
-        gap: 1px;
         background: #20262a;
       }
-      .split-view app-session-panel {
+      .split-view.dragging {
+        /* Evita que o texto/tela dos terminais seja "selecionado" durante o
+           arrasto (o pointermove passa por cima dos painéis). */
+        user-select: none;
+      }
+      .split-pane {
+        display: flex;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .split-pane app-session-panel {
         flex: 1;
         min-width: 0;
         height: 100%;
       }
+      /* Divisor arrastável entre os dois painéis (col-resize no desktop,
+         row-resize quando empilha no celular). Área de toque maior que a
+         linha visível pra ser fácil de agarrar no dedo. */
+      .split-divider {
+        flex: none;
+        width: 14px;
+        background: #14171a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: col-resize;
+        touch-action: none;
+      }
+      .split-grip {
+        width: 3px;
+        height: 36px;
+        border-radius: 2px;
+        background: #3a4046;
+      }
+      .split-divider:hover .split-grip,
+      .split-view.dragging .split-grip {
+        background: #5b6470;
+      }
       @media (max-width: 700px) {
         .split-view {
           flex-direction: column;
+        }
+        .split-divider {
+          width: auto;
+          height: 14px;
+          cursor: row-resize;
+        }
+        .split-grip {
+          width: 36px;
+          height: 3px;
         }
       }
 
@@ -2960,6 +3018,15 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly splitPickerOpen = signal<boolean>(false);
   protected readonly splitCandidates = signal<Session[]>([]);
 
+  /** Proporção do painel A (0.2–0.8) no split — arrastável, persistida. */
+  protected readonly splitRatio = signal<number>(readSplitRatio());
+  protected readonly splitDragging = signal<boolean>(false);
+  protected readonly splitFlexA = computed(() => `${this.splitRatio()} 0 0%`);
+  protected readonly splitFlexB = computed(() => `${1 - this.splitRatio()} 0 0%`);
+  private readonly splitViewEl = viewChild<ElementRef<HTMLDivElement>>('splitViewEl');
+  private splitDragMove?: (ev: PointerEvent) => void;
+  private splitDragUp?: (ev: PointerEvent) => void;
+
   protected readonly session = signal<Session | null>(null);
 
   /**
@@ -3156,6 +3223,64 @@ export class DetalheComponent implements AfterViewChecked {
       queryParamsHandling: 'merge',
       replaceUrl: true,
     });
+  }
+
+  /**
+   * Início do arrasto do divisor do split. Funciona em pointer (mouse/touch)
+   * e detecta o eixo NA HORA (horizontal quando os painéis estão lado a lado,
+   * vertical quando o CSS empilha em telas estreitas) medindo o próprio
+   * container — não depende de replicar o breakpoint do media query em JS.
+   */
+  protected onSplitDividerDown(ev: PointerEvent): void {
+    const el = this.splitViewEl()?.nativeElement;
+    if (!el) {
+      return;
+    }
+    ev.preventDefault();
+    this.splitDragging.set(true);
+    const rect = () => el.getBoundingClientRect();
+    // Colunas lado a lado quando a largura do container manda mais que a
+    // altura visível de cada painel — na prática: usa o CSS real (a mesma
+    // media query já decide flex-direction); lemos via computedStyle.
+    const vertical = getComputedStyle(el).flexDirection === 'column';
+
+    const move = (e: PointerEvent) => {
+      const r = rect();
+      const ratio = vertical
+        ? (e.clientY - r.top) / r.height
+        : (e.clientX - r.left) / r.width;
+      this.splitRatio.set(Math.min(0.8, Math.max(0.2, ratio)));
+    };
+    const up = () => {
+      this.splitDragging.set(false);
+      try {
+        localStorage.setItem('sf.split.ratio', String(this.splitRatio()));
+      } catch {
+        /* storage indisponível — silencioso */
+      }
+      if (this.splitDragMove) {
+        window.removeEventListener('pointermove', this.splitDragMove);
+      }
+      if (this.splitDragUp) {
+        window.removeEventListener('pointerup', this.splitDragUp);
+        window.removeEventListener('pointercancel', this.splitDragUp);
+      }
+    };
+    this.splitDragMove = move;
+    this.splitDragUp = up;
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  }
+
+  /** Duplo-toque/clique no divisor: volta pro 50/50. */
+  protected resetSplitRatio(): void {
+    this.splitRatio.set(0.5);
+    try {
+      localStorage.setItem('sf.split.ratio', '0.5');
+    } catch {
+      /* storage indisponível — silencioso */
+    }
   }
 
   /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
@@ -5390,6 +5515,16 @@ function readFocusMode(): boolean {
     return localStorage.getItem('sf.focus') === '1';
   } catch {
     return false;
+  }
+}
+
+/** Lê a proporção salva do split (painel A), com fallback 0.5 e clamp 0.2–0.8. */
+function readSplitRatio(): number {
+  try {
+    const v = Number(localStorage.getItem('sf.split.ratio'));
+    return v >= 0.2 && v <= 0.8 ? v : 0.5;
+  } catch {
+    return 0.5;
   }
 }
 
