@@ -32,15 +32,16 @@ import {
 } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
-import { ansiToHtml } from '../../shared/ansi-html';
+import { SessionPanelComponent } from './session-panel.component';
+import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 
 @Component({
   selector: 'sf-detalhe',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, AudioRecorderComponent],
+  imports: [FormsModule, AudioRecorderComponent, SessionPanelComponent],
   template: `
-    <section class="overlay" [class.focus]="focusMode()">
+    <section class="overlay" [class.focus]="focusMode()" [class.split-active]="!!compareId()">
       <!-- Header -->
       <header class="hdr">
         <div class="hdr-top">
@@ -203,6 +204,21 @@ import { ansiToHtml } from '../../shared/ansi-html';
                 </svg>
               </button>
             }
+            @if (!guest() && !compareId()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                (click)="openSplitPicker()"
+                aria-label="Dividir tela com outra sessão"
+                title="Dividir tela: acompanhar/conversar com outra sessão lado a lado"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                  <path d="M12 4v16" />
+                </svg>
+              </button>
+            }
             @if (isRunning()) {
               <button
                 type="button"
@@ -257,6 +273,36 @@ import { ansiToHtml } from '../../shared/ansi-html';
           </div>
         </div>
       </header>
+
+      <!-- Picker "dividir tela": escolhe a 2ª sessão -->
+      @if (splitPickerOpen()) {
+        <section class="split-picker" aria-label="Escolher sessão para dividir tela">
+          <div class="split-picker-hdr">
+            <span>Dividir tela com…</span>
+            <button type="button" class="close-btn" (click)="closeSplitPicker()">✕</button>
+          </div>
+          @if (splitCandidates().length === 0) {
+            <div class="split-picker-empty">Nenhuma outra sessão ativa.</div>
+          }
+          @for (s of splitCandidates(); track s.id) {
+            <button type="button" class="split-picker-item" (click)="pickSplit(s.id)">
+              <span class="dot" [style.background]="STATUS_META[s.status].color"></span>
+              <span class="name">{{ s.display_name || s.tmux_name }}</span>
+              <span class="status">{{ STATUS_META[s.status].label }}</span>
+            </button>
+          }
+        </section>
+      }
+
+      <!-- Modo split: duas sessões lado a lado (painel leve, ver
+           SessionPanelComponent) — some com o resto do corpo via CSS
+           (.overlay.split-active) sem mexer no template normal abaixo. -->
+      @if (compareId(); as cmp) {
+        <div class="split-view">
+          <app-session-panel [sessionId]="id()" (closeRequested)="exitSplit()" />
+          <app-session-panel [sessionId]="cmp" (closeRequested)="exitSplit()" />
+        </div>
+      }
 
       <!-- Painel "Compartilhar" (só dono): gera/copia/revoga o link temporário -->
       @if (shareOpen() && !guest()) {
@@ -1092,6 +1138,91 @@ import { ansiToHtml } from '../../shared/ansi-html';
         height: 100%;
         background: #0e1113;
         color: #f4f5f7;
+      }
+
+      /* Modo split: esconde o corpo normal (term/tarefas/composer/etc.) e
+         mostra só o header + o .split-view — evita reestruturar o template
+         gigante abaixo; a troca é puramente visual via CSS. */
+      .overlay.split-active > *:not(.hdr):not(.split-view):not(.split-picker) {
+        display: none !important;
+      }
+      .split-view {
+        display: flex;
+        flex-direction: row;
+        flex: 1;
+        min-height: 0;
+        gap: 1px;
+        background: #20262a;
+      }
+      .split-view app-session-panel {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+      }
+      @media (max-width: 700px) {
+        .split-view {
+          flex-direction: column;
+        }
+      }
+
+      .split-picker {
+        flex: none;
+        border-bottom: 1px solid #20262a;
+        max-height: 40vh;
+        overflow: auto;
+      }
+      .split-picker-hdr {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 16px;
+        font-size: 13px;
+        color: #9aa0a6;
+      }
+      .split-picker-hdr .close-btn {
+        background: none;
+        border: none;
+        color: #9aa0a6;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .split-picker-empty {
+        padding: 12px 16px;
+        color: #6b7280;
+        font-size: 13px;
+      }
+      .split-picker-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 10px 16px;
+        background: none;
+        border: none;
+        border-top: 1px solid #16191b;
+        color: #f4f5f7;
+        font-size: 14px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .split-picker-item:hover {
+        background: #16191b;
+      }
+      .split-picker-item .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .split-picker-item .name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .split-picker-item .status {
+        font-size: 11px;
+        color: #9aa0a6;
       }
       .mono {
         /* Fontes de SÍMBOLOS no fim da pilha: quando a mono não tem o glyph
@@ -2816,6 +2947,19 @@ export class DetalheComponent implements AfterViewChecked {
     this.route.snapshot.queryParamMap.get('task') ?? '',
   );
 
+  /**
+   * Modo "dividir tela": mostra esta sessão + outra lado a lado (query param
+   * `compare`), cada lado num painel leve (`SessionPanelComponent`) — pensado
+   * pra acompanhar/conversar entre duas sessões (ver skill `sf-delegate`,
+   * `sf send`). Não some do estado normal por baixo: sair do split volta pra
+   * cá exatamente onde estava.
+   */
+  protected readonly compareId = signal<string | null>(
+    this.route.snapshot.queryParamMap.get('compare') || null,
+  );
+  protected readonly splitPickerOpen = signal<boolean>(false);
+  protected readonly splitCandidates = signal<Session[]>([]);
+
   protected readonly session = signal<Session | null>(null);
 
   /**
@@ -2969,6 +3113,51 @@ export class DetalheComponent implements AfterViewChecked {
     // Mudou a altura do terminal → reajusta linhas/colunas do pane.
     this.scheduleTermResize();
   }
+
+  /** Abre o picker de "dividir tela" — carrega as outras sessões ativas. */
+  protected openSplitPicker(): void {
+    this.splitPickerOpen.set(true);
+    this.api
+      .listSessions()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) =>
+          this.splitCandidates.set(list.filter((s) => s.id !== this.id())),
+        error: () => this.splitCandidates.set([]),
+      });
+  }
+
+  protected closeSplitPicker(): void {
+    this.splitPickerOpen.set(false);
+  }
+
+  /**
+   * Escolhe a 2ª sessão do split — vira query param `compare` (linkável).
+   * `replaceUrl: true`: liga/desliga o split é um estado de EXIBIÇÃO, não uma
+   * navegação — sem isso, cada toggle empilhava uma entrada no histórico do
+   * navegador e o botão "voltar" ficava alternando o split ligado/desligado
+   * antes de finalmente sair da sessão (em vez de sair direto).
+   */
+  protected pickSplit(otherId: string): void {
+    this.splitPickerOpen.set(false);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { compare: otherId },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
+  /** Sai do modo split, voltando à tela normal desta sessão (ver `pickSplit`). */
+  protected exitSplit(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { compare: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
   /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
   private lastWheelAt = 0;
   /** Y inicial do toque no terminal (p/ medir arrasto no limite — tablet). */
@@ -3271,6 +3460,14 @@ export class DetalheComponent implements AfterViewChecked {
         }
       });
 
+    // Modo split (query param `compare`): reativo p/ back/forward do navegador
+    // e pra refletir o que o picker escreve na URL.
+    this.route.queryParamMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((qp) => {
+        this.compareId.set(qp.get('compare') || null);
+      });
+
     // Espelho PUSHADO: o worker empurra a tela (SSE) assim que muda. Aplicamos
     // o último frame da NOSSA sessão (casado por tmux_name) — feedback quase
     // imediato, sem esperar poll. Atualiza scroll-stick antes de trocar.
@@ -3512,6 +3709,9 @@ export class DetalheComponent implements AfterViewChecked {
     const s = this.session();
     return (s && STATUS_META[s.status]) || STATUS_META.detached;
   }
+
+  /** Exposto pro template (picker de split) — status de uma sessão QUALQUER. */
+  protected readonly STATUS_META = STATUS_META;
 
   /** Sessão ativa (rodando ou aguardando) → botão vira "Parar"; senão "Retomar". */
   protected isRunning(): boolean {
@@ -5142,25 +5342,6 @@ export class DetalheComponent implements AfterViewChecked {
  * numa parte), o que deixava um vazio grande no terminal. Considera "branca" a
  * linha vazia depois de tirar os códigos ANSI. As linhas internas são mantidas.
  */
-function trimBlankEdges(text: string): string {
-  if (!text) {
-    return text;
-  }
-  const lines = text.split('\n');
-  // eslint-disable-next-line no-control-regex
-  const ansi = /\x1b\[[0-9;?]*[A-Za-z]/g;
-  const isBlank = (l: string): boolean => l.replace(ansi, '').trim() === '';
-  let start = 0;
-  let end = lines.length;
-  while (start < end && isBlank(lines[start])) {
-    start++;
-  }
-  while (end > start && isBlank(lines[end - 1])) {
-    end--;
-  }
-  return lines.slice(start, end).join('\n');
-}
-
 /**
  * Costura um frame recém-capturado (após rolar o agente pra cima) no topo do
  * buffer de scrollback, retornando SÓ as linhas NOVAS (mais antigas) a prepender.

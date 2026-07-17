@@ -272,3 +272,23 @@ export function ansiToHtml(input: string): string {
   flush(input.slice(last));
   return out;
 }
+
+/** Remove linhas em branco (ignorando ANSI) do início/fim de um espelho de tela. */
+export function trimBlankEdges(text: string): string {
+  if (!text) {
+    return text;
+  }
+  const lines = text.split('\n');
+  // eslint-disable-next-line no-control-regex
+  const ansi = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  const isBlank = (l: string): boolean => l.replace(ansi, '').trim() === '';
+  let start = 0;
+  let end = lines.length;
+  while (start < end && isBlank(lines[start])) {
+    start++;
+  }
+  while (end > start && isBlank(lines[end - 1])) {
+    end--;
+  }
+  return lines.slice(start, end).join('\n');
+}
