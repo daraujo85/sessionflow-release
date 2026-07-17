@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """sf — delega tarefas pesadas a workers filhos do SessionFlow em OUTROS
 provedores (gemini/codex/opencode/claude) e colhe só o RESULTADO, sem poluir a
-janela de contexto do chefe.
+janela de contexto do chefe. Também permite mandar uma mensagem/instrução para
+uma sessão JÁ EXISTENTE (irmã, não filha) sem precisar descobrir a API na mão.
 
 Modelo "delega-e-revisa": o filho roda autônomo (yolo) e, ao terminar, escreve
 um resumo objetivo num arquivo de HANDOFF. O chefe lê só esse arquivo.
@@ -10,6 +11,8 @@ Comandos:
   sf delegate --provider gemini|codex|opencode|claude [--model M] [--effort E] \
               [--dir DIR] --task "TEXTO" [--name NOME]
   sf check <name-ou-id> [--dir DIR]
+  sf list
+  sf send <nome-ou-id> "TEXTO" [--no-enter]
 
 Sem dependências externas (usa só a stdlib: urllib). Lê email/senha/porta do
 .env do SessionFlow.
@@ -130,6 +133,33 @@ def list_sessions(env, token):
     if status != 200:
         die(f"GET /sessions falhou (HTTP {status}): {body}")
     return body.get("items", [])
+
+
+def resolve_session(sessions, target):
+    """Resolve `target` (id, tmux_name ou display_name) numa lista de sessões.
+
+    Tenta match exato primeiro (id > tmux_name > display_name); se não achar,
+    cai para substring case-insensitive em tmux_name/display_name — mas só
+    aceita se o resultado for ÚNICO (ambíguo é erro, não chute).
+    """
+    for s in sessions:
+        if s.get("id") == target:
+            return s
+    for s in sessions:
+        if s.get("tmux_name") == target or s.get("display_name") == target:
+            return s
+    needle = target.lower()
+    matches = [
+        s for s in sessions
+        if needle in (s.get("tmux_name") or "").lower()
+        or needle in (s.get("display_name") or "").lower()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(s.get("tmux_name") or s.get("id") for s in matches)
+        die(f"'{target}' é ambíguo, casa com várias sessões: {names}")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +360,50 @@ def cmd_check(args):
 
 
 # --------------------------------------------------------------------------- #
+# comando: list
+# --------------------------------------------------------------------------- #
+def cmd_list(args):
+    env = load_env()
+    token = login(env)
+    sessions = list_sessions(env, token)
+    if not sessions:
+        print("(nenhuma sessão ativa)")
+        return
+    for s in sessions:
+        name = s.get("tmux_name") or s.get("display_name") or s.get("id")
+        status = s.get("status") or "?"
+        agent = s.get("agent_type") or "?"
+        host = s.get("host_id") or "-"
+        print(f"{name}\tagent={agent}\tstatus={status}\thost={host}\tid={s.get('id')}")
+
+
+# --------------------------------------------------------------------------- #
+# comando: send
+# --------------------------------------------------------------------------- #
+def cmd_send(args):
+    env = load_env()
+    token = login(env)
+    base = api_base(env)
+    sessions = list_sessions(env, token)
+
+    session = resolve_session(sessions, args.target)
+    if session is None:
+        die(f"nenhuma sessão encontrada casando com '{args.target}'. "
+            "Use 'sf list' para ver os nomes/ids ativos.")
+
+    session_id = session["id"]
+    name = session.get("tmux_name") or session.get("display_name") or session_id
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": args.text, "enter": not args.no_enter},
+    )
+    if status != 202:
+        die(f"envio falhou (HTTP {status}): {body}")
+
+    print(f"enviado ✅ -> [{name}] (id={session_id})")
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser():
@@ -371,6 +445,24 @@ def build_parser():
     c.add_argument("--dir", default=None,
                    help="work_dir onde está o handoff (default: diretório atual).")
     c.set_defaults(func=cmd_check)
+
+    l = sub.add_parser(
+        "list",
+        help="lista as sessões ativas (nome, agente, status, host, id) — "
+             "use pra descobrir o alvo do 'sf send'.",
+    )
+    l.set_defaults(func=cmd_list)
+
+    m = sub.add_parser(
+        "send",
+        help="manda uma mensagem/instrução pro terminal de uma sessão JÁ "
+             "EXISTENTE (irmã), sem precisar criar sessão nem descobrir a API.",
+    )
+    m.add_argument("target", help="nome (tmux_name/display_name) ou id da sessão-alvo.")
+    m.add_argument("text", help="texto a enviar pro terminal da sessão-alvo.")
+    m.add_argument("--no-enter", action="store_true",
+                   help="não aperta Enter depois do texto (default: aperta).")
+    m.set_defaults(func=cmd_send)
     return p
 
 
