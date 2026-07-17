@@ -281,10 +281,21 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             <span>Dividir tela com…</span>
             <button type="button" class="close-btn" (click)="closeSplitPicker()">✕</button>
           </div>
-          @if (splitCandidates().length === 0) {
-            <div class="split-picker-empty">Nenhuma outra sessão ativa.</div>
+          <input
+            type="text"
+            class="split-picker-search"
+            placeholder="Pesquisar sessão…"
+            [ngModel]="splitSearch()"
+            (ngModelChange)="splitSearch.set($event)"
+            name="splitSearch"
+            autocomplete="off"
+          />
+          @if (splitCandidatesFiltered().length === 0) {
+            <div class="split-picker-empty">
+              {{ splitCandidates().length === 0 ? 'Nenhuma outra sessão ativa.' : 'Nenhuma sessão casa com a busca.' }}
+            </div>
           }
-          @for (s of splitCandidates(); track s.id) {
+          @for (s of splitCandidatesFiltered(); track s.id) {
             <button type="button" class="split-picker-item" (click)="pickSplit(s.id)">
               <span class="dot" [style.background]="STATUS_META[s.status].color"></span>
               <span class="name">{{ s.display_name || s.tmux_name }}</span>
@@ -1243,6 +1254,20 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         color: #9aa0a6;
         cursor: pointer;
         font-size: 14px;
+      }
+      .split-picker-search {
+        display: block;
+        width: calc(100% - 32px);
+        margin: 0 16px 8px;
+        padding: 8px 10px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: #f4f5f7;
+        font-size: 14px;
+      }
+      .split-picker-search::placeholder {
+        color: #6b7280;
       }
       .split-picker-empty {
         padding: 12px 16px;
@@ -3017,6 +3042,20 @@ export class DetalheComponent implements AfterViewChecked {
   );
   protected readonly splitPickerOpen = signal<boolean>(false);
   protected readonly splitCandidates = signal<Session[]>([]);
+  protected readonly splitSearch = signal<string>('');
+  /** Candidatos do picker: filtrados pela busca, ativos primeiro, depois nome. */
+  protected readonly splitCandidatesFiltered = computed(() => {
+    const q = this.splitSearch().trim().toLowerCase();
+    const nameOf = (s: Session) => (s.display_name || s.tmux_name || '').toLowerCase();
+    const isActive = (s: Session) =>
+      s.status === 'running' || s.status === 'waiting_input';
+    return this.splitCandidates()
+      .filter((s) => !q || nameOf(s).includes(q))
+      .sort((a, b) => {
+        const activeDiff = Number(isActive(b)) - Number(isActive(a));
+        return activeDiff !== 0 ? activeDiff : nameOf(a).localeCompare(nameOf(b));
+      });
+  });
 
   /** Proporção do painel A (0.2–0.8) no split — arrastável, persistida. */
   protected readonly splitRatio = signal<number>(readSplitRatio());
@@ -3184,6 +3223,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Abre o picker de "dividir tela" — carrega as outras sessões ativas. */
   protected openSplitPicker(): void {
     this.splitPickerOpen.set(true);
+    this.splitSearch.set('');
     this.api
       .listSessions()
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -3196,6 +3236,7 @@ export class DetalheComponent implements AfterViewChecked {
 
   protected closeSplitPicker(): void {
     this.splitPickerOpen.set(false);
+    this.splitSearch.set('');
   }
 
   /**
