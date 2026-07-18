@@ -454,48 +454,50 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
            desta sessão (criar/pausar/retomar/editar/excluir). -->
       @if (schedulesOpen() && !guest()) {
         <section class="rename" aria-label="Comandos programados">
-          @for (s of schedules(); track s.id) {
-            <div class="sched-item" [class.sched-item--paused]="!s.enabled">
-              <div class="sched-item-main">
-                <span class="mono sched-text">{{ s.text }}</span>
-                <span class="sched-meta">
-                  a cada {{ formatInterval(s.interval_seconds) }}
-                  @if (s.enabled && s.next_run_at) {
-                    · próxima em {{ formatRelative(s.next_run_at) }}
-                  } @else {
-                    · pausado
-                  }
-                  @if (s.last_error) {
-                    · <span class="sched-error">último erro: {{ s.last_error }}</span>
-                  }
-                </span>
+          <div class="sched-list">
+            @for (s of schedules(); track s.id) {
+              <div class="sched-item" [class.sched-item--paused]="!s.enabled">
+                <div class="sched-item-main">
+                  <span class="mono sched-text">{{ s.text }}</span>
+                  <span class="sched-meta">
+                    a cada {{ formatInterval(s.interval_seconds) }}
+                    @if (s.enabled && s.next_run_at) {
+                      · próxima em {{ formatRelative(s.next_run_at) }}
+                    } @else {
+                      · pausado
+                    }
+                    @if (s.last_error) {
+                      · <span class="sched-error">último erro: {{ s.last_error }}</span>
+                    }
+                  </span>
+                </div>
+                <div class="sched-item-acts">
+                  <button
+                    type="button"
+                    class="sched-toggle"
+                    role="switch"
+                    [attr.aria-checked]="s.enabled"
+                    [class.on]="s.enabled"
+                    [disabled]="scheduleBusy() === s.id"
+                    [attr.title]="s.enabled ? 'Pausar' : 'Retomar'"
+                    (click)="toggleScheduleEnabled(s)"
+                  >
+                    <span class="sched-toggle-knob"></span>
+                  </button>
+                  <button
+                    type="button"
+                    class="rename-btn rename-btn--danger"
+                    [disabled]="scheduleBusy() === s.id"
+                    (click)="deleteSchedule(s)"
+                  >
+                    Excluir
+                  </button>
+                </div>
               </div>
-              <div class="sched-item-acts">
-                <button
-                  type="button"
-                  class="sched-toggle"
-                  role="switch"
-                  [attr.aria-checked]="s.enabled"
-                  [class.on]="s.enabled"
-                  [disabled]="scheduleBusy() === s.id"
-                  [attr.title]="s.enabled ? 'Pausar' : 'Retomar'"
-                  (click)="toggleScheduleEnabled(s)"
-                >
-                  <span class="sched-toggle-knob"></span>
-                </button>
-                <button
-                  type="button"
-                  class="rename-btn rename-btn--danger"
-                  [disabled]="scheduleBusy() === s.id"
-                  (click)="deleteSchedule(s)"
-                >
-                  Excluir
-                </button>
-              </div>
-            </div>
-          } @empty {
-            <span class="rename-hint">Nenhum comando programado ainda.</span>
-          }
+            } @empty {
+              <span class="rename-hint">Nenhum comando programado ainda.</span>
+            }
+          </div>
 
           <label class="rename-field">
             <span class="rename-lbl">Nova instrução</span>
@@ -1591,6 +1593,11 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       }
 
       /* Comandos programados */
+      .sched-list {
+        max-height: 220px;
+        overflow-y: auto;
+        margin-bottom: 4px;
+      }
       .sched-item {
         display: flex;
         align-items: center;
