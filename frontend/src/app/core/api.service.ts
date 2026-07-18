@@ -10,6 +10,7 @@ import {
   EventItem,
   Notification,
   OutputLine,
+  Schedule,
   Session,
   SessionStatus,
   ShareLink,
@@ -175,6 +176,37 @@ export class ApiService {
   /** Revoga o link na hora. */
   revokeShareLink(id: string): Observable<ShareLink> {
     return this.http.delete<ShareLink>(this.url(`/sessions/${id}/share`));
+  }
+
+  // --- Comandos programados (instrução recorrente pro terminal) ---
+
+  listSchedules(sessionId: string): Observable<Schedule[]> {
+    return this.http
+      .get<{ items: Schedule[] }>(this.url(`/sessions/${sessionId}/schedules`))
+      .pipe(this.items<Schedule>());
+  }
+
+  createSchedule(
+    sessionId: string,
+    text: string,
+    intervalSeconds: number,
+  ): Observable<Schedule> {
+    return this.http.post<Schedule>(this.url(`/sessions/${sessionId}/schedules`), {
+      text,
+      interval_seconds: intervalSeconds,
+    });
+  }
+
+  /** Edita texto/intervalo, ou pausa/retoma (`enabled`) — manda só o que mudou. */
+  patchSchedule(
+    id: string,
+    patch: { text?: string; interval_seconds?: number; enabled?: boolean },
+  ): Observable<Schedule> {
+    return this.http.patch<Schedule>(this.url(`/schedules/${id}`), patch);
+  }
+
+  deleteSchedule(id: string): Observable<void> {
+    return this.http.delete<void>(this.url(`/schedules/${id}`));
   }
 
   // --- Models ---

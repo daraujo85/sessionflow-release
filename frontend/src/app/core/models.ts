@@ -165,6 +165,19 @@ export interface ShareLink {
   expires_at?: string | null;
 }
 
+/** Comando programado: instrução recorrente enviada ao terminal da sessão. */
+export interface Schedule {
+  id: string;
+  session_id: string;
+  text: string;
+  interval_seconds: number;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  created_at: string | null;
+}
+
 export interface OutputLine {
   id: string;
   seq: number;

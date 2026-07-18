@@ -7,6 +7,8 @@ Mongo.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -30,10 +32,12 @@ from app.routers import models as models_router
 from app.routers import outputs as outputs_router
 from app.routers import profile as profile_router
 from app.routers import push as push_router
+from app.routers import schedules as schedules_router
 from app.routers import screen as screen_router
 from app.routers import sessions as sessions_router
 from app.routers import settings as settings_router
 from app.routers import worker as worker_router
+from app.scheduler import run_scheduler_forever
 
 
 @asynccontextmanager
@@ -57,9 +61,18 @@ async def lifespan(app: FastAPI):
     app.state.events_broker = events_broker
     await events_broker.start()
 
+    # Comandos programados: loop solto que dispara os vencidos (ver
+    # app/scheduler.py). Cancelado no shutdown como qualquer outra task.
+    scheduler_task = asyncio.create_task(
+        run_scheduler_forever(app.state.mongo_db, settings)
+    )
+
     try:
         yield
     finally:
+        scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler_task
         await events_broker.stop()
         if rabbit_connection is not None:
             await rabbit_connection.close()
@@ -159,6 +172,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(push_router.router)
     app.include_router(settings_router.router)
     app.include_router(jarvis_router.router)
+    app.include_router(schedules_router.router)
 
     return app
 

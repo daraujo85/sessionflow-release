@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     tasks_collection: str = "tasks"
     notifications_collection: str = "events"
 
+    # Collection holding scheduled recurring commands (comandos programados) —
+    # instrução + intervalo enviada periodicamente ao terminal de uma sessão.
+    # Configurável para tests isolarem (ex.: ``scheduled_commands_test_<uuid>``).
+    scheduled_commands_collection: str = "scheduled_commands"
+    # Intervalo (s) do loop que varre comandos programados vencidos.
+    scheduler_poll_seconds: int = 20
+
     # Directory where uploaded files (e.g. audio) are stored. Mounted as a
     # volume in the container (env ``UPLOADS_DIR``). Tests inject ``tmp_path``.
     uploads_dir: str = "/data/uploads"

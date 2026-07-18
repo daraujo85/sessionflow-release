@@ -24,6 +24,7 @@ import { SessionPrefsStore } from '../../core/session-prefs-store';
 import { WorkersStore } from '../../core/workers-store';
 import {
   AgentType,
+  Schedule,
   Session,
   SessionMetrics,
   ShareLink,
@@ -216,6 +217,23 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="3" y="4" width="18" height="16" rx="2" />
                   <path d="M12 4v16" />
+                </svg>
+              </button>
+            }
+            @if (!guest()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                [class.on]="schedulesOpen()"
+                (click)="toggleSchedules()"
+                [attr.aria-pressed]="schedulesOpen()"
+                aria-label="Comandos programados"
+                title="Comandos programados: instrução recorrente pro terminal (ex: rodar uma skill de hora em hora)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7v5l3 3" />
                 </svg>
               </button>
             }
@@ -427,6 +445,95 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             <button type="button" class="rename-btn rename-btn--primary"
                     [disabled]="switching()" (click)="confirmSwitch()">
               {{ switching() ? 'Trocando…' : 'Confirmar' }}
+            </button>
+          </div>
+        </section>
+      }
+
+      <!-- Painel "Comandos programados": instrução recorrente pro terminal
+           desta sessão (criar/pausar/retomar/editar/excluir). -->
+      @if (schedulesOpen() && !guest()) {
+        <section class="rename" aria-label="Comandos programados">
+          @for (s of schedules(); track s.id) {
+            <div class="sched-item" [class.sched-item--paused]="!s.enabled">
+              <div class="sched-item-main">
+                <span class="mono sched-text">{{ s.text }}</span>
+                <span class="sched-meta">
+                  a cada {{ formatInterval(s.interval_seconds) }}
+                  @if (s.enabled && s.next_run_at) {
+                    · próxima em {{ formatRelative(s.next_run_at) }}
+                  } @else {
+                    · pausado
+                  }
+                  @if (s.last_error) {
+                    · <span class="sched-error">último erro: {{ s.last_error }}</span>
+                  }
+                </span>
+              </div>
+              <div class="sched-item-acts">
+                <button
+                  type="button"
+                  class="rename-btn"
+                  [disabled]="scheduleBusy() === s.id"
+                  (click)="toggleScheduleEnabled(s)"
+                >
+                  {{ s.enabled ? 'Pausar' : 'Retomar' }}
+                </button>
+                <button
+                  type="button"
+                  class="rename-btn rename-btn--danger"
+                  [disabled]="scheduleBusy() === s.id"
+                  (click)="deleteSchedule(s)"
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+          } @empty {
+            <span class="rename-hint">Nenhum comando programado ainda.</span>
+          }
+
+          <label class="rename-field">
+            <span class="rename-lbl">Nova instrução</span>
+            <input
+              class="rename-input mono"
+              type="text"
+              [ngModel]="newScheduleText()"
+              (ngModelChange)="newScheduleText.set($event)"
+              placeholder="ex: rode a skill de revisão de PRs abertos"
+              autocomplete="off"
+            />
+          </label>
+          <label class="rename-field">
+            <span class="rename-lbl">Repetir a cada</span>
+            <span class="sched-interval-row">
+              <input
+                class="rename-input mono sched-interval-num"
+                type="number"
+                min="1"
+                [ngModel]="newScheduleIntervalValue()"
+                (ngModelChange)="newScheduleIntervalValue.set($event)"
+              />
+              <select
+                class="rename-input sched-interval-unit"
+                [ngModel]="newScheduleIntervalUnit()"
+                (ngModelChange)="newScheduleIntervalUnit.set($event)"
+              >
+                <option value="60">minutos</option>
+                <option value="3600">horas</option>
+                <option value="86400">dias</option>
+              </select>
+            </span>
+          </label>
+          <div class="rename-acts">
+            <button type="button" class="rename-btn" (click)="closeSchedules()">Fechar</button>
+            <button
+              type="button"
+              class="rename-btn rename-btn--primary"
+              [disabled]="!newScheduleText().trim() || schedulesCreating()"
+              (click)="createSchedule()"
+            >
+              {{ schedulesCreating() ? 'Criando…' : 'Criar' }}
             </button>
           </div>
         </section>
@@ -1473,6 +1580,59 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       .rename-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      .rename-btn--danger {
+        border-color: #4a2626;
+        color: #f87171;
+      }
+
+      /* Comandos programados */
+      .sched-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid #20262a;
+      }
+      .sched-item--paused {
+        opacity: 0.55;
+      }
+      .sched-item-main {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .sched-text {
+        font-size: 13.5px;
+        color: #f4f5f7;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sched-meta {
+        font-size: 11.5px;
+        color: #7d8590;
+      }
+      .sched-error {
+        color: #f87171;
+      }
+      .sched-item-acts {
+        display: flex;
+        gap: 6px;
+        flex: none;
+      }
+      .sched-interval-row {
+        display: flex;
+        gap: 8px;
+      }
+      .sched-interval-num {
+        width: 80px;
+        flex: none;
+      }
+      .sched-interval-unit {
+        flex: 1;
       }
       /* Trocar provedor (dentro do bloco de métricas) */
       .switch-row {
@@ -3056,6 +3216,125 @@ export class DetalheComponent implements AfterViewChecked {
         return activeDiff !== 0 ? activeDiff : nameOf(a).localeCompare(nameOf(b));
       });
   });
+
+  // --- Comandos programados (instrução recorrente pro terminal) ---
+  protected readonly schedulesOpen = signal<boolean>(false);
+  protected readonly schedules = signal<Schedule[]>([]);
+  protected readonly schedulesCreating = signal<boolean>(false);
+  /** id do schedule com uma ação (pausar/excluir) em andamento, ou null. */
+  protected readonly scheduleBusy = signal<string | null>(null);
+  protected readonly newScheduleText = signal<string>('');
+  protected readonly newScheduleIntervalValue = signal<number>(1);
+  /** Segundos de 1 unidade: '60' (minuto) | '3600' (hora) | '86400' (dia). */
+  protected readonly newScheduleIntervalUnit = signal<string>('3600');
+
+  protected toggleSchedules(): void {
+    if (this.schedulesOpen()) {
+      this.closeSchedules();
+      return;
+    }
+    this.schedulesOpen.set(true);
+    this.loadSchedules();
+  }
+
+  protected closeSchedules(): void {
+    this.schedulesOpen.set(false);
+  }
+
+  private loadSchedules(): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    this.api
+      .listSchedules(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) => this.schedules.set(list),
+        error: () => this.schedules.set([]),
+      });
+  }
+
+  protected createSchedule(): void {
+    const id = this.id();
+    const text = this.newScheduleText().trim();
+    const seconds = this.newScheduleIntervalValue() * Number(this.newScheduleIntervalUnit());
+    if (!id || !text || !(seconds > 0)) {
+      return;
+    }
+    this.schedulesCreating.set(true);
+    this.api
+      .createSchedule(id, text, seconds)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (s) => {
+          this.schedules.update((list) => [...list, s]);
+          this.newScheduleText.set('');
+          this.schedulesCreating.set(false);
+        },
+        error: () => this.schedulesCreating.set(false),
+      });
+  }
+
+  protected toggleScheduleEnabled(s: Schedule): void {
+    this.scheduleBusy.set(s.id);
+    this.api
+      .patchSchedule(s.id, { enabled: !s.enabled })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (updated) => {
+          this.schedules.update((list) =>
+            list.map((x) => (x.id === updated.id ? updated : x)),
+          );
+          this.scheduleBusy.set(null);
+        },
+        error: () => this.scheduleBusy.set(null),
+      });
+  }
+
+  protected deleteSchedule(s: Schedule): void {
+    this.scheduleBusy.set(s.id);
+    this.api
+      .deleteSchedule(s.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.schedules.update((list) => list.filter((x) => x.id !== s.id));
+          this.scheduleBusy.set(null);
+        },
+        error: () => this.scheduleBusy.set(null),
+      });
+  }
+
+  /** "3600" → "1 hora"; pluraliza e escolhe a maior unidade exata (d/h/min). */
+  protected formatInterval(seconds: number): string {
+    const units: [number, string, string][] = [
+      [86400, 'dia', 'dias'],
+      [3600, 'hora', 'horas'],
+      [60, 'minuto', 'minutos'],
+    ];
+    for (const [unitSeconds, singular, plural] of units) {
+      if (seconds % unitSeconds === 0) {
+        const n = seconds / unitSeconds;
+        return `${n} ${n === 1 ? singular : plural}`;
+      }
+    }
+    return `${seconds}s`;
+  }
+
+  /** ISO futuro → "12min"/"3h" (aproximado, pro item da lista). */
+  protected formatRelative(isoDate: string): string {
+    const diffMs = new Date(isoDate).getTime() - Date.now();
+    if (diffMs <= 0) {
+      return 'agora';
+    }
+    const mins = Math.round(diffMs / 60000);
+    if (mins < 60) {
+      return `${mins}min`;
+    }
+    const hours = Math.round(mins / 60);
+    return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+  }
 
   /** Proporção do painel A (0.2–0.8) no split — arrastável, persistida. */
   protected readonly splitRatio = signal<number>(readSplitRatio());
