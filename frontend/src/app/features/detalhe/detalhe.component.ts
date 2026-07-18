@@ -473,11 +473,15 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
               <div class="sched-item-acts">
                 <button
                   type="button"
-                  class="rename-btn"
+                  class="sched-toggle"
+                  role="switch"
+                  [attr.aria-checked]="s.enabled"
+                  [class.on]="s.enabled"
                   [disabled]="scheduleBusy() === s.id"
+                  [attr.title]="s.enabled ? 'Pausar' : 'Retomar'"
                   (click)="toggleScheduleEnabled(s)"
                 >
-                  {{ s.enabled ? 'Pausar' : 'Retomar' }}
+                  <span class="sched-toggle-knob"></span>
                 </button>
                 <button
                   type="button"
@@ -1620,8 +1624,38 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       }
       .sched-item-acts {
         display: flex;
-        gap: 6px;
+        align-items: center;
+        gap: 10px;
         flex: none;
+      }
+      .sched-toggle {
+        appearance: none;
+        width: 38px;
+        height: 22px;
+        border-radius: 999px;
+        border: none;
+        background: #3a4046;
+        padding: 2px;
+        cursor: pointer;
+        flex: none;
+      }
+      .sched-toggle.on {
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+      }
+      .sched-toggle:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .sched-toggle-knob {
+        display: block;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.15s ease;
+      }
+      .sched-toggle.on .sched-toggle-knob {
+        transform: translateX(16px);
       }
       .sched-interval-row {
         display: flex;
