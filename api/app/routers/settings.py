@@ -52,7 +52,14 @@ def milestones_instruction(session: str) -> str:
         "liste o que você de fato executou; (4) Fora de escopo respeitado: o que "
         "NÃO foi mexido de propósito; (5) Próximos candidatos (opcional, curto). "
         "Seja factual e verificável; se algo falhou ou ficou pendente, diga "
-        "claramente em vez de omitir."
+        "claramente em vez de omitir. "
+        "ARQUIVOS GERADOS (imagem/PDF/relatório etc.): se o usuário pode querer "
+        "ver esse arquivo pelo celular/fora do computador, rode "
+        "'./tools/sf share <caminho-do-arquivo>' (ou "
+        "'~/.claude/skills/sf-delegate/sf share <caminho>' se 'tools/sf' não "
+        "existir nesse repo) — sobe o arquivo pro app, com botão de "
+        "download/preview na tela desta sessão. Não precisa passar a sessão "
+        "de destino: o comando detecta sozinho."
     )
 
 

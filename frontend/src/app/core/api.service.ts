@@ -1,6 +1,7 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, InjectionToken, inject } from '@angular/core';
 import { Observable, map, retry, timer, timeout } from 'rxjs';
+import { AuthService } from './auth.service';
 import {
   AgentModels,
   AgentType,
@@ -14,6 +15,7 @@ import {
   Session,
   SessionStatus,
   ShareLink,
+  SharedFile,
   Task,
   TerminalKey,
   UsageInfo,
@@ -52,6 +54,7 @@ export const API_BASE_URL = new InjectionToken<string>('API_BASE_URL', {
 export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly baseUrl = inject(API_BASE_URL);
+  private readonly auth = inject(AuthService);
 
   private url(path: string): string {
     return `${this.baseUrl}${path}`;
@@ -207,6 +210,29 @@ export class ApiService {
 
   deleteSchedule(id: string): Observable<void> {
     return this.http.delete<void>(this.url(`/schedules/${id}`));
+  }
+
+  // --- Arquivos compartilhados pelo agente (ver `tools/sf share`) ---
+
+  listSharedFiles(sessionId: string): Observable<SharedFile[]> {
+    return this.http
+      .get<{ items: SharedFile[] }>(this.url(`/sessions/${sessionId}/shared-files`))
+      .pipe(this.items<SharedFile>());
+  }
+
+  deleteSharedFile(id: string): Observable<void> {
+    return this.http.delete<void>(this.url(`/shared-files/${id}`));
+  }
+
+  /**
+   * URL de download/preview de um arquivo compartilhado. Vai com `?token=`
+   * na query (não header) porque é usada num `<a href>` puro/nova aba — o
+   * mesmo truque já usado pelo `SseService` pro EventSource.
+   */
+  sharedFileUrl(id: string): string {
+    const token = this.auth.token();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    return this.url(`/shared-files/${id}/download${qs}`);
   }
 
   // --- Models ---

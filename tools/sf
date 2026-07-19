@@ -25,11 +25,13 @@ import json
 import os
 import random
 import re
+import mimetypes
 import string
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 
 # Caminho fixo do .env do projeto SessionFlow (fonte das credenciais/porta).
@@ -98,6 +100,51 @@ def _request(method, url, token=None, body=None, timeout=30):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        die(f"falha de conexão com a API ({url}): {exc.reason}. "
+            "A stack do SessionFlow está de pé?")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {"_raw": raw}
+    return status, parsed
+
+
+def _upload_file(url, token, filepath):
+    """POST multipart/form-data com 1 arquivo (campo ``file``), stdlib pura.
+
+    Monta o corpo manualmente (boundary + headers) — evita depender de
+    `requests`/`urllib3`, mantendo o script sem dependências externas.
+    """
+    boundary = uuid.uuid4().hex
+    filename = os.path.basename(filepath)
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    with open(filepath, "rb") as fh:
+        file_bytes = fh.read()
+
+    parts = []
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+    )
+    parts.append(file_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Authorization": f"Bearer {token}",
+    }
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read().decode("utf-8")
             status = resp.status
     except urllib.error.HTTPError as exc:
@@ -404,6 +451,49 @@ def cmd_send(args):
 
 
 # --------------------------------------------------------------------------- #
+# comando: share
+# --------------------------------------------------------------------------- #
+def cmd_share(args):
+    """Sobe um arquivo do disco pra ficar disponível no app (inclusive celular).
+
+    Resolve a sessão de destino em duas etapas: `--to <alvo>` explícito, ou
+    (default) a PRÓPRIA sessão de onde o comando roda (via `detect_parent()`,
+    que lê `$TMUX`) — o caso de uso comum é o agente compartilhar um arquivo
+    que ele mesmo acabou de gerar, na sessão em que já está.
+    """
+    path = os.path.abspath(os.path.expanduser(args.path))
+    if not os.path.isfile(path):
+        die(f"arquivo não encontrado: {path}")
+
+    env = load_env()
+    token = login(env)
+    base = api_base(env)
+    sessions = list_sessions(env, token)
+
+    target_name = args.to or detect_parent()
+    if not target_name:
+        die("não rodando dentro de um tmux do SessionFlow e nenhum --to informado; "
+            "especifique a sessão com --to <nome-ou-id>")
+
+    session = resolve_session(sessions, target_name)
+    if session is None:
+        die(f"nenhuma sessão encontrada casando com '{target_name}'. "
+            "Use 'sf list' para ver os nomes/ids ativos.")
+
+    session_id = session["id"]
+    name = session.get("tmux_name") or session.get("display_name") or session_id
+    status, body = _upload_file(
+        f"{base}/sessions/{session_id}/shared-files", token, path
+    )
+    if status != 201:
+        die(f"upload falhou (HTTP {status}): {body}")
+
+    size_kb = body.get("size", 0) / 1024
+    print(f"compartilhado ✅ -> [{name}] {body.get('filename')} ({size_kb:.1f}KB)")
+    print("  disponível no app (botão de arquivos na tela da sessão), inclusive fora do Mac.")
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser():
@@ -463,6 +553,17 @@ def build_parser():
     m.add_argument("--no-enter", action="store_true",
                    help="não aperta Enter depois do texto (default: aperta).")
     m.set_defaults(func=cmd_send)
+
+    h = sub.add_parser(
+        "share",
+        help="sobe um arquivo do disco pra ficar disponível no app "
+             "(inclusive celular) — ex: uma imagem/PDF que você acabou de gerar.",
+    )
+    h.add_argument("path", help="caminho do arquivo (aceita ~ e relativo).")
+    h.add_argument("--to", default=None,
+                   help="sessão-alvo (nome ou id). Default: a própria sessão "
+                        "de onde o comando roda (detecta via $TMUX).")
+    h.set_defaults(func=cmd_share)
     return p
 
 

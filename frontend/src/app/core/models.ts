@@ -165,6 +165,16 @@ export interface ShareLink {
   expires_at?: string | null;
 }
 
+/** Arquivo que o AGENTE compartilhou de volta (ver `tools/sf share`). */
+export interface SharedFile {
+  id: string;
+  session_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  created_at: string | null;
+}
+
 /** Comando programado: instrução recorrente enviada ao terminal da sessão. */
 export interface Schedule {
   id: string;

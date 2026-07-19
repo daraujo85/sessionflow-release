@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # inject an isolated collection (e.g. ``uploads_test_<uuid>``).
     uploads_collection: str = "uploads"
 
+    # Collection holding arquivos que o AGENTE compartilha de volta com o
+    # usuário (sentido inverso do upload acima — ver ``sf share``).
+    shared_files_collection: str = "shared_files"
+
     # When true, prefer the *_HOST URIs (used by tests on the host).
     use_host_uris: bool = False
 

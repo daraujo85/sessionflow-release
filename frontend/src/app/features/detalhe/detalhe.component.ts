@@ -28,6 +28,7 @@ import {
   Session,
   SessionMetrics,
   ShareLink,
+  SharedFile,
   Task,
   TerminalKey,
 } from '../../core/models';
@@ -235,6 +236,25 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                   <circle cx="12" cy="12" r="9" />
                   <path d="M12 7v5l3 3" />
                 </svg>
+              </button>
+            }
+            @if (!guest()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                [class.on]="sharedFilesOpen()"
+                (click)="toggleSharedFiles()"
+                [attr.aria-pressed]="sharedFilesOpen()"
+                aria-label="Arquivos compartilhados"
+                title="Arquivos que o agente compartilhou (ver/baixar, inclusive fora do Mac)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95L10.13 17.9a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+                @if (sharedFiles().length > 0) {
+                  <span class="act-badge">{{ sharedFiles().length }}</span>
+                }
               </button>
             }
             @if (isRunning()) {
@@ -541,6 +561,49 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             >
               {{ schedulesCreating() ? 'Criando…' : 'Criar' }}
             </button>
+          </div>
+        </section>
+      }
+
+      <!-- Painel "Arquivos compartilhados": o agente sobe (via 'sf share') e
+           o usuário vê/baixa aqui, inclusive fora do Mac. -->
+      @if (sharedFilesOpen() && !guest()) {
+        <section class="rename" aria-label="Arquivos compartilhados">
+          <div class="sched-list">
+            @for (f of sharedFiles(); track f.id) {
+              <div class="sched-item">
+                <a
+                  class="shared-file-main"
+                  [href]="sharedFileUrl(f.id)"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  <span class="mono sched-text">{{ f.filename }}</span>
+                  <span class="sched-meta">
+                    {{ formatFileSize(f.size) }} · {{ formatRelativePast(f.created_at) }}
+                  </span>
+                </a>
+                <div class="sched-item-acts">
+                  <button
+                    type="button"
+                    class="rename-btn rename-btn--danger"
+                    [disabled]="sharedFileBusy() === f.id"
+                    (click)="deleteSharedFile(f)"
+                  >
+                    Excluir
+                  </button>
+                </div>
+              </div>
+            } @empty {
+              <span class="rename-hint">
+                Nenhum arquivo compartilhado ainda. Peça pro agente rodar
+                <code class="mono">sf share &lt;caminho&gt;</code> pra um arquivo
+                aparecer aqui.
+              </span>
+            }
+          </div>
+          <div class="rename-acts">
+            <button type="button" class="rename-btn" (click)="closeSharedFiles()">Fechar</button>
           </div>
         </section>
       }
@@ -1615,6 +1678,16 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         gap: 3px;
         min-width: 0;
       }
+      .shared-file-main {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+        text-decoration: none;
+      }
+      .shared-file-main:hover .sched-text {
+        text-decoration: underline;
+      }
       .sched-text {
         font-size: 13.5px;
         color: #f4f5f7;
@@ -2007,6 +2080,18 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         border: 1px solid #283230;
         cursor: pointer;
         transition: opacity 0.15s, background 0.15s;
+      }
+      .act-badge {
+        display: inline-block;
+        margin-left: 4px;
+        padding: 0 5px;
+        border-radius: 999px;
+        background: #2cecc4;
+        color: #06231d;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 15px;
+        vertical-align: middle;
       }
       .act:disabled {
         opacity: 0.5;
@@ -3375,6 +3460,86 @@ export class DetalheComponent implements AfterViewChecked {
     }
     const hours = Math.round(mins / 60);
     return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+  }
+
+  // --- Arquivos compartilhados pelo agente (ver `tools/sf share`) ---
+  protected readonly sharedFilesOpen = signal<boolean>(false);
+  protected readonly sharedFiles = signal<SharedFile[]>([]);
+  protected readonly sharedFileBusy = signal<string | null>(null);
+
+  protected toggleSharedFiles(): void {
+    if (this.sharedFilesOpen()) {
+      this.closeSharedFiles();
+      return;
+    }
+    this.sharedFilesOpen.set(true);
+    this.loadSharedFiles();
+  }
+
+  protected closeSharedFiles(): void {
+    this.sharedFilesOpen.set(false);
+  }
+
+  private loadSharedFiles(): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    this.api
+      .listSharedFiles(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) => this.sharedFiles.set(list),
+        error: () => this.sharedFiles.set([]),
+      });
+  }
+
+  protected deleteSharedFile(f: SharedFile): void {
+    this.sharedFileBusy.set(f.id);
+    this.api
+      .deleteSharedFile(f.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.sharedFiles.update((list) => list.filter((x) => x.id !== f.id));
+          this.sharedFileBusy.set(null);
+        },
+        error: () => this.sharedFileBusy.set(null),
+      });
+  }
+
+  protected sharedFileUrl(id: string): string {
+    return this.api.sharedFileUrl(id);
+  }
+
+  /** Bytes → "412KB"/"3.1MB" (sem casas decimais abaixo de 10). */
+  protected formatFileSize(bytes: number): string {
+    if (bytes < 1024) {
+      return `${bytes}B`;
+    }
+    const kb = bytes / 1024;
+    if (kb < 1024) {
+      return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)}KB`;
+    }
+    const mb = kb / 1024;
+    return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)}MB`;
+  }
+
+  /** ISO passado → "há 3min"/"há 2h" (pro item da lista de arquivos). */
+  protected formatRelativePast(isoDate: string | null): string {
+    if (!isoDate) {
+      return '';
+    }
+    const diffMs = Date.now() - new Date(isoDate).getTime();
+    const mins = Math.round(diffMs / 60000);
+    if (mins < 1) {
+      return 'agora';
+    }
+    if (mins < 60) {
+      return `há ${mins}min`;
+    }
+    const hours = Math.round(mins / 60);
+    return hours < 24 ? `há ${hours}h` : `há ${Math.round(hours / 24)}d`;
   }
 
   /** Proporção do painel A (0.2–0.8) no split — arrastável, persistida. */

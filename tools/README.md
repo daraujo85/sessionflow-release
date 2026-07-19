@@ -1,6 +1,6 @@
 # tools/
 
-## `sf` — delega tarefa / fala com sessão irmã (Fatia 1 + 2)
+## `sf` — delega tarefa / fala com sessão irmã / compartilha arquivo (Fatia 1-3)
 
 CLI (Python 3, só stdlib) que faz uma sessão-chefe do SessionFlow **delegar uma
 tarefa pesada a um worker filho em OUTRO provedor** (gemini/codex/opencode/
@@ -31,6 +31,10 @@ externas.
 # Mandar mensagem/instrução pro terminal de uma sessão JÁ EXISTENTE (irmã)
 ./tools/sf send <nome-ou-id> "texto da mensagem"
 # opções: --no-enter (não aperta Enter automático depois do texto)
+
+# Compartilhar um arquivo gerado (imagem/PDF/relatório) de volta com o usuário
+./tools/sf share <caminho-do-arquivo>
+# opções: --to <nome-ou-id> (default: a própria sessão, via $TMUX)
 ```
 
 `delegate` cria a sessão (POST /sessions), faz poll até `running` (~40s) e injeta
@@ -45,6 +49,15 @@ SessionFlow na mão: `list` acha o nome/id do alvo, `send` chama
 `POST /sessions/{id}/input` na sessão-alvo (mesmo mecanismo do `sendKey`/
 `sendInput` do frontend — roteamento multi-host automático). Resolução de
 `target` aceita id, tmux_name/display_name exato, ou substring única.
+
+`share` (Fatia 3) resolve o caso "gerei um arquivo (imagem/PDF/relatório) e o
+usuário pode estar longe do computador pra ver": lê o arquivo do disco e faz
+`POST /sessions/{id}/shared-files` (multipart, stdlib pura — sem dependências
+externas). O app expõe um botão de arquivos na tela da sessão com link de
+download/preview (`GET /shared-files/{id}/download`, `Content-Disposition:
+inline` — abre a imagem/PDF direto no navegador). Sessão-alvo por `--to` ou,
+por padrão, a própria sessão de onde `share` roda (detecta via `$TMUX`).
+Teto de 50MB por arquivo.
 
 ### Instalação como skill
 
