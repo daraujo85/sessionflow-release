@@ -515,6 +515,12 @@ export class CriarComponent {
 
     // Load models for the initial agent.
     this.loadModels(this.agent());
+
+    // Rebusca status dos hosts (online/offline) AGORA — o WorkersStore só
+    // busca 1x no boot do app, então sem isso essa tela mostrava um host
+    // como offline pra sempre mesmo que ele já tivesse voltado (heartbeat
+    // é só uma janela de 30s; qualquer soluço breve ficava "preso" aqui).
+    this.workers.refresh();
   }
 
   meta(a: AgentType): AgentMeta {
