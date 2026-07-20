@@ -101,3 +101,36 @@ async def test_reconcile_does_not_raise_when_all_vanish() -> None:
 def test_agent_type_inference_still_works_on_info() -> None:
     # sanity: SessionInfo helper continua funcional (não quebramos o dataclass).
     assert _info("x").agent_type is AgentType.UNKNOWN
+
+
+async def test_infra_sessions_never_discovered_or_stopped() -> None:
+    """cloudflared-tunnel/sessionflow-worker nunca viram doc/aparecem no app.
+
+    Incidente real: essas sessões de infra apareciam na tela de Sessões como
+    qualquer sessão de trabalho e foram apagadas por engano, derrubando o
+    acesso externo. Devem ser puladas SEM nem chamar ``_upsert_session``, e
+    excluídas do ``present_names`` passado pro mark-stopped (não entram no
+    ciclo de stopped/transição também).
+    """
+    infos = [_info("cloudflared-tunnel"), _info("sessionflow-worker"), _info("pvax")]
+    disc = _make_discovery(infos)
+
+    seen: list[str] = []
+    stopped_seen: list[set[str]] = []
+
+    async def fake_upsert(info: SessionInfo, *, limits=None) -> bool:  # noqa: ANN001
+        seen.append(info.name)
+        return True
+
+    async def fake_mark_stopped(_coll, present_names):  # noqa: ANN001
+        stopped_seen.append(set(present_names))
+        return 0
+
+    disc._upsert_session = fake_upsert  # type: ignore[assignment]
+    disc._mark_missing_stopped = fake_mark_stopped  # type: ignore[assignment]
+
+    report = await disc.reconcile_once()
+
+    assert seen == ["pvax"]
+    assert report.discovered == 1
+    assert stopped_seen and stopped_seen[0] == {"pvax"}

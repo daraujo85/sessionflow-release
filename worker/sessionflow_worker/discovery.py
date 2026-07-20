@@ -110,6 +110,15 @@ _MAX_AUTOCONTINUE = 4
 # (garante que o agente parou de fato, não está mid-stream).
 _AUTOCONT_STABLE_S = 6.0
 
+# Sessões tmux de INFRAESTRUTURA do próprio SessionFlow (não são conversas de
+# agente) — nunca descobertas/upsertadas, então NUNCA aparecem na tela de
+# Sessões nem podem ser apagadas por engano por lá. Incidente real: alguém
+# encerrou a sessão tmux "cloudflared-tunnel" pela tela de Sessões pensando
+# ser uma sessão de trabalho velha, derrubando o acesso externo até o próximo
+# restart manual. ``sessionflow-worker``/``cloudflared-tunnel`` são os nomes
+# usados pelo próprio setup (ver tools/ e o script de startup do host).
+INFRA_SESSION_NAMES = frozenset({"sessionflow-worker", "cloudflared-tunnel"})
+
 
 def _screen_has_api_error(text: str) -> bool:
     """True se as últimas linhas da tela mostram um erro de API transitório."""
@@ -224,6 +233,8 @@ class Discovery:
         present_names: set[str] = set()
 
         for info in sessions:
+            if info.name in INFRA_SESSION_NAMES:
+                continue
             # Uma sessão que some no meio do ciclo (LibTmuxException) NÃO pode
             # derrubar a reconciliação das demais. ``list_sessions`` já tolera
             # sumiço; aqui blindamos também o upsert por-sessão.
@@ -619,7 +630,10 @@ class Discovery:
         now = _now()
         query = {
             "status": {"$in": ACTIVE_STATUSES},
-            "tmux_name": {"$nin": list(present_names)},
+            # Nunca transiciona sessões de infra (nem entram em present_names,
+            # nem foram upsertadas por este ciclo — exclusão explícita por
+            # clareza/defesa em profundidade, ver INFRA_SESSION_NAMES).
+            "tmux_name": {"$nin": list(present_names | INFRA_SESSION_NAMES)},
             "host_id": self._host_id,
         }
 
