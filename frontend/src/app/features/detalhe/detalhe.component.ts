@@ -1015,6 +1015,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
           <button type="button" class="key key-wide" (click)="pressKey('space')">Espaço</button>
           <button type="button" class="key key-wide key-accent" (click)="pressKey('enter')">Enter</button>
           <button type="button" class="key" (click)="pressKey('escape')">Esc</button>
+          <button type="button" class="key" (click)="pressKey('tab')" aria-label="Tab">Tab</button>
         </div>
       }
 
