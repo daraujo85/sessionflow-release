@@ -154,22 +154,6 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       <div class="sf-section-head">
         <h2>Sessões ativas</h2>
         <span class="sf-section-acts">
-          @if (activeSessions().length > 0) {
-            <button
-              type="button"
-              class="sf-icon-link"
-              [class.spinning]="refreshingAllMilestones()"
-              [disabled]="refreshingAllMilestones()"
-              (click)="refreshAllMilestones()"
-              aria-label="Pedir pra todas as sessões ativas revisarem as tarefas"
-              title="Pedir pra TODAS as sessões ativas revisar/atualizar as tarefas agora"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
-              </svg>
-            </button>
-          }
           <button type="button" class="sf-link" (click)="goSessoes()">
             Ver todas
           </button>
@@ -1527,40 +1511,6 @@ export class InicioComponent implements OnInit {
   private readonly sessions = signal<Session[]>([]);
   /** Recent tasks loaded from the API. */
   protected readonly tasks = signal<Task[]>([]);
-  protected readonly refreshingAllMilestones = signal(false);
-
-  /** Pede pra TODAS as sessões ativas revisarem/atualizarem as tarefas agora. */
-  /** Cooldown real do botão (não só "enquanto as requisições estão em voo",
-   * que resolve rápido demais pra impedir clique frenético). */
-  private static readonly MILESTONES_REFRESH_COOLDOWN_MS = 15_000;
-
-  protected refreshAllMilestones(): void {
-    const active = this.activeSessions();
-    if (active.length === 0 || this.refreshingAllMilestones()) {
-      return;
-    }
-    this.refreshingAllMilestones.set(true);
-    let pending = active.length;
-    const done = () => {
-      pending--;
-      if (pending <= 0) {
-        setTimeout(
-          () => this.refreshingAllMilestones.set(false),
-          InicioComponent.MILESTONES_REFRESH_COOLDOWN_MS,
-        );
-      }
-    };
-    for (const s of active) {
-      const text =
-        `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${s.tmux_name}.json: ` +
-        'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
-        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".';
-      this.api
-        .sendInput(s.id, text, true)
-        .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe({ next: done, error: done });
-    }
-  }
 
   /**
    * Badge do sino = SÓ as notificações não limpas (buffer SSE). Antes entrava

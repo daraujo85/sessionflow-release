@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # Intervalo (s) do loop que varre comandos programados vencidos.
     scheduler_poll_seconds: int = 20
 
+    # Intervalo (s) entre revisões automáticas de milestones por sessão ativa.
+    # Mecanismo PRÓPRIO e independente de `scheduled_commands` (não aparece no
+    # painel "Comandos programados" do usuário nem compete por essa coleção).
+    milestones_refresh_interval_seconds: int = 14400  # 4h
+
     # Directory where uploaded files (e.g. audio) are stored. Mounted as a
     # volume in the container (env ``UPLOADS_DIR``). Tests inject ``tmp_path``.
     uploads_dir: str = "/data/uploads"

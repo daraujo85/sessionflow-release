@@ -63,6 +63,21 @@ def milestones_instruction(session: str) -> str:
     )
 
 
+def milestones_refresh_instruction(session: str) -> str:
+    """Instrução periódica (revisão) — diferente da instrução inicial acima.
+
+    Enviada automaticamente pelo scheduler de milestones (não pelo botão
+    manual, removido; ver ``app/scheduler.py:_milestones_tick``), a cada
+    ``milestones_refresh_interval_seconds``. Pede uma FAXINA no arquivo já
+    existente em vez de instruir a criá-lo do zero.
+    """
+    return (
+        f"[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.{session}.json: "
+        "confira o estado REAL do trabalho, atualize status desatualizados, remova "
+        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".'
+    )
+
+
 class SettingsOut(BaseModel):
     """Configurações expostas ao app."""
 

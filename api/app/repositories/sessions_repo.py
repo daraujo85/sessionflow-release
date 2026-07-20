@@ -99,6 +99,39 @@ class SessionsRepository:
         )
         return res.modified_count > 0
 
+    async def due_for_milestones_refresh(
+        self, cutoff: Any, statuses: list[str]
+    ) -> list[dict[str, Any]]:
+        """Sessões ativas cuja última revisão de milestones já passou do prazo.
+
+        ``cutoff`` é o instante-limite (agora - intervalo): pega quem nunca foi
+        revisada (`milestones_refreshed_at` ausente) OU cuja última revisão é
+        anterior a ``cutoff``.
+        """
+        query: dict[str, Any] = {
+            "status": {"$in": statuses},
+            # Só revisa quem já foi instruído a manter o arquivo de milestones
+            # (ver `instruct_milestones`) — sessão nova ainda não tem o que
+            # revisar, e isso evita competir por input com um scheduled_command
+            # que possa estar disparando ao mesmo tempo pra essa mesma sessão.
+            "milestones_instructed_at": {"$exists": True},
+            "$or": [
+                {"milestones_refreshed_at": {"$exists": False}},
+                {"milestones_refreshed_at": {"$lt": cutoff}},
+            ],
+        }
+        return [doc async for doc in self._collection.find(query)]
+
+    async def mark_milestones_refreshed(self, session_id: str, when: Any) -> None:
+        """Grava o timestamp da última revisão automática de milestones."""
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return
+        await self._collection.update_one(
+            {"_id": oid}, {"$set": {"milestones_refreshed_at": when}}
+        )
+
     async def active_with_name_exists(self, name: str) -> bool:
         """Return True if an ACTIVE session (status != stopped) uses ``name``.
 
