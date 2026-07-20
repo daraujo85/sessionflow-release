@@ -9,7 +9,9 @@ import {
   signal,
 } from '@angular/core';
 import { Router } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { SseService } from '../../core/sse.service';
 import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { Session, SessionStatus, Task, TaskState } from '../../core/models';
@@ -145,15 +147,33 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       }
 
       <!-- Greeting -->
-      <h1 class="sf-greeting">{{ greeting() }}, Diego 👋</h1>
+      <h1 class="sf-greeting">{{ greeting() }}{{ greetingName() ? ', ' + greetingName() : '' }} 👋</h1>
       <p class="sf-active-count">{{ activeCountLabel() }}</p>
 
       <!-- Active sessions -->
       <div class="sf-section-head">
         <h2>Sessões ativas</h2>
-        <button type="button" class="sf-link" (click)="goSessoes()">
-          Ver todas
-        </button>
+        <span class="sf-section-acts">
+          @if (activeSessions().length > 0) {
+            <button
+              type="button"
+              class="sf-icon-link"
+              [class.spinning]="refreshingAllMilestones()"
+              [disabled]="refreshingAllMilestones()"
+              (click)="refreshAllMilestones()"
+              aria-label="Pedir pra todas as sessões ativas revisarem as tarefas"
+              title="Pedir pra TODAS as sessões ativas revisar/atualizar as tarefas agora"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+              </svg>
+            </button>
+          }
+          <button type="button" class="sf-link" (click)="goSessoes()">
+            Ver todas
+          </button>
+        </span>
       </div>
 
       @if (activeSessions().length > 0) {
@@ -162,7 +182,10 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             <button
               type="button"
               class="sf-card sf-enter"
-              [class.is-waiting]="s.status === 'waiting_input'"
+              [class.is-waiting]="statusIcon(s) === 'wait'"
+              [class.is-running]="isWorkingIcon(statusIcon(s))"
+              [class.is-external]="s.status === 'waiting_external'"
+              [class.is-completed]="statusIcon(s) === 'done'"
               [class.sf-has-agents]="subAgentCount(s) > 0"
               [class.sf-flash]="taskFlash(s)"
               [style.animation-delay]="enterDelay(i)"
@@ -266,7 +289,15 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 @if (timeAgo(s)) {
                   <span class="sf-card-time">· {{ timeAgo(s) }}</span>
                 }
-                <span class="sf-card-sub mono">{{ subline(s) }}</span>
+                @if (latestTaskFor(s); as lt) {
+                  <span
+                    class="sf-card-sub sf-card-task"
+                    [style.color]="taskMeta(effectiveTaskState(lt)).color"
+                    [title]="lt.title"
+                  >{{ lt.title }}</span>
+                } @else {
+                  <span class="sf-card-sub mono" [title]="subline(s)">{{ subline(s) }}</span>
+                }
               </span>
               <svg
                 class="sf-chevron"
@@ -766,6 +797,37 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: var(--text-strong);
         margin: 0;
       }
+      .sf-section-acts {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .sf-icon-link {
+        appearance: none;
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+      }
+      .sf-icon-link:hover:not(:disabled) {
+        color: var(--text-strong);
+      }
+      .sf-icon-link:disabled {
+        cursor: default;
+      }
+      .sf-icon-link.spinning svg {
+        animation: sf-icon-spin 0.8s linear infinite;
+      }
+      @keyframes sf-icon-spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
       .sf-link {
         font-size: 14px;
         font-weight: 600;
@@ -894,6 +956,64 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           animation: none;
           box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.45);
         }
+      }
+      /* Rodando (codando): glow ciano pulsante — trabalho ativo, sem precisar
+         de você agora (diferencia de "aguardando decisão", que é âmbar). */
+      .sf-card.is-running {
+        border-color: #164a4a;
+        background: #0f1c1c;
+        animation: sf-run-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-run-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.18),
+            0 0 10px -3px rgba(34, 211, 238, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.4),
+            0 0 16px -2px rgba(34, 211, 238, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-running {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35);
+        }
+      }
+      /* Aguardando algo EXTERNO (ex.: build/deploy, resposta de outro serviço):
+         glow laranja — não precisa de você, mas também não está "codando". */
+      .sf-card.is-external {
+        border-color: #4a2f16;
+        background: #1c150f;
+        animation: sf-ext-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-ext-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.18),
+            0 0 10px -3px rgba(251, 146, 60, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.4),
+            0 0 16px -2px rgba(251, 146, 60, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-external {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.35);
+        }
+      }
+      /* Concluída: SEM pulso (não tem mais urgência) — só uma borda verde
+         suave, pra distinguir de "rodando" à primeira vista. */
+      .sf-card.is-completed {
+        border-color: #1f7a5c;
+        box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.3);
       }
       .sf-stat-icon {
         display: inline-flex;
@@ -1045,6 +1165,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       .sf-chevron {
         flex: none;
       }
+      .sf-card-task {
+        font-weight: 600;
+      }
 
       /* Tasks */
       /* Mobile: chips numa linha que rola + seletor de sessão largura cheia. */
@@ -1113,7 +1236,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         background: var(--surface-card);
         border: 1px solid var(--border-default);
         border-radius: 18px;
-        overflow: hidden;
+        max-height: 420px;
+        overflow-y: auto;
+        overflow-x: hidden;
       }
       /* Wrap que segura o swipe: a zona vermelha fica ATRÁS da linha. */
       .sf-task-wrap {
@@ -1321,6 +1446,16 @@ export class InicioComponent implements OnInit {
   private readonly jarvis = inject(JarvisAudioService);
   protected readonly workers = inject(WorkersStore);
   private readonly router = inject(Router);
+  private readonly auth = inject(AuthService);
+
+  /** Nome pra saudação: deriva do e-mail de login (antes do @), capitalizado.
+   * Era hardcoded "Diego" — quebrava em qualquer instância que não fosse a
+   * dele (ex.: SessionFlow separado de outro usuário). */
+  protected readonly greetingName = computed(() => {
+    const email = this.auth.email();
+    const local = (email ?? '').split('@')[0]?.split('.')[0] || '';
+    return local ? local.charAt(0).toUpperCase() + local.slice(1) : '';
+  });
 
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
   protected isSpeaking(s: Session): boolean {
@@ -1383,6 +1518,33 @@ export class InicioComponent implements OnInit {
   private readonly sessions = signal<Session[]>([]);
   /** Recent tasks loaded from the API. */
   protected readonly tasks = signal<Task[]>([]);
+  protected readonly refreshingAllMilestones = signal(false);
+
+  /** Pede pra TODAS as sessões ativas revisarem/atualizarem as tarefas agora. */
+  protected refreshAllMilestones(): void {
+    const active = this.activeSessions();
+    if (active.length === 0 || this.refreshingAllMilestones()) {
+      return;
+    }
+    this.refreshingAllMilestones.set(true);
+    let pending = active.length;
+    const done = () => {
+      pending--;
+      if (pending <= 0) {
+        this.refreshingAllMilestones.set(false);
+      }
+    };
+    for (const s of active) {
+      const text =
+        `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${s.tmux_name}.json: ` +
+        'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
+        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".';
+      this.api
+        .sendInput(s.id, text, true)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: done, error: done });
+    }
+  }
 
   /**
    * Badge do sino = SÓ as notificações não limpas (buffer SSE). Antes entrava
@@ -1818,7 +1980,12 @@ export class InicioComponent implements OnInit {
 
   /** Ícones "vivos" (com pulse sutil) — estados de trabalho ativo. */
   isActiveIcon(s: Session): boolean {
-    const k = this.statusIcon(s);
+    return this.isWorkingIcon(this.statusIcon(s));
+  }
+
+  /** Estados de trabalho ainda em andamento (glow ciano do card) — usado
+   * tanto pro ícone quanto pro brilho do card em si. */
+  isWorkingIcon(k: ReturnType<InicioComponent['statusIcon']>): boolean {
     return k === 'think' || k === 'code' || k === 'analyze' || k === 'run' || k === 'play';
   }
 
@@ -1870,6 +2037,24 @@ export class InicioComponent implements OnInit {
     };
     const m = map[state] ?? map.todo;
     return { ...m, bg: this.cssVarToRgba(m.color) };
+  }
+
+  /**
+   * Tarefa mais recentemente atualizada desta sessão (qualquer status) — pro
+   * card da Início mostrar "no que ela está" no lugar do caminho (que já é
+   * meio redundante — some do card, mas continua visível dentro da sessão).
+   */
+  protected latestTaskFor(s: Session): Task | null {
+    let latest: Task | null = null;
+    for (const t of this.tasks()) {
+      if (t.session_id !== s.tmux_name) {
+        continue;
+      }
+      if (!latest || (t.updated_at ?? '') > (latest.updated_at ?? '')) {
+        latest = t;
+      }
+    }
+    return latest;
   }
 
   /** Status da sessão (tmux_name) a que a tarefa pertence — null se não achar. */

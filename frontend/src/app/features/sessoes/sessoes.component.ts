@@ -200,7 +200,10 @@ const FILTERS: readonly FilterChip[] = [
                 type="button"
                 class="sf-card"
                 [class.is-dragging]="dragId() === s.id"
-                [class.is-waiting]="s.status === 'waiting_input'"
+                [class.is-waiting]="statusIcon(s) === 'wait'"
+                [class.is-running]="isWorkingIcon(statusIcon(s))"
+                [class.is-external]="s.status === 'waiting_external'"
+                [class.is-completed]="statusIcon(s) === 'done'"
                 [class.sf-flash]="taskFlash(s)"
                 [class.is-selecting]="selectionMode()"
                 [class.is-selected]="isSelected(s)"
@@ -754,6 +757,64 @@ const FILTERS: readonly FilterChip[] = [
           animation: none;
           box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.45);
         }
+      }
+      /* Rodando (codando): glow ciano pulsante — trabalho ativo, sem precisar
+         de você agora (diferencia de "aguardando decisão", que é âmbar). */
+      .sf-card.is-running {
+        border-color: #164a4a;
+        background: #0f1c1c;
+        animation: sf-run-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-run-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.18),
+            0 0 10px -3px rgba(34, 211, 238, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.4),
+            0 0 16px -2px rgba(34, 211, 238, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-running {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35);
+        }
+      }
+      /* Aguardando algo EXTERNO (ex.: build/deploy, resposta de outro serviço):
+         glow laranja — não precisa de você, mas também não está "codando". */
+      .sf-card.is-external {
+        border-color: #4a2f16;
+        background: #1c150f;
+        animation: sf-ext-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-ext-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.18),
+            0 0 10px -3px rgba(251, 146, 60, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.4),
+            0 0 16px -2px rgba(251, 146, 60, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-external {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.35);
+        }
+      }
+      /* Concluída: SEM pulso (não tem mais urgência) — só uma borda verde
+         suave, pra distinguir de "rodando" à primeira vista. */
+      .sf-card.is-completed {
+        border-color: #1f7a5c;
+        box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.3);
       }
 
       /* Press feedback lives on an INNER wrapper, NOT on .sf-card itself.
@@ -1629,7 +1690,11 @@ export class SessoesComponent {
 
   /** Ícones "vivos" (com pulse sutil) — estados de trabalho ativo. */
   protected isActiveIcon(s: Session): boolean {
-    const k = this.statusIcon(s);
+    return this.isWorkingIcon(this.statusIcon(s));
+  }
+
+  /** Estados de trabalho ainda em andamento (glow ciano do card). */
+  protected isWorkingIcon(k: ReturnType<SessoesComponent['statusIcon']>): boolean {
     return k === 'think' || k === 'code' || k === 'analyze' || k === 'run' || k === 'play';
   }
 

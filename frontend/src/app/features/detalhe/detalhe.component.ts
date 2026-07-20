@@ -838,23 +838,39 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       <!-- Tarefas da sessão (marcos) — recolhível p/ não roubar o terminal -->
       @if (tasks().length > 0) {
         <div class="tasks">
-          <button type="button" class="tasks-head" (click)="tasksOpen.set(!tasksOpen())">
-            <span class="tasks-head-top">
-              <span class="tasks-title">Tarefas ({{ tasks().length }})</span>
-              <span class="tasks-sub">{{ tasksDoneCount() }}/{{ tasks().length }} concluídas</span>
-              <svg class="tasks-chev" [class.open]="tasksOpen()" width="18" height="18" viewBox="0 0 24 24"
-                   fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m6 9 6 6 6-6" />
+          <div class="tasks-head-row" (click)="tasksOpen.set(!tasksOpen())">
+            <button
+              type="button"
+              class="tasks-refresh-btn"
+              [class.spinning]="milestonesRefreshing()"
+              [disabled]="milestonesRefreshing()"
+              (click)="$event.stopPropagation(); refreshMilestones()"
+              aria-label="Pedir pro agente revisar/atualizar as tarefas"
+              title="Pedir pro agente revisar e atualizar o arquivo de tarefas agora"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
               </svg>
-            </span>
-            @if (currentTask(); as ct) {
-              <span class="tasks-current">
-                <span class="tasks-current-dot" [style.background]="taskColor(ct.state)"></span>
-                <span class="tasks-current-lead" [style.color]="taskColor(ct.state)">{{ currentTaskLead() }}:</span>
-                <span class="tasks-current-title">{{ ct.title }}</span>
+            </button>
+            <span class="tasks-head">
+              <span class="tasks-head-top">
+                <span class="tasks-title">Tarefas ({{ tasks().length }})</span>
+                <span class="tasks-sub">{{ tasksDoneCount() }}/{{ tasks().length }} concluídas</span>
               </span>
-            }
-          </button>
+              @if (currentTask(); as ct) {
+                <span class="tasks-current">
+                  <span class="tasks-current-dot" [style.background]="taskColor(ct.state)"></span>
+                  <span class="tasks-current-lead" [style.color]="taskColor(ct.state)">{{ currentTaskLead() }}:</span>
+                  <span class="tasks-current-title">{{ ct.title }}</span>
+                </span>
+              }
+            </span>
+            <svg class="tasks-chev" [class.open]="tasksOpen()" width="18" height="18" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </div>
           @if (tasksOpen()) {
             <div class="tasks-filters">
               @for (f of taskFilters; track f.key) {
@@ -2407,21 +2423,58 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         background: #121614;
       }
       .tasks-head {
-        width: 100%;
         display: flex;
         flex-direction: column;
         gap: 6px;
-        padding: 13px 16px;
-        background: none;
-        border: none;
         color: #f4f5f7;
-        cursor: pointer;
         text-align: left;
       }
       .tasks-head-top {
         display: flex;
         align-items: center;
         gap: 10px;
+      }
+      .tasks-head-row {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 13px 16px;
+        cursor: pointer;
+      }
+      .tasks-head-row .tasks-head {
+        flex: 1;
+        min-width: 0;
+      }
+      .tasks-head-row .tasks-chev {
+        flex: none;
+      }
+      .tasks-refresh-btn {
+        flex: none;
+        appearance: none;
+        background: none;
+        border: none;
+        color: #7d8590;
+        padding: 6px;
+        margin: -6px 0;
+        cursor: pointer;
+      }
+      .tasks-refresh-btn:hover:not(:disabled) {
+        color: #d4d4d4;
+      }
+      .tasks-refresh-btn:disabled {
+        cursor: default;
+      }
+      .tasks-refresh-btn.spinning svg {
+        animation: tasks-refresh-spin 0.8s linear infinite;
+      }
+      @keyframes tasks-refresh-spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
       }
       /* Linha de destaque: tarefa em andamento (ou a mais recente) — preenche
          a barra que antes ficava vazia. */
@@ -3355,6 +3408,31 @@ export class DetalheComponent implements AfterViewChecked {
   /** Segundos de 1 unidade: '60' (minuto) | '3600' (hora) | '86400' (dia). */
   protected readonly newScheduleIntervalUnit = signal<string>('3600');
 
+  /**
+   * Pede pro agente revisar/atualizar o arquivo de tarefas AGORA, sob demanda.
+   * Diferente de `instructMilestones` (auto, 1x, idempotente): aqui é sempre
+   * um envio novo — o usuário quer forçar uma faxina/atualização na hora.
+   */
+  protected refreshMilestones(): void {
+    const id = this.id();
+    const name = this.session()?.tmux_name;
+    if (!id || !name || this.milestonesRefreshing()) {
+      return;
+    }
+    this.milestonesRefreshing.set(true);
+    const text =
+      `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${name}.json: ` +
+      'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
+      'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".';
+    this.api
+      .sendInput(id, text, true)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => setTimeout(() => this.milestonesRefreshing.set(false), 1500),
+        error: () => this.milestonesRefreshing.set(false),
+      });
+  }
+
   protected toggleSchedules(): void {
     if (this.schedulesOpen()) {
       this.closeSchedules();
@@ -3587,6 +3665,8 @@ export class DetalheComponent implements AfterViewChecked {
   /** Tarefas/marcos desta sessão (painel recolhível). */
   protected readonly tasks = signal<Task[]>([]);
   protected readonly tasksOpen = signal<boolean>(false);
+  /** Feedback visual (spinner breve) do botão de refresh das tarefas. */
+  protected readonly milestonesRefreshing = signal<boolean>(false);
   /** Keypad recolhido por padrão (libera espaço do terminal); ⌨ expande. */
   protected readonly keypadOpen = signal<boolean>(false);
   /** Métricas recolhidas por padrão (topo resume modelo + ctx%); toque expande. */
