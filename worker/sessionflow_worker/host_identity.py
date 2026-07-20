@@ -68,18 +68,21 @@ def capabilities_for(plat: str) -> dict:
     que está rodando LOCALMENTE naquele host:
 
     - ``tts``: ``True`` no Mac (servidor XTTS local de sempre), ou quando
-      ``SESSIONFLOW_JARVIS_TTS=api`` (API hospedada, qualquer plataforma), ou
-      quando ``SESSIONFLOW_HOST_TTS=1`` — declarado por um host que subiu seu
+      ``SESSIONFLOW_JARVIS_TTS`` é ``api`` (API hospedada) ou ``piper`` (binário
+      CPU standalone, sem GPU — ver ``jarvis.py``), ou quando
+      ``SESSIONFLOW_HOST_TTS=1`` — declarado por um host que subiu seu
       PRÓPRIO servidor XTTS local (ex.: Windows/WSL2 com GPU NVIDIA rodando
       ``coqui-tts`` em CUDA na mesma porta que o ``jarvis.py`` já espera).
     - ``transcription``: ``True`` no Mac (mlx-whisper) ou quando
       ``SESSIONFLOW_HOST_TRANSCRIPTION=1`` — declarado por um host com
-      backend CUDA (``faster-whisper``) configurado (ver ``transcriber.py``).
+      backend ``faster-whisper`` configurado (CUDA ou CPU, ver
+      ``transcriber.py``/``SESSIONFLOW_FASTER_WHISPER_DEVICE``).
 
     Esses dois envs são o host "avisando" que já tem a infra local no ar;
     não fazemos probe de rede aqui (capabilities são calculadas 1x no boot).
     """
-    tts_via_api = os.environ.get("SESSIONFLOW_JARVIS_TTS", "").strip().lower() == "api"
+    tts_mode = os.environ.get("SESSIONFLOW_JARVIS_TTS", "").strip().lower()
+    tts_via_config = tts_mode in ("api", "piper")
     tts_local = os.environ.get("SESSIONFLOW_HOST_TTS", "").strip().lower() in ("1", "true")
     transcription_local = os.environ.get(
         "SESSIONFLOW_HOST_TRANSCRIPTION", ""
@@ -87,7 +90,7 @@ def capabilities_for(plat: str) -> dict:
     is_darwin = plat == "darwin"
     return {
         "platform": plat,
-        "tts": is_darwin or tts_via_api or tts_local,
+        "tts": is_darwin or tts_via_config or tts_local,
         "transcription": is_darwin or transcription_local,
         "open_terminal": is_darwin,  # "abrir no Mac" via osascript
     }

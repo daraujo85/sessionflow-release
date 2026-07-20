@@ -38,6 +38,14 @@ def test_jarvis_tts_api_enables_tts_on_any_platform(monkeypatch: pytest.MonkeyPa
     assert caps["open_terminal"] is False
 
 
+def test_jarvis_tts_piper_enables_tts_on_any_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SESSIONFLOW_JARVIS_TTS", "piper")
+    caps = capabilities_for("wsl2")
+    assert caps["tts"] is True
+    assert caps["transcription"] is False
+    assert caps["open_terminal"] is False
+
+
 def test_host_tts_declares_local_xtts_server(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SESSIONFLOW_HOST_TTS", "1")
     caps = capabilities_for("wsl2")

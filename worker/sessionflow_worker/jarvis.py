@@ -25,7 +25,7 @@ Replicamos o caminho LEVE que o próprio JARVIS usa, mas embutido aqui:
 Configurável por env, então a API hospedada (``audio.boletoazap.dev.br``) segue
 disponível como opção premium para uso esporádico:
 
-- ``SESSIONFLOW_JARVIS_TTS``      = ``say`` (default) | ``api``
+- ``SESSIONFLOW_JARVIS_TTS``      = ``say`` (default) | ``api`` | ``piper``
 - ``SESSIONFLOW_JARVIS_SUMMARY``  = ``ollama`` (default) | ``api`` | ``none``
 - ``SESSIONFLOW_JARVIS_VOICE``    = voz do ``say`` (default ``Luciana``) ou voz
   Azure quando ``TTS=api`` (ex. ``pt-BR-AntonioNeural``)
@@ -33,6 +33,14 @@ disponível como opção premium para uso esporádico:
 - ``SESSIONFLOW_JARVIS_OLLAMA_MODEL`` = modelo (default ``llama3.2:3b``)
 - ``SESSIONFLOW_JARVIS_RATE``     = rate do ``say`` (default ``190``)
 - ``SESSIONFLOW_TTS_BASE``        = base da API hospedada (quando ``=api``)
+
+``piper`` (https://github.com/rhasspy/piper): TTS neural 100% CPU, sem GPU/API
+externa — pensado para hosts Linux/Windows sem GPU (ex.: WSL2). Binário
+standalone (``SESSIONFLOW_JARVIS_PIPER_BIN``, default
+``~/.local/share/piper/piper/piper``) + modelo ``.onnx`` (``SESSIONFLOW_JARVIS_PIPER_MODEL``,
+default ``~/.local/share/piper/piper/pt_BR-faber-medium.onnx``). Ambos baixados
+manualmente (releases do GitHub + huggingface.co/rhasspy/piper-voices) — sem
+``pip``/``apt``/admin, só um binário + arquivo de modelo.
 
 Tudo é **best-effort**: qualquer falha é engolida e jamais derruba o discovery.
 """
@@ -81,6 +89,16 @@ OLLAMA_MODEL = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA_MODEL", "llama3.1:8b")
 TTS_BASE_URL = os.environ.get("SESSIONFLOW_TTS_BASE", "https://audio.boletoazap.dev.br").rstrip("/")
 # Voz Azure quando TTS=api (a voz `say` não vale lá).
 API_VOICE = os.environ.get("SESSIONFLOW_JARVIS_API_VOICE", "pt-BR-AntonioNeural")
+# Piper (CPU, sem GPU/API) — binário + modelo baixados manualmente (ver docstring).
+PIPER_BIN = os.path.expanduser(
+    os.environ.get("SESSIONFLOW_JARVIS_PIPER_BIN", "~/.local/share/piper/piper/piper")
+)
+PIPER_MODEL = os.path.expanduser(
+    os.environ.get(
+        "SESSIONFLOW_JARVIS_PIPER_MODEL",
+        "~/.local/share/piper/piper/pt_BR-faber-medium.onnx",
+    )
+)
 
 _SCREEN_TAIL = 2500  # chars da cauda da tela enviados ao resumo.
 _HTTP_TIMEOUT = 25
@@ -357,6 +375,39 @@ def _synth_xtts_sync(text: str) -> tuple[str, str] | None:
                 pass
 
 
+def _synth_piper_sync(text: str) -> tuple[str, str] | None:
+    """Binário ``piper`` (CPU) → WAV → ffmpeg ogg/opus → (base64, mime).
+
+    Sem servidor/API: o binário é standalone, síntese local por processo. A
+    lib compartilhada (``libonnxruntime``/``libpiper_phonemize``) fica ao lado
+    do binário no release baixado, daí o ``LD_LIBRARY_PATH`` apontando pra lá.
+    """
+    wav = tempfile.mktemp(suffix=".wav")
+    ogg = tempfile.mktemp(suffix=".ogg")
+    try:
+        env = {**os.environ, "LD_LIBRARY_PATH": os.path.dirname(PIPER_BIN)}
+        subprocess.run(
+            [PIPER_BIN, "--model", PIPER_MODEL, "--output_file", wav],
+            input=text.encode("utf-8"),
+            check=True,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", wav,
+             "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", ogg],
+            check=True,
+        )
+        with open(ogg, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii"), "audio/ogg"
+    finally:
+        for p in (wav, ogg):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 def _synth_api_sync(text: str) -> tuple[str, str] | None:
     out = _post_form("/tts", {"text": text, "voice": API_VOICE, "convert_to_ogg": "true"})
     b64 = out.get("audio_base64")
@@ -370,6 +421,8 @@ async def _synth(text: str) -> tuple[str, str] | None:
     try:
         if TTS_MODE == "api":
             return await loop.run_in_executor(None, _synth_api_sync, text)
+        if TTS_MODE == "piper":
+            return await loop.run_in_executor(None, _synth_piper_sync, text)
         if TTS_MODE == "xtts":
             # Tenta a voz boa (xtts); cai p/ `say` se o servidor estiver fora.
             try:
