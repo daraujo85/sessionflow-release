@@ -51,16 +51,39 @@ import { AuthService } from '../../core/auth.service';
 
           <label class="field">
             <span class="label">Senha</span>
-            <input
-              type="password"
-              name="password"
-              autocomplete="current-password"
-              placeholder="••••••••"
-              [ngModel]="password()"
-              (ngModelChange)="password.set($event)"
-              [disabled]="busy()"
-              required
-            />
+            <div class="password-wrap">
+              <input
+                [type]="showPassword() ? 'text' : 'password'"
+                name="password"
+                autocomplete="current-password"
+                placeholder="••••••••"
+                [ngModel]="password()"
+                (ngModelChange)="password.set($event)"
+                [disabled]="busy()"
+                required
+              />
+              <button
+                type="button"
+                class="password-toggle"
+                [attr.aria-label]="showPassword() ? 'Ocultar senha' : 'Mostrar senha'"
+                [attr.aria-pressed]="showPassword()"
+                (click)="showPassword.set(!showPassword())"
+              >
+                @if (showPassword()) {
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                } @else {
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-6.4 0-10-7-10-7a18.4 18.4 0 0 1 4.22-5.06M9.9 4.24A10.6 10.6 0 0 1 12 4c6.4 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <path d="M1 1l22 22" />
+                  </svg>
+                }
+              </button>
+            </div>
           </label>
 
           @if (error()) {
@@ -190,6 +213,33 @@ import { AuthService } from '../../core/auth.service';
         font-size: 12.5px;
         color: #9aa3a0;
       }
+      .password-wrap {
+        position: relative;
+        display: flex;
+      }
+      .password-wrap input {
+        padding-right: 42px;
+      }
+      .password-toggle {
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border: none;
+        background: transparent;
+        color: #9aa3a0;
+        cursor: pointer;
+        border-radius: 8px;
+      }
+      .password-toggle:hover {
+        color: #eef2f0;
+        background: var(--surface-raised, #20262a);
+      }
       input {
         width: 100%;
         box-sizing: border-box;
@@ -292,6 +342,7 @@ export class LoginComponent implements OnInit {
 
   readonly email = signal('');
   readonly password = signal('');
+  readonly showPassword = signal(false);
   readonly busy = signal(false);
   readonly error = signal('');
   readonly info = signal('');
@@ -324,8 +375,13 @@ export class LoginComponent implements OnInit {
         return;
       }
       this.router.navigate(['/inicio']);
-    } catch {
-      this.error.set('Credenciais inválidas');
+    } catch (err) {
+      const status = (err as { status?: number } | null)?.status;
+      this.error.set(
+        status === 401
+          ? 'Credenciais inválidas'
+          : 'Não foi possível conectar ao servidor. Tente novamente.',
+      );
       this.busy.set(false);
     }
   }

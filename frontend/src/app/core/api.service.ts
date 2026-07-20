@@ -28,7 +28,9 @@ import {
  */
 /**
  * Resolve a base da API a partir do host onde o app está servido:
- * - Acesso externo (`*.boletoazap.dev.br`) → subdomínio `api.sessionflow.*`.
+ * - Acesso externo (domínio próprio, ex. Cloudflare Tunnel/DNS) → hostname
+ *   IRMÃO com prefixo `api-` na mesma zona, SEM porta (o túnel roteia por
+ *   hostname em 443, não por porta — `:8000` nem é exposto publicamente).
  * - Local/LAN (localhost, 127.0.0.1, IP) → mesmo host na porta 8000
  *   (mantém a origem coerente com o CORS: 127.0.0.1↔127.0.0.1, etc).
  */
@@ -37,10 +39,9 @@ function resolveApiBase(): string {
     return 'http://localhost:8000';
   }
   const { protocol, hostname } = window.location;
-  if (hostname.endsWith('boletoazap.dev.br')) {
-    // Subdomínio de 1 nível: coberto pelo Universal SSL `*.boletoazap.dev.br`
-    // (um 2-níveis como `api.sessionflow.*` não tem cert → handshake TLS falha).
-    return 'https://api-sessionflow.boletoazap.dev.br';
+  const isLocalOrLan = hostname === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+  if (!isLocalOrLan) {
+    return `${protocol}//api-${hostname}`;
   }
   return `${protocol}//${hostname}:8000`;
 }
