@@ -194,7 +194,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               <span
                 class="sf-stat-icon"
                 [class.sf-stat-pulse]="isActiveIcon(s)"
-                [style.color]="statusMeta(s.status).color"
+                [style.color]="statusColor(s)"
               >
                 @switch (statusIcon(s)) {
                   @case ('think') {
@@ -211,6 +211,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   }
                   @case ('wait') {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10M7 20h10M8 4c0 4 8 6 8 8s-8 4-8 8M16 4c0 4-8 6-8 8" /></svg>
+                  }
+                  @case ('external') {
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><path d="M15 3h6v6M10 14 21 3" /></svg>
                   }
                   @case ('done') {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10" /></svg>
@@ -283,21 +286,23 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                     </span>
                   }
                 </span>
-                <span class="sf-card-status" [style.color]="statusMeta(s.status).color">{{
-                  statusLabel(s)
-                }}</span>
-                @if (timeAgo(s)) {
-                  <span class="sf-card-time">· {{ timeAgo(s) }}</span>
-                }
                 @if (latestTaskFor(s); as lt) {
                   <span
                     class="sf-card-sub sf-card-task"
-                    [style.color]="taskMeta(effectiveTaskState(lt)).color"
+                    [style.color]="statusColor(s)"
                     [title]="lt.title"
                   >{{ lt.title }}</span>
                 } @else {
                   <span class="sf-card-sub mono" [title]="subline(s)">{{ subline(s) }}</span>
                 }
+                <span class="sf-card-status-row">
+                  <span class="sf-card-status" [style.color]="statusColor(s)">{{
+                    statusLabel(s)
+                  }}</span>
+                  @if (timeAgo(s)) {
+                    <span class="sf-card-time">· {{ timeAgo(s) }}</span>
+                  }
+                </span>
               </span>
               <svg
                 class="sf-chevron"
@@ -1145,9 +1150,13 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       .sf-card.sf-has-agents {
         border-color: rgba(56, 189, 248, 0.45);
       }
+      .sf-card-status-row {
+        display: flex;
+        align-items: baseline;
+        margin-top: 3px;
+      }
       .sf-card-status {
         font-size: 13.5px;
-        margin-top: 3px;
       }
       .sf-card-time {
         font-size: 12.5px;
@@ -1521,6 +1530,10 @@ export class InicioComponent implements OnInit {
   protected readonly refreshingAllMilestones = signal(false);
 
   /** Pede pra TODAS as sessões ativas revisarem/atualizarem as tarefas agora. */
+  /** Cooldown real do botão (não só "enquanto as requisições estão em voo",
+   * que resolve rápido demais pra impedir clique frenético). */
+  private static readonly MILESTONES_REFRESH_COOLDOWN_MS = 15_000;
+
   protected refreshAllMilestones(): void {
     const active = this.activeSessions();
     if (active.length === 0 || this.refreshingAllMilestones()) {
@@ -1531,7 +1544,10 @@ export class InicioComponent implements OnInit {
     const done = () => {
       pending--;
       if (pending <= 0) {
-        this.refreshingAllMilestones.set(false);
+        setTimeout(
+          () => this.refreshingAllMilestones.set(false),
+          InicioComponent.MILESTONES_REFRESH_COOLDOWN_MS,
+        );
       }
     };
     for (const s of active) {
@@ -1686,12 +1702,38 @@ export class InicioComponent implements OnInit {
    * — feature recente). Ranking por tokens brutos (não por USD): reflete uso
    * real mesmo quando o preço do modelo é desconhecido (``usd`` null).
    */
+  /**
+   * Janela máxima de "atualidade" tolerada por período — além disso, o
+   * snapshot ``tokens_periods.<period>`` é considerado CONGELADO (a sessão
+   * parou de ser reconciliada e o valor é de uma janela rolante ANTIGA, não
+   * reflete o período atual de verdade). Um pouco folgado em relação ao
+   * próprio período (ex.: 36h pra "today") pra não cortar sessão só porque o
+   * ciclo do worker demorou alguns minutos.
+   */
+  private static readonly PERIOD_FRESHNESS_MS: Record<'today' | 'week' | 'month', number> = {
+    today: 36 * 60 * 60 * 1000,
+    week: 8 * 24 * 60 * 60 * 1000,
+    month: 32 * 24 * 60 * 60 * 1000,
+  };
+
   protected readonly topTokenSessions = computed(() => {
     const period = this.topTokensPeriod();
+    const now = Date.now();
     const rows = this.sessions()
       .map((s) => {
         const m = s.metrics;
         const usage = period === 'all' ? m : m?.tokens_periods?.[period];
+        // Snapshot desatualizado (sessão parada há mais tempo que a própria
+        // janela) → ignora: é uma janela rolante CONGELADA de outro período,
+        // não reflete "hoje/semana/mês" de verdade (ex.: sessão parada há 3
+        // dias ainda mostrando um "Hoje" antigo).
+        if (period !== 'all') {
+          const updatedAt = (s as unknown as { updated_at?: string })['updated_at'];
+          const age = updatedAt ? now - new Date(updatedAt).getTime() : Infinity;
+          if (age > InicioComponent.PERIOD_FRESHNESS_MS[period]) {
+            return null;
+          }
+        }
         const tokensIn = usage?.tokens_in ?? 0;
         const tokensOut = usage?.tokens_out ?? 0;
         const total = tokensIn + tokensOut;
@@ -1703,7 +1745,7 @@ export class InicioComponent implements OnInit {
           usd: usage?.cost?.total_usd ?? null,
         };
       })
-      .filter((r) => r.total > 0)
+      .filter((r): r is NonNullable<typeof r> => r !== null && r.total > 0)
       .sort((a, b) => b.total - a.total)
       .slice(0, 3);
     return rows;
@@ -1947,9 +1989,12 @@ export class InicioComponent implements OnInit {
    */
   statusIcon(
     s: Session,
-  ): 'think' | 'code' | 'analyze' | 'run' | 'wait' | 'done' | 'play' | 'stopped' {
+  ): 'think' | 'code' | 'analyze' | 'run' | 'wait' | 'external' | 'done' | 'play' | 'stopped' {
     if (s.status === 'waiting_input') {
       return 'wait';
+    }
+    if (s.status === 'waiting_external') {
+      return 'external';
     }
     if (s.status === 'completed') {
       return 'done';
@@ -1981,6 +2026,29 @@ export class InicioComponent implements OnInit {
   /** Ícones "vivos" (com pulse sutil) — estados de trabalho ativo. */
   isActiveIcon(s: Session): boolean {
     return this.isWorkingIcon(this.statusIcon(s));
+  }
+
+  /**
+   * Cor ÚNICA do status — usada no texto do card E igual à do glow
+   * (`is-waiting`/`is-running`/`is-external`/`is-completed` no CSS). Antes o
+   * texto usava STATUS_META direto, que dá a MESMA cor pra "running" e
+   * "completed" — por isso não dava pra distinguir só pela cor.
+   */
+  protected statusColor(s: Session): string {
+    const k = this.statusIcon(s);
+    if (k === 'wait') {
+      return '#fbbf24'; // âmbar — precisa de você
+    }
+    if (k === 'external') {
+      return '#fb923c'; // laranja — aguardando algo externo
+    }
+    if (k === 'done') {
+      return '#34d399'; // verde — concluído, sem urgência
+    }
+    if (this.isWorkingIcon(k)) {
+      return '#22d3ee'; // ciano — trabalhando de verdade agora
+    }
+    return '#6b7280'; // cinza — parada/desconhecida
   }
 
   /** Estados de trabalho ainda em andamento (glow ciano do card) — usado
@@ -2045,16 +2113,18 @@ export class InicioComponent implements OnInit {
    * meio redundante — some do card, mas continua visível dentro da sessão).
    */
   protected latestTaskFor(s: Session): Task | null {
-    let latest: Task | null = null;
-    for (const t of this.tasks()) {
-      if (t.session_id !== s.tmux_name) {
-        continue;
-      }
-      if (!latest || (t.updated_at ?? '') > (latest.updated_at ?? '')) {
-        latest = t;
-      }
+    const mine = this.tasks().filter((t) => t.session_id === s.tmux_name);
+    if (mine.length === 0) {
+      return null;
     }
-    return latest;
+    // Mesma prioridade do Detalhe (`currentTask`): doing > blocked > mais
+    // recente — senão o card mostrava "a última tocada" enquanto a própria
+    // sessão prioriza a que está DE FATO em andamento (podiam divergir).
+    return (
+      mine.find((t) => t.state === 'doing') ??
+      mine.find((t) => t.state === 'blocked') ??
+      mine.reduce((a, b) => ((b.updated_at ?? '') > (a.updated_at ?? '') ? b : a))
+    );
   }
 
   /** Status da sessão (tmux_name) a que a tarefa pertence — null se não achar. */

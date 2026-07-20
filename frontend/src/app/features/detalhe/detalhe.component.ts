@@ -2189,8 +2189,8 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         min-width: 0;
       }
       .agent-dot {
-        width: 8px;
-        height: 8px;
+        width: 16px;
+        height: 16px;
         border-radius: 50%;
         flex: none;
       }
@@ -3413,6 +3413,10 @@ export class DetalheComponent implements AfterViewChecked {
    * Diferente de `instructMilestones` (auto, 1x, idempotente): aqui é sempre
    * um envio novo — o usuário quer forçar uma faxina/atualização na hora.
    */
+  /** Cooldown real do botão de refresh — não é só "enquanto a requisição
+   * está em voo" (isso resolve em <1s e não impede clique frenético). */
+  private static readonly MILESTONES_REFRESH_COOLDOWN_MS = 15_000;
+
   protected refreshMilestones(): void {
     const id = this.id();
     const name = this.session()?.tmux_name;
@@ -3420,6 +3424,11 @@ export class DetalheComponent implements AfterViewChecked {
       return;
     }
     this.milestonesRefreshing.set(true);
+    const cooldown = () =>
+      setTimeout(
+        () => this.milestonesRefreshing.set(false),
+        DetalheComponent.MILESTONES_REFRESH_COOLDOWN_MS,
+      );
     const text =
       `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${name}.json: ` +
       'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
@@ -3427,10 +3436,7 @@ export class DetalheComponent implements AfterViewChecked {
     this.api
       .sendInput(id, text, true)
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => setTimeout(() => this.milestonesRefreshing.set(false), 1500),
-        error: () => this.milestonesRefreshing.set(false),
-      });
+      .subscribe({ next: cooldown, error: cooldown });
   }
 
   protected toggleSchedules(): void {
