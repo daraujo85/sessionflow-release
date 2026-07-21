@@ -25,6 +25,8 @@ export class JarvisAudioService {
 
   /** Liga/desliga a reprodução no cliente (preferência local do aparelho). */
   readonly enabled = signal(readEnabled());
+  /** Volume da reprodução (0–100), local por aparelho — Perfil > Áudio. */
+  readonly volume = signal(readVolume());
   /** Áudio tocando agora (para um indicador visual, se quiser). */
   readonly speaking = signal(false);
   /** tmux_name da sessão cujo áudio está tocando agora (ou null) — p/ marcar o
@@ -53,6 +55,7 @@ export class JarvisAudioService {
     }
     this.started = true;
     this.el = new Audio();
+    this.el.volume = this.volume() / 100;
     this.el.addEventListener('ended', () => this.onClipDone());
     this.el.addEventListener('error', () => this.onClipDone());
 
@@ -115,6 +118,21 @@ export class JarvisAudioService {
       }
       this.enqueue(frame);
     });
+  }
+
+  /** Ajusta o volume (0–100), persiste em localStorage e aplica na hora, mesmo
+   * com um clipe já tocando (não precisa esperar o próximo). */
+  setVolume(v: number): void {
+    const clamped = Math.min(100, Math.max(0, Math.round(v)));
+    this.volume.set(clamped);
+    try {
+      localStorage.setItem(VOLUME_KEY, String(clamped));
+    } catch {
+      /* storage indisponível — silencioso */
+    }
+    if (this.el) {
+      this.el.volume = clamped / 100;
+    }
   }
 
   /** Liga/desliga a reprodução neste aparelho (persiste em localStorage). */
@@ -190,6 +208,7 @@ export class JarvisAudioService {
     this.playing = true;
     this.speaking.set(true);
     this.speakingSessionId.set(frame.session_id ?? null);
+    el.volume = this.volume() / 100;
     el.src = `data:${frame.mime || 'audio/ogg'};base64,${frame.audio_b64}`;
     void el.play().catch(() => {
       // Bloqueado mesmo abençoado (raro): exige novo gesto.
@@ -202,6 +221,7 @@ export class JarvisAudioService {
 }
 
 const STORAGE_KEY = 'sf.jarvis.audio';
+const VOLUME_KEY = 'sf.jarvis.volume';
 
 function readEnabled(): boolean {
   try {
@@ -209,6 +229,20 @@ function readEnabled(): boolean {
     return localStorage.getItem(STORAGE_KEY) !== '0';
   } catch {
     return true;
+  }
+}
+
+/** Volume salvo (0–100), com fallback 100 (sem redução) e clamp. */
+function readVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_KEY);
+    if (raw === null) {
+      return 100; // nunca configurado — `Number(null)` daria 0, não confundir
+    }
+    const v = Number(raw);
+    return v >= 0 && v <= 100 ? v : 100;
+  } catch {
+    return 100;
   }
 }
 

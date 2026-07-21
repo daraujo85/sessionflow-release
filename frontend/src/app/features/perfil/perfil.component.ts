@@ -17,6 +17,7 @@ import { AuthService } from '../../core/auth.service';
 import { PwaInstallService } from '../../core/pwa-install.service';
 import { NotifyService } from '../../core/notify.service';
 import { EventCuesService, CueMode } from '../../core/event-cues.service';
+import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { WorkersStore } from '../../core/workers-store';
 import {
   Session,
@@ -217,6 +218,91 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           </span>
         </div>
       }
+
+      <!-- Áudio do JARVIS: volume (local do aparelho) + modo de voz/efeito
+           por host (Perfil > Áudio) -->
+      <div class="sf-audio">
+        <div class="sf-audio-head">Áudio (JARVIS)</div>
+        <label class="sf-audio-volume">
+          <span>Volume</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            [value]="jarvisAudio.volume()"
+            (input)="onVolumeInput($event)"
+          />
+          <span class="sf-audio-volume-val">{{ jarvisAudio.volume() }}%</span>
+        </label>
+
+        @if (primaryHostId() && hostSupportsTts(primaryHostId())) {
+          <div class="sf-audio-host">
+            <span class="sf-audio-host-name">{{ worker()?.display_name || worker()?.hostname || 'este host' }}</span>
+            <select
+              class="sf-audio-select"
+              [value]="worker()?.tts_mode || ''"
+              (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
+            >
+              <option value="">Padrão do host</option>
+              <option value="say">Nativo do SO (say)</option>
+              <option value="xtts">Alta qualidade (XTTS)</option>
+              <option value="piper">Leve (Piper)</option>
+              <option value="api">API hospedada</option>
+            </select>
+            <label class="sf-audio-effect">
+              <input
+                type="checkbox"
+                [checked]="worker()?.voice_effect !== false"
+                (change)="onVoiceEffectChange(primaryHostId()!, worker()?.tts_mode, $event)"
+              />
+              Voz dobrada
+            </label>
+            <button
+              type="button"
+              class="sf-audio-test"
+              [disabled]="!!testingVoice()"
+              (click)="testVoice(primaryHostId()!)"
+            >
+              {{ testingVoice() === primaryHostId() ? 'Tocando…' : '🔊 Testar' }}
+            </button>
+          </div>
+        }
+
+        @for (w of otherWorkers(); track w.host_id) {
+          @if (w.host_id && hostSupportsTts(w.host_id)) {
+            <div class="sf-audio-host">
+              <span class="sf-audio-host-name">{{ w.display_name || w.hostname || 'host' }}</span>
+              <select
+                class="sf-audio-select"
+                [value]="w.tts_mode || ''"
+                (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
+              >
+                <option value="">Padrão do host</option>
+                <option value="say">Nativo do SO (say)</option>
+                <option value="xtts">Alta qualidade (XTTS)</option>
+                <option value="piper">Leve (Piper)</option>
+                <option value="api">API hospedada</option>
+              </select>
+              <label class="sf-audio-effect">
+                <input
+                  type="checkbox"
+                  [checked]="w.voice_effect !== false"
+                  (change)="onVoiceEffectChange(w.host_id!, w.tts_mode, $event)"
+                />
+                Voz dobrada
+              </label>
+              <button
+                type="button"
+                class="sf-audio-test"
+                [disabled]="!!testingVoice()"
+                (click)="testVoice(w.host_id!)"
+              >
+                {{ testingVoice() === w.host_id ? 'Tocando…' : '🔊 Testar' }}
+              </button>
+            </div>
+          }
+        }
+      </div>
 
       <!-- Stats -->
       <div class="sf-stats">
@@ -757,6 +843,88 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: #6b7280;
       }
 
+      /* Áudio do JARVIS (volume local + modo de voz/efeito por host) */
+      .sf-audio {
+        background: #181c1b;
+        border: 1px solid #283230;
+        border-radius: 18px;
+        padding: 14px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .sf-audio-head {
+        font-size: 13px;
+        font-weight: 700;
+        color: #c9cdd6;
+      }
+      .sf-audio-volume {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12.5px;
+        color: #9aa0ae;
+      }
+      .sf-audio-volume input[type='range'] {
+        flex: 1;
+        accent-color: #2cecc4;
+      }
+      .sf-audio-volume-val {
+        min-width: 34px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .sf-audio-host {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding-top: 10px;
+        border-top: 1px solid #20262a;
+      }
+      .sf-audio-host-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: #c9cdd6;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sf-audio-select {
+        background: #0e1113;
+        border: 1px solid #283230;
+        border-radius: 8px;
+        color: #c9cdd6;
+        font-size: 12px;
+        padding: 5px 8px;
+      }
+      .sf-audio-effect {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+        color: #9aa0ae;
+        white-space: nowrap;
+      }
+      .sf-audio-test {
+        appearance: none;
+        background: transparent;
+        border: 1px solid #283230;
+        border-radius: 8px;
+        color: #2cecc4;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .sf-audio-test:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
       /* Settings list */
       .sf-settings {
         background: #181c1b;
@@ -958,6 +1126,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
   private readonly pwa = inject(PwaInstallService);
   protected readonly notify = inject(NotifyService);
   private readonly cues = inject(EventCuesService);
+  protected readonly jarvisAudio = inject(JarvisAudioService);
 
   /** Input de arquivo escondido, disparado pelo clique no avatar. */
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
@@ -1066,6 +1235,70 @@ export class PerfilComponent implements OnInit, OnDestroy {
       error: () => {
         /* mantém o campo aberto pro usuário tentar de novo */
       },
+    });
+  }
+
+  // ── Áudio do JARVIS (Perfil > Áudio): modo de voz + efeito por host,
+  // volume local do aparelho, botão "Testar voz" ──────────────────────────
+
+  /** Só mostra a config de áudio pra hosts que suportam TTS (AD-011). */
+  protected hostSupportsTts(hostId: string | null | undefined): boolean {
+    return this.workers.supports(hostId, 'tts');
+  }
+
+  /** host_id tocando o teste agora (desabilita o botão até acabar), ou null. */
+  protected readonly testingVoice = signal<string | null>(null);
+
+  protected onVolumeInput(ev: Event): void {
+    this.jarvisAudio.setVolume(Number((ev.target as HTMLInputElement).value));
+  }
+
+  /** Salva o modo de TTS deste host — manda o voice_effect ATUAL junto (evita
+   * apagar um pelo outro, mesmo padrão do nome/emoji). */
+  protected onTtsModeChange(
+    hostId: string,
+    currentVoiceEffect: boolean | null | undefined,
+    ev: Event,
+  ): void {
+    const mode = (ev.target as HTMLSelectElement).value || null;
+    this.api.setWorkerAudioSettings(hostId, mode, currentVoiceEffect ?? null).subscribe({
+      next: () => this.onAudioSettingsSaved(hostId),
+      error: () => {
+        /* best-effort: valor no <select> volta a refletir o real no próximo refresh */
+      },
+    });
+  }
+
+  protected onVoiceEffectChange(
+    hostId: string,
+    currentMode: string | null | undefined,
+    ev: Event,
+  ): void {
+    const checked = (ev.target as HTMLInputElement).checked;
+    this.api.setWorkerAudioSettings(hostId, currentMode ?? null, checked).subscribe({
+      next: () => this.onAudioSettingsSaved(hostId),
+      error: () => {
+        /* best-effort */
+      },
+    });
+  }
+
+  private onAudioSettingsSaved(hostId: string): void {
+    this.workers.refresh();
+    if (this.worker()?.host_id === hostId) {
+      this.reloadWorker();
+    }
+  }
+
+  /** Pede pro worker deste host sintetizar+tocar uma frase de teste. */
+  protected testVoice(hostId: string): void {
+    if (this.testingVoice()) {
+      return;
+    }
+    this.testingVoice.set(hostId);
+    this.api.testJarvisVoice(hostId).subscribe({
+      next: () => setTimeout(() => this.testingVoice.set(null), 5000),
+      error: () => this.testingVoice.set(null),
     });
   }
 

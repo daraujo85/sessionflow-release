@@ -406,6 +406,25 @@ export class ApiService {
     );
   }
 
+  /** Config de áudio do JARVIS deste host (Perfil > Áudio) — `null` em cada
+   * campo volta a seguir o default do host (env var / efeito ligado). */
+  setWorkerAudioSettings(
+    hostId: string,
+    ttsMode: string | null,
+    voiceEffect: boolean | null,
+  ): Observable<WorkerStatus> {
+    return this.http.put<WorkerStatus>(
+      this.url(`/workers/${hostId}/audio-settings`),
+      { tts_mode: ttsMode, voice_effect: voiceEffect },
+    );
+  }
+
+  /** Pede pro worker deste host sintetizar+tocar uma frase de teste (botão
+   * "Testar voz" do Perfil) — mesmo pipeline real (resumo/voz/efeito). */
+  testJarvisVoice(hostId: string): Observable<void> {
+    return this.http.post<void>(this.url(`/workers/${hostId}/jarvis-test`), {});
+  }
+
   /** Limites de uso reais por provider (hoje só Claude). */
   getUsage(): Observable<UsageInfo> {
     return this.http.get<UsageInfo>(this.url('/usage'));

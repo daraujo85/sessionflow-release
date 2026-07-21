@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.publishers.command_publisher import publish_command
+
+# Motores de síntese suportados pelo worker (ver worker/sessionflow_worker/jarvis.py).
+_TTS_MODES = {"say", "xtts", "piper", "api"}
+
 router = APIRouter(tags=["worker"])
 
 WORKER_STATUS_COLLECTION = "worker_status"
@@ -44,6 +49,10 @@ class WorkerOut(BaseModel):
     uptime_seconds: float | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
+    # Áudio do JARVIS (Perfil > Áudio), editável via PUT /workers/{host_id}/audio-settings.
+    # None = segue a env var do host (SESSIONFLOW_JARVIS_TTS / efeito ligado).
+    tts_mode: str | None = None
+    voice_effect: bool | None = None
 
 
 class WorkerDisplayName(BaseModel):
@@ -51,6 +60,14 @@ class WorkerDisplayName(BaseModel):
 
     display_name: str | None = None
     emoji: str | None = None
+
+
+class WorkerAudioSettings(BaseModel):
+    """Config de áudio do JARVIS deste host — None em cada campo = usa o
+    default do host (env var / efeito ligado)."""
+
+    tts_mode: str | None = None
+    voice_effect: bool | None = None
 
 
 class ClaudeLimits(BaseModel):
@@ -91,6 +108,8 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         uptime_seconds=uptime,
         started_at=started,
         updated_at=updated,
+        tts_mode=doc.get("tts_mode"),
+        voice_effect=doc.get("voice_effect"),
     )
 
 
@@ -147,6 +166,41 @@ async def set_worker_display_name(
     if not doc:
         raise HTTPException(status_code=404, detail="Host not found")
     return _to_worker_out(doc)
+
+
+@router.put("/workers/{host_id}/audio-settings", response_model=WorkerOut)
+async def set_worker_audio_settings(
+    request: Request, host_id: str, body: WorkerAudioSettings
+) -> WorkerOut:
+    """Define o modo de TTS/efeito de voz do JARVIS deste host (Perfil > Áudio).
+
+    ``tts_mode`` em branco/None volta a seguir a env var do host
+    (``SESSIONFLOW_JARVIS_TTS``) — não força nada. Mesma ideia pro
+    ``voice_effect`` (None = liga, comportamento default de sempre).
+    """
+    if body.tts_mode is not None and body.tts_mode not in _TTS_MODES:
+        raise HTTPException(status_code=422, detail=f"tts_mode inválido: {body.tts_mode!r}")
+    db = request.app.state.mongo_db
+    coll = db[WORKER_STATUS_COLLECTION]
+    doc = await coll.find_one_and_update(
+        {"_id": host_id},
+        {"$set": {"tts_mode": body.tts_mode, "voice_effect": body.voice_effect}},
+        return_document=True,
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Host not found")
+    return _to_worker_out(doc)
+
+
+@router.post("/workers/{host_id}/jarvis-test", status_code=202)
+async def jarvis_test_voice(request: Request, host_id: str) -> dict:
+    """Pede pro worker DESTE host sintetizar e tocar uma frase de teste —
+    mesmo pipeline real (resumo/voz/efeito), botão "Testar voz" do Perfil."""
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings, type="jarvis_test", payload={}, host_id=host_id
+    )
+    return {"status": "queued", "command_id": command_id}
 
 
 @router.get("/usage", response_model=UsageOut)

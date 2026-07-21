@@ -62,7 +62,7 @@ import aio_pika
 import libtmux
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import milestones, transcriber
+from sessionflow_worker import jarvis, milestones, transcriber
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
 from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
 from sessionflow_worker.state import SessionState
@@ -113,6 +113,7 @@ _VALID_TYPES = frozenset(
         "open_terminal",
         "resize",
         "switch_agent",
+        "jarvis_test",
     }
 )
 
@@ -578,6 +579,8 @@ class CommandConsumer:
             return await self._handle_resize(payload)
         if ctype == "switch_agent":
             return await self._handle_switch_agent(payload)
+        if ctype == "jarvis_test":
+            return await self._handle_jarvis_test(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -1743,6 +1746,35 @@ class CommandConsumer:
         }
         await publish(self._channel, EVENTS_QUEUE, event)
         return event
+
+    # -- JARVIS: testar voz (Perfil > Áudio) -------------------------------
+
+    async def _handle_jarvis_test(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Sintetiza e publica uma frase de teste — mesmo pipeline REAL do
+        resumo falado (resumo/voz/efeito), só que com texto fixo, pra o
+        usuário ouvir como a voz DESTE host soa sem esperar um evento real."""
+        owner = jarvis._owner_display_name()
+        greet = f", {owner}" if owner else ""
+        text = jarvis._clean_for_speech(
+            f"Oi{greet}. Assim que a sua voz do JARVIS vai soar por aqui."
+        )
+        audio = await jarvis._synth(text, self._db, self._host_id)
+        if audio is None:
+            raise CommandError("não consegui sintetizar o áudio de teste")
+        b64, mime = audio
+        await jarvis._publish(
+            self._channel,
+            {
+                "type": "jarvis_audio",
+                "session_id": "jarvis-test",
+                "title": "Teste de voz",
+                "text": text,
+                "audio_b64": b64,
+                "mime": mime,
+                "at": jarvis._now_iso(),
+            },
+        )
+        return {"note": "teste de voz enviado"}
 
     # -- loop -------------------------------------------------------------
 

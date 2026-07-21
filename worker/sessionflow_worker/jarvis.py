@@ -488,15 +488,53 @@ def _apply_voice_effect_sync(audio: tuple[str, str]) -> tuple[str, str]:
                 pass
 
 
-async def _synth(text: str) -> tuple[str, str] | None:
+_TTS_MODES = frozenset({"say", "xtts", "piper", "api"})
+WORKER_STATUS_COLLECTION = "worker_status"
+
+
+async def _host_audio_settings(
+    db: AsyncIOMotorDatabase | None, host_id: str | None
+) -> tuple[str, bool]:
+    """(modo TTS, efeito ligado) efetivos para este HOST — Perfil > Áudio.
+
+    Lê ``worker_status.<host_id>`` (``tts_mode``/``voice_effect``, editáveis
+    via ``PUT /workers/{host_id}/audio-settings``). Ausente/``None`` cai no
+    default: modo do env (``SESSIONFLOW_JARVIS_TTS``), efeito LIGADO (mesmo
+    comportamento de antes desta config existir). Best-effort: qualquer falha
+    de leitura usa o default, nunca derruba a síntese.
+    """
+    mode = TTS_MODE
+    effect_on = True
+    if db is not None and host_id:
+        try:
+            doc = await db[WORKER_STATUS_COLLECTION].find_one(
+                {"_id": host_id}, projection={"tts_mode": 1, "voice_effect": 1}
+            )
+            if doc:
+                doc_mode = doc.get("tts_mode")
+                if doc_mode in _TTS_MODES:
+                    mode = doc_mode
+                if doc.get("voice_effect") is not None:
+                    effect_on = bool(doc["voice_effect"])
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("jarvis: leitura de audio-settings falhou p/ %r", host_id, exc_info=True)
+    return mode, effect_on
+
+
+async def _synth(
+    text: str,
+    db: AsyncIOMotorDatabase | None = None,
+    host_id: str | None = None,
+) -> tuple[str, str] | None:
+    mode, effect_on = await _host_audio_settings(db, host_id)
     loop = asyncio.get_running_loop()
     try:
         result: tuple[str, str] | None = None
-        if TTS_MODE == "api":
+        if mode == "api":
             result = await loop.run_in_executor(None, _synth_api_sync, text)
-        elif TTS_MODE == "piper":
+        elif mode == "piper":
             result = await loop.run_in_executor(None, _synth_piper_sync, text)
-        elif TTS_MODE == "xtts":
+        elif mode == "xtts":
             # Tenta a voz boa (xtts); cai p/ `say` se o servidor estiver fora.
             try:
                 result = await loop.run_in_executor(None, _synth_xtts_sync, text)
@@ -508,9 +546,11 @@ async def _synth(text: str) -> tuple[str, str] | None:
             result = await loop.run_in_executor(None, _synth_say_sync, text)
         if result is None:
             return None
+        if not effect_on:
+            return result
         return await loop.run_in_executor(None, _apply_voice_effect_sync, result)
     except Exception:  # noqa: BLE001 - best-effort
-        logger.debug("jarvis: sintese (%s) falhou", TTS_MODE, exc_info=True)
+        logger.debug("jarvis: sintese (%s) falhou", mode, exc_info=True)
         return None
 
 
@@ -555,6 +595,7 @@ async def maybe_speak(
     title: str,
     desc: str,
     screen_text: str,
+    host_id: str | None = None,
 ) -> None:
     """Se habilitado, gera resumo+voz e publica o frame ``jarvis_audio``.
 
@@ -580,7 +621,7 @@ async def maybe_speak(
         # → vira pausa no TTS (não a palavra "ponto").
         label = await _tts_label(db, name)
         spoken = _clean_for_speech(f"Sessão {label}. {summary}" if label else summary)
-        audio = await _synth(spoken)
+        audio = await _synth(spoken, db, host_id)
         if audio is None:
             return
         b64, mime = audio

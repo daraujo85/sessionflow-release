@@ -577,7 +577,8 @@ class Discovery:
                 screen = await self._screen_text(name)
                 asyncio.create_task(
                     jarvis.maybe_speak(
-                        self._db, self._channel, name, title, desc, screen
+                        self._db, self._channel, name, title, desc, screen,
+                        host_id=self._host_id,
                     )
                 )
             except Exception:  # noqa: BLE001 - jarvis nunca derruba o ciclo

@@ -259,6 +259,10 @@ export interface WorkerStatus {
   uptime_seconds: number | null;
   started_at: string | null;
   updated_at: string | null;
+  /** Config de áudio do JARVIS (Perfil > Áudio) — `null` = segue o default do
+   * host (env var / efeito ligado). */
+  tts_mode?: string | null;
+  voice_effect?: boolean | null;
 }
 
 /** Limites reais do Claude (scrape do /usage). */

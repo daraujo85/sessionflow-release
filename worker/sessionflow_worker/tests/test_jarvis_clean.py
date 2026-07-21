@@ -90,6 +90,51 @@ def test_voice_effect_disabled_returns_original_untouched(
     assert not called
 
 
+class _FakeColl:
+    def __init__(self, doc: dict | None) -> None:
+        self._doc = doc
+
+    async def find_one(self, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        return self._doc
+
+
+class _FakeDb:
+    def __init__(self, doc: dict | None) -> None:
+        self._doc = doc
+
+    def __getitem__(self, name: str) -> _FakeColl:
+        return _FakeColl(self._doc)
+
+
+@pytest.mark.asyncio
+async def test_host_audio_settings_falls_back_to_env_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "TTS_MODE", "say")
+    mode, effect_on = await jarvis_mod._host_audio_settings(_FakeDb(None), "host-1")
+    assert (mode, effect_on) == ("say", True)
+
+
+@pytest.mark.asyncio
+async def test_host_audio_settings_reads_overrides_from_worker_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "TTS_MODE", "xtts")
+    db = _FakeDb({"tts_mode": "piper", "voice_effect": False})
+    mode, effect_on = await jarvis_mod._host_audio_settings(db, "host-1")
+    assert (mode, effect_on) == ("piper", False)
+
+
+@pytest.mark.asyncio
+async def test_host_audio_settings_ignores_invalid_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "TTS_MODE", "say")
+    db = _FakeDb({"tts_mode": "nao-existe"})
+    mode, _ = await jarvis_mod._host_audio_settings(db, "host-1")
+    assert mode == "say"
+
+
 def test_voice_effect_falls_back_to_original_on_ffmpeg_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
