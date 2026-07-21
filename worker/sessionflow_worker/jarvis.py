@@ -105,7 +105,7 @@ PIPER_MODEL = os.path.expanduser(
 # motor de síntese), então funciona igual em say/xtts/piper/api. Desliga com
 # SESSIONFLOW_JARVIS_VOICE_EFFECT="" (string vazia).
 VOICE_EFFECT = os.environ.get(
-    "SESSIONFLOW_JARVIS_VOICE_EFFECT", "chorus=0.6:0.9:60:0.4:0.25:2"
+    "SESSIONFLOW_JARVIS_VOICE_EFFECT", "chorus=0.5:0.9:55|60:0.5|0.45:0.3|0.25:2|1.4"
 ).strip()
 
 _SCREEN_TAIL = 2500  # chars da cauda da tela enviados ao resumo.
