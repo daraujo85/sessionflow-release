@@ -39,6 +39,12 @@ ENV_PATH = "/Users/diegoaraujo/Documents/projects/sessionflow/.env"
 
 PROVIDERS = ("gemini", "codex", "opencode", "claude")
 
+# UA de navegador comum — ver uso em _request()/_upload_file().
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 # --------------------------------------------------------------------------- #
 # .env / config
@@ -137,7 +143,11 @@ def detect_parent():
 # --------------------------------------------------------------------------- #
 def _request(method, url, token=None, body=None, timeout=30):
     data = None
-    headers = {"Accept": "application/json"}
+    # UA de navegador de verdade: instâncias remotas atrás de Cloudflare
+    # (ex.: a do Heverton) bloqueiam o UA padrão do urllib
+    # ("Python-urllib/3.x") como bot — "Error 1010: browser_signature_banned".
+    # A local (127.0.0.1) nunca passa por Cloudflare, então isso é inofensivo.
+    headers = {"Accept": "application/json", "User-Agent": _BROWSER_UA}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -187,6 +197,7 @@ def _upload_file(url, token, filepath):
         "Accept": "application/json",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         "Authorization": f"Bearer {token}",
+        "User-Agent": _BROWSER_UA,
     }
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
