@@ -339,25 +339,25 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         @if (primaryHostId() && hostSupportsTts(primaryHostId())) {
           <div class="sf-audio-host">
             <span class="sf-audio-host-name">{{ worker()?.display_name || worker()?.hostname || 'este host' }}</span>
+            <select
+              class="sf-audio-select"
+              [value]="worker()?.tts_mode || ''"
+              (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
+            >
+              <option value="">Padrão do host</option>
+              <option value="say">Nativo do SO (say)</option>
+              <option value="xtts">Alta qualidade (XTTS)</option>
+              <option value="piper">Leve (Piper)</option>
+              <option value="api">API hospedada</option>
+            </select>
             <div class="sf-audio-controls">
-              <select
-                class="sf-audio-select"
-                [value]="worker()?.tts_mode || ''"
-                (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
-              >
-                <option value="">Padrão do host</option>
-                <option value="say">Nativo do SO (say)</option>
-                <option value="xtts">Alta qualidade (XTTS)</option>
-                <option value="piper">Leve (Piper)</option>
-                <option value="api">API hospedada</option>
-              </select>
               <label class="sf-audio-effect">
                 <input
                   type="checkbox"
                   [checked]="worker()?.voice_effect !== false"
                   (change)="onVoiceEffectChange(primaryHostId()!, worker()?.tts_mode, $event)"
                 />
-                Voz dobrada
+                Efeito robótico
               </label>
               <button
                 type="button"
@@ -368,6 +368,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 {{ testingVoice() === primaryHostId() ? 'Tocando…' : '🔊 Testar' }}
               </button>
             </div>
+            @if (testVoiceErrorHostId() === primaryHostId()) {
+              <div class="sf-audio-error">⚠️ {{ testVoiceErrorMsg() }}</div>
+            }
           </div>
         }
 
@@ -375,25 +378,25 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           @if (w.host_id && hostSupportsTts(w.host_id)) {
             <div class="sf-audio-host">
               <span class="sf-audio-host-name">{{ w.display_name || w.hostname || 'host' }}</span>
+              <select
+                class="sf-audio-select"
+                [value]="w.tts_mode || ''"
+                (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
+              >
+                <option value="">Padrão do host</option>
+                <option value="say">Nativo do SO (say)</option>
+                <option value="xtts">Alta qualidade (XTTS)</option>
+                <option value="piper">Leve (Piper)</option>
+                <option value="api">API hospedada</option>
+              </select>
               <div class="sf-audio-controls">
-                <select
-                  class="sf-audio-select"
-                  [value]="w.tts_mode || ''"
-                  (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
-                >
-                  <option value="">Padrão do host</option>
-                  <option value="say">Nativo do SO (say)</option>
-                  <option value="xtts">Alta qualidade (XTTS)</option>
-                  <option value="piper">Leve (Piper)</option>
-                  <option value="api">API hospedada</option>
-                </select>
                 <label class="sf-audio-effect">
                   <input
                     type="checkbox"
                     [checked]="w.voice_effect !== false"
                     (change)="onVoiceEffectChange(w.host_id!, w.tts_mode, $event)"
                   />
-                  Voz dobrada
+                  Efeito robótico
                 </label>
                 <button
                   type="button"
@@ -404,6 +407,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   {{ testingVoice() === w.host_id ? 'Tocando…' : '🔊 Testar' }}
                 </button>
               </div>
+              @if (testVoiceErrorHostId() === w.host_id) {
+                <div class="sf-audio-error">⚠️ {{ testVoiceErrorMsg() }}</div>
+              }
             </div>
           }
         }
@@ -999,21 +1005,23 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .sf-audio-controls {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
+      /* Select ocupa a LARGURA TOTA (linha própria) — "Alta qualidade (XTTS)"
+         não cabia dividindo espaço com checkbox+botão sem apertar tudo.
+         Controles (efeito + testar) ficam na linha de baixo, nas pontas. */
       .sf-audio-select {
-        flex: 1 1 auto;
-        min-width: 120px;
+        width: 100%;
         background: #0e1113;
         border: 1px solid #283230;
         border-radius: 8px;
         color: #c9cdd6;
         font-size: 12px;
-        padding: 5px 8px;
+        padding: 6px 8px;
+      }
+      .sf-audio-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
       }
       .sf-audio-effect {
         display: flex;
@@ -1034,7 +1042,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 5px 10px;
         cursor: pointer;
         white-space: nowrap;
-        margin-left: auto;
+      }
+      .sf-audio-error {
+        font-size: 11.5px;
+        color: #f0b429;
+        line-height: 1.4;
       }
       .sf-audio-test:disabled {
         opacity: 0.5;
@@ -1398,6 +1410,10 @@ export class PerfilComponent implements OnInit, OnDestroy {
 
   /** host_id tocando o teste agora (desabilita o botão até acabar), ou null. */
   protected readonly testingVoice = signal<string | null>(null);
+  /** host_id cujo último teste FALHOU (mostra erro inline na linha dele) + a
+   * mensagem — limpo assim que um novo teste começa. */
+  protected readonly testVoiceErrorHostId = signal<string | null>(null);
+  protected readonly testVoiceErrorMsg = signal<string>('');
 
   protected onVolumeInput(ev: Event): void {
     this.jarvisAudio.setVolume(Number((ev.target as HTMLInputElement).value));
@@ -1440,16 +1456,47 @@ export class PerfilComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Pede pro worker deste host sintetizar+tocar uma frase de teste. */
+  /**
+   * Pede pro worker deste host sintetizar+tocar uma frase de teste.
+   *
+   * A síntese pode falhar CALADA no worker (ex.: motor selecionado não está
+   * de fato instalado nesse host — aconteceu de verdade: "piper" escolhido
+   * num Mac sem o binário) — antes disso não dava NENHUM feedback, o botão
+   * só ficava "Tocando…" e nada acontecia. Agora observamos de verdade se o
+   * áudio COMEÇOU a tocar (`jarvisAudio.speaking()`, o mesmo sinal que already
+   * reflete o clipe real chegando via SSE); sem isso em ~7s, mostra erro
+   * inline na linha do host em vez de falhar silenciosamente.
+   */
   protected testVoice(hostId: string): void {
     if (this.testingVoice()) {
       return;
     }
     this.testingVoice.set(hostId);
+    this.testVoiceErrorHostId.set(null);
     this.api.testJarvisVoice(hostId).subscribe({
-      next: () => setTimeout(() => this.testingVoice.set(null), 5000),
-      error: () => this.testingVoice.set(null),
+      next: () => this.pollForTestPlayback(hostId, Date.now() + 7000),
+      error: () => {
+        this.testingVoice.set(null);
+        this.testVoiceErrorHostId.set(hostId);
+        this.testVoiceErrorMsg.set('Falha ao pedir o teste (API indisponível?).');
+      },
     });
+  }
+
+  private pollForTestPlayback(hostId: string, deadline: number): void {
+    if (this.jarvisAudio.speaking()) {
+      this.testingVoice.set(null); // áudio chegou e começou a tocar — sucesso
+      return;
+    }
+    if (Date.now() > deadline) {
+      this.testingVoice.set(null);
+      this.testVoiceErrorHostId.set(hostId);
+      this.testVoiceErrorMsg.set(
+        'Não tocou nada — o motor de voz escolhido pode não estar instalado nesse host.',
+      );
+      return;
+    }
+    setTimeout(() => this.pollForTestPlayback(hostId, deadline), 300);
   }
 
   /** Limites do Claude (barras de % sessão/semana), ou null se sem dados. */
