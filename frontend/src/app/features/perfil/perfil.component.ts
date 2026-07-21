@@ -125,7 +125,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             </span>
           } @else {
             <div class="sf-worker-label">
-              {{ workerTitle() }}
+              <span class="sf-worker-name">{{ workerTitle() }}</span>
               @if (primaryHostId()) {
                 <button
                   type="button"
@@ -188,12 +188,14 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               </span>
             } @else {
               <div class="sf-worker-label">
-                @if (w.emoji) {
-                  {{ w.emoji }}
-                } @else {
-                  Worker ·
-                }
-                {{ w.display_name || w.hostname || '—' }}
+                <span class="sf-worker-name">
+                  @if (w.emoji) {
+                    {{ w.emoji }}
+                  } @else {
+                    Worker ·
+                  }
+                  {{ w.display_name || w.hostname || '—' }}
+                </span>
                 <button
                   type="button"
                   class="sf-worker-edit-btn"
@@ -218,91 +220,6 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           </span>
         </div>
       }
-
-      <!-- Áudio do JARVIS: volume (local do aparelho) + modo de voz/efeito
-           por host (Perfil > Áudio) -->
-      <div class="sf-audio">
-        <div class="sf-audio-head">Áudio (JARVIS)</div>
-        <label class="sf-audio-volume">
-          <span>Volume</span>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            [value]="jarvisAudio.volume()"
-            (input)="onVolumeInput($event)"
-          />
-          <span class="sf-audio-volume-val">{{ jarvisAudio.volume() }}%</span>
-        </label>
-
-        @if (primaryHostId() && hostSupportsTts(primaryHostId())) {
-          <div class="sf-audio-host">
-            <span class="sf-audio-host-name">{{ worker()?.display_name || worker()?.hostname || 'este host' }}</span>
-            <select
-              class="sf-audio-select"
-              [value]="worker()?.tts_mode || ''"
-              (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
-            >
-              <option value="">Padrão do host</option>
-              <option value="say">Nativo do SO (say)</option>
-              <option value="xtts">Alta qualidade (XTTS)</option>
-              <option value="piper">Leve (Piper)</option>
-              <option value="api">API hospedada</option>
-            </select>
-            <label class="sf-audio-effect">
-              <input
-                type="checkbox"
-                [checked]="worker()?.voice_effect !== false"
-                (change)="onVoiceEffectChange(primaryHostId()!, worker()?.tts_mode, $event)"
-              />
-              Voz dobrada
-            </label>
-            <button
-              type="button"
-              class="sf-audio-test"
-              [disabled]="!!testingVoice()"
-              (click)="testVoice(primaryHostId()!)"
-            >
-              {{ testingVoice() === primaryHostId() ? 'Tocando…' : '🔊 Testar' }}
-            </button>
-          </div>
-        }
-
-        @for (w of otherWorkers(); track w.host_id) {
-          @if (w.host_id && hostSupportsTts(w.host_id)) {
-            <div class="sf-audio-host">
-              <span class="sf-audio-host-name">{{ w.display_name || w.hostname || 'host' }}</span>
-              <select
-                class="sf-audio-select"
-                [value]="w.tts_mode || ''"
-                (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
-              >
-                <option value="">Padrão do host</option>
-                <option value="say">Nativo do SO (say)</option>
-                <option value="xtts">Alta qualidade (XTTS)</option>
-                <option value="piper">Leve (Piper)</option>
-                <option value="api">API hospedada</option>
-              </select>
-              <label class="sf-audio-effect">
-                <input
-                  type="checkbox"
-                  [checked]="w.voice_effect !== false"
-                  (change)="onVoiceEffectChange(w.host_id!, w.tts_mode, $event)"
-                />
-                Voz dobrada
-              </label>
-              <button
-                type="button"
-                class="sf-audio-test"
-                [disabled]="!!testingVoice()"
-                (click)="testVoice(w.host_id!)"
-              >
-                {{ testingVoice() === w.host_id ? 'Tocando…' : '🔊 Testar' }}
-              </button>
-            </div>
-          }
-        }
-      </div>
 
       <!-- Stats -->
       <div class="sf-stats">
@@ -344,6 +261,97 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         <div class="sf-limit-note">
           Gemini, Codex e OpenCode não expõem uso — sem dados disponíveis.
         </div>
+      </div>
+
+      <!-- Áudio do JARVIS: volume (local do aparelho) + modo de voz/efeito
+           por host (Perfil > Áudio). Cada linha de host: nome em cima
+           (truncando se precisar), controles embaixo (select + toggle +
+           testar) — evita amontoar tudo numa linha só e quebrar feio. -->
+      <div class="sf-audio">
+        <div class="sf-audio-head">Áudio (JARVIS)</div>
+        <label class="sf-audio-volume">
+          <span>Volume</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            [value]="jarvisAudio.volume()"
+            (input)="onVolumeInput($event)"
+          />
+          <span class="sf-audio-volume-val">{{ jarvisAudio.volume() }}%</span>
+        </label>
+
+        @if (primaryHostId() && hostSupportsTts(primaryHostId())) {
+          <div class="sf-audio-host">
+            <span class="sf-audio-host-name">{{ worker()?.display_name || worker()?.hostname || 'este host' }}</span>
+            <div class="sf-audio-controls">
+              <select
+                class="sf-audio-select"
+                [value]="worker()?.tts_mode || ''"
+                (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
+              >
+                <option value="">Padrão do host</option>
+                <option value="say">Nativo do SO (say)</option>
+                <option value="xtts">Alta qualidade (XTTS)</option>
+                <option value="piper">Leve (Piper)</option>
+                <option value="api">API hospedada</option>
+              </select>
+              <label class="sf-audio-effect">
+                <input
+                  type="checkbox"
+                  [checked]="worker()?.voice_effect !== false"
+                  (change)="onVoiceEffectChange(primaryHostId()!, worker()?.tts_mode, $event)"
+                />
+                Voz dobrada
+              </label>
+              <button
+                type="button"
+                class="sf-audio-test"
+                [disabled]="!!testingVoice()"
+                (click)="testVoice(primaryHostId()!)"
+              >
+                {{ testingVoice() === primaryHostId() ? 'Tocando…' : '🔊 Testar' }}
+              </button>
+            </div>
+          </div>
+        }
+
+        @for (w of otherWorkers(); track w.host_id) {
+          @if (w.host_id && hostSupportsTts(w.host_id)) {
+            <div class="sf-audio-host">
+              <span class="sf-audio-host-name">{{ w.display_name || w.hostname || 'host' }}</span>
+              <div class="sf-audio-controls">
+                <select
+                  class="sf-audio-select"
+                  [value]="w.tts_mode || ''"
+                  (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
+                >
+                  <option value="">Padrão do host</option>
+                  <option value="say">Nativo do SO (say)</option>
+                  <option value="xtts">Alta qualidade (XTTS)</option>
+                  <option value="piper">Leve (Piper)</option>
+                  <option value="api">API hospedada</option>
+                </select>
+                <label class="sf-audio-effect">
+                  <input
+                    type="checkbox"
+                    [checked]="w.voice_effect !== false"
+                    (change)="onVoiceEffectChange(w.host_id!, w.tts_mode, $event)"
+                  />
+                  Voz dobrada
+                </label>
+                <button
+                  type="button"
+                  class="sf-audio-test"
+                  [disabled]="!!testingVoice()"
+                  (click)="testVoice(w.host_id!)"
+                >
+                  {{ testingVoice() === w.host_id ? 'Tocando…' : '🔊 Testar' }}
+                </button>
+              </div>
+            </div>
+          }
+        }
       </div>
 
       <!-- Settings -->
@@ -686,6 +694,13 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         display: flex;
         align-items: center;
         gap: 6px;
+        min-width: 0;
+      }
+      .sf-worker-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .sf-worker-meta {
         font-size: 12.5px;
@@ -874,16 +889,18 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         text-align: right;
         font-variant-numeric: tabular-nums;
       }
+      /* Cada host: nome numa linha (com a bolinha do worker acima, se quiser
+         associar visualmente), controles NA LINHA DE BAIXO — evita amontoar
+         nome+select+checkbox+botão numa linha só, que quebrava feio em
+         telas estreitas. */
       .sf-audio-host {
         display: flex;
-        align-items: center;
-        flex-wrap: wrap;
+        flex-direction: column;
         gap: 8px;
         padding-top: 10px;
         border-top: 1px solid #20262a;
       }
       .sf-audio-host-name {
-        flex: 1 1 auto;
         min-width: 0;
         font-size: 12.5px;
         font-weight: 600;
@@ -892,7 +909,15 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .sf-audio-controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
       .sf-audio-select {
+        flex: 1 1 auto;
+        min-width: 120px;
         background: #0e1113;
         border: 1px solid #283230;
         border-radius: 8px;
@@ -919,6 +944,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 5px 10px;
         cursor: pointer;
         white-space: nowrap;
+        margin-left: auto;
       }
       .sf-audio-test:disabled {
         opacity: 0.5;
@@ -1439,9 +1465,37 @@ export class PerfilComponent implements OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Recarrega o card do worker "principal" MANTENDO A IDENTIDADE do host.
+   *
+   * Bug real (multi-host, reportado pelo usuário): `GET /worker` devolve o
+   * host de `updated_at` MAIS RECENTE entre TODOS — com 2+ hosts ativos
+   * (cada um faz heartbeat a cada ~10s independente), "o mais recente" fica
+   * alternando entre eles a cada poll (aqui, a cada 15s), fazendo o card
+   * principal — e a config de áudio dele — trocar de host sozinho na tela,
+   * mesmo sem o usuário mexer em nada. Fix: 1ª carga usa o endpoint singular
+   * (aproxima "host mais ativo agora"); da 2ª em diante, TRAVA nesse
+   * `host_id` e busca ELE especificamente na lista completa — nunca deixa a
+   * "identidade" do card principal mudar sozinha.
+   */
   private reloadWorker(): void {
-    this.api.getWorker().subscribe({
-      next: (w) => this.worker.set(w),
+    const lockedHostId = this.worker()?.host_id;
+    if (!lockedHostId) {
+      this.api.getWorker().subscribe({
+        next: (w) => this.worker.set(w),
+        error: () => {
+          /* keep last known state */
+        },
+      });
+      return;
+    }
+    this.api.listWorkers().subscribe({
+      next: (list) => {
+        const match = list.find((w) => w.host_id === lockedHostId);
+        if (match) {
+          this.worker.set(match);
+        }
+      },
       error: () => {
         /* keep last known state */
       },
