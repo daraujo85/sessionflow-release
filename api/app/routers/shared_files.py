@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from app.repositories.sessions_repo import SessionsRepository
 from app.repositories.shared_files_repo import SharedFilesRepository
+from app.timeutil import utc_aware_fields
 
 router = APIRouter(tags=["shared-files"])
 
@@ -42,6 +43,7 @@ class SharedFileOut(BaseModel):
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
         data.pop("stored_path", None)
+        data = utc_aware_fields(data, "created_at")
         return cls.model_validate(data)
 
 

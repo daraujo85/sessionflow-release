@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.publishers.command_publisher import publish_command
 from app.repositories.event_repo import EventRepository
 from app.repositories.task_repo import TaskRepository
+from app.timeutil import utc_aware_fields
 
 router = APIRouter(tags=["history"])
 
@@ -41,6 +42,7 @@ class EventOut(BaseModel):
     def from_doc(cls, doc: dict[str, Any]) -> EventOut:
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
+        data = utc_aware_fields(data, "at")
         return cls.model_validate(data)
 
 
@@ -64,6 +66,7 @@ class TaskOut(BaseModel):
     def from_doc(cls, doc: dict[str, Any]) -> TaskOut:
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
+        data = utc_aware_fields(data, "updated_at")
         return cls.model_validate(data)
 
 

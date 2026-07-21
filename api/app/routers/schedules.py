@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.repositories.schedules_repo import SchedulesRepository
 from app.repositories.sessions_repo import SessionsRepository
+from app.timeutil import utc_aware_fields
 
 router = APIRouter(tags=["schedules"])
 
@@ -40,6 +41,7 @@ class ScheduleOut(BaseModel):
     def from_doc(cls, doc: dict[str, Any]) -> ScheduleOut:
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
+        data = utc_aware_fields(data, "next_run_at", "last_run_at", "created_at")
         return cls.model_validate(data)
 
 

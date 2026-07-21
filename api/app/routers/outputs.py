@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.repositories.output_repo import OutputRepository
 from app.repositories.sessions_repo import SessionsRepository
+from app.timeutil import utc_aware_fields
 
 router = APIRouter(prefix="/sessions", tags=["outputs"])
 
@@ -36,6 +37,7 @@ class OutputLineOut(BaseModel):
     def from_doc(cls, doc: dict[str, Any]) -> OutputLineOut:
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
+        data = utc_aware_fields(data, "at")
         return cls.model_validate(data)
 
 

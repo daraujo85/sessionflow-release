@@ -25,6 +25,7 @@ from app.publishers.command_publisher import publish_command
 from app.repositories.sessions_repo import SessionsRepository
 from app.repositories.uploads_repo import UploadsRepository
 from app.routers.worker import ONLINE_WINDOW_SECONDS, WORKER_STATUS_COLLECTION
+from app.timeutil import utc_aware_fields
 
 # Validade do link compartilhável: além de morrer ao parar/apagar a sessão, o
 # link caduca sozinho depois disso (segurança).
@@ -88,6 +89,9 @@ class SessionOut(BaseModel):
     def from_doc(cls, doc: dict[str, Any]) -> SessionOut:
         data = dict(doc)
         data["id"] = str(data.pop("_id"))
+        data = utc_aware_fields(
+            data, "last_seen_at", "last_activity_at", "created_at", "updated_at"
+        )
         return cls.model_validate(data)
 
 

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.repositories.sessions_repo import SessionsRepository
+from app.timeutil import utc_aware
 
 router = APIRouter(prefix="/sessions", tags=["screen"])
 
@@ -54,5 +55,5 @@ async def get_screen(request: Request, session_id: str) -> ScreenOut:
     return ScreenOut(
         text=doc.get("text", "") or "",
         scrollback=doc.get("scrollback", "") or "",
-        at=doc.get("at"),
+        at=utc_aware(doc.get("at")),
     )
