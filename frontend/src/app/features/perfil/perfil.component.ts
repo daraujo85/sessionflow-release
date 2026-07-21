@@ -59,7 +59,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           @if (photo()) {
             <img class="sf-avatar-img" [src]="photo()" alt="" />
           } @else {
-            <span aria-hidden="true">D</span>
+            <span aria-hidden="true">{{ displayName().charAt(0) || '?' }}</span>
           }
           <span class="sf-avatar-cam" aria-hidden="true">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -77,8 +77,8 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           (change)="onPhotoSelected($event)"
         />
         <div class="sf-identity-body">
-          <div class="sf-name">Diego</div>
-          <div class="sf-role">Operador · sessionflow.local</div>
+          <div class="sf-name">{{ displayName() }}</div>
+          <div class="sf-role">Operador · {{ email() || 'sessionflow.local' }}</div>
           @if (photo()) {
             <button type="button" class="sf-photo-remove" (click)="removePhoto()">
               Remover foto
@@ -1439,6 +1439,16 @@ export class PerfilComponent implements OnInit, OnDestroy {
     this.auth.logout();
     this.router.navigate(['/login']);
   }
+
+  /** Email do usuário logado (era hardcoded "sessionflow.local"). */
+  protected readonly email = computed(() => this.auth.email() ?? '');
+
+  /** Nome derivado do email (parte antes do @ e do 1º ponto), capitalizado —
+   * era hardcoded "Diego", aparecendo até em outras contas (ex.: Heverton). */
+  protected readonly displayName = computed(() => {
+    const local = this.email().split('@')[0]?.split('.')[0] || '';
+    return local ? local.charAt(0).toUpperCase() + local.slice(1) : 'Operador';
+  });
 }
 
 /** Texto curto do estado dos avisos de evento (linha tri-estado do Perfil). */
