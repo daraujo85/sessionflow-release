@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import pytest
 
+import base64
+import subprocess
+
+import sessionflow_worker.jarvis as jarvis_mod
 from sessionflow_worker.jarvis import _clean_for_speech, _owner_display_name, _summary_sys
 
 
@@ -67,3 +71,36 @@ def test_summary_sys_defines_agent_vs_owner_roles() -> None:
 def test_summary_sys_falls_back_to_voce_without_owner() -> None:
     prompt = _summary_sys("")
     assert "você" in prompt.lower()
+
+
+def test_voice_effect_disabled_returns_original_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "VOICE_EFFECT", "")
+    called = False
+
+    def fake_run(*a, **kw):  # noqa: ANN001, ANN002, ANN003
+        nonlocal called
+        called = True
+        raise AssertionError("não deveria chamar ffmpeg com efeito desligado")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    audio = ("ZmFrZQ==", "audio/ogg")  # base64 de "fake"
+    assert jarvis_mod._apply_voice_effect_sync(audio) == audio
+    assert not called
+
+
+def test_voice_effect_falls_back_to_original_on_ffmpeg_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "VOICE_EFFECT", "chorus=0.6:0.9:60:0.4:0.25:2")
+
+    def fake_run(*a, **kw):  # noqa: ANN001, ANN002, ANN003
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    original = base64.b64encode(b"fake-audio-bytes").decode("ascii")
+    assert jarvis_mod._apply_voice_effect_sync((original, "audio/ogg")) == (
+        original,
+        "audio/ogg",
+    )

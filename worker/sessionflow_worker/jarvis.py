@@ -99,6 +99,14 @@ PIPER_MODEL = os.path.expanduser(
         "~/.local/share/piper/piper/pt_BR-faber-medium.onnx",
     )
 )
+# Efeito "voz dobrada" (pedido do usuário: soar como o JARVIS do Homem de
+# Ferro — a MESMA voz falando duas vezes ao mesmo tempo, levemente defasada).
+# Filtro `chorus` do ffmpeg aplicado uniformemente no áudio final (qualquer
+# motor de síntese), então funciona igual em say/xtts/piper/api. Desliga com
+# SESSIONFLOW_JARVIS_VOICE_EFFECT="" (string vazia).
+VOICE_EFFECT = os.environ.get(
+    "SESSIONFLOW_JARVIS_VOICE_EFFECT", "chorus=0.6:0.9:60:0.4:0.25:2"
+).strip()
 
 _SCREEN_TAIL = 2500  # chars da cauda da tela enviados ao resumo.
 _HTTP_TIMEOUT = 25
@@ -446,23 +454,61 @@ def _synth_api_sync(text: str) -> tuple[str, str] | None:
     return b64, (out.get("audio_mime") or "audio/ogg")
 
 
+def _apply_voice_effect_sync(audio: tuple[str, str]) -> tuple[str, str]:
+    """Duplica a voz sobre ela mesma, levemente defasada (filtro ``chorus`` do
+    ffmpeg) — dá aquele ar de "assistente do Homem de Ferro" pedido pelo
+    usuário. Aplicado uma única vez aqui (não em cada `_synth_*_sync`), então
+    funciona igual não importa o motor (say/xtts/piper/api). Best-effort: se
+    o ffmpeg falhar por qualquer razão, devolve o áudio ORIGINAL sem efeito
+    (nunca deixa o JARVIS mudo por causa disso).
+    """
+    b64, mime = audio
+    if not VOICE_EFFECT:
+        return audio
+    src = tempfile.mktemp(suffix=".ogg")
+    out = tempfile.mktemp(suffix=".ogg")
+    try:
+        with open(src, "wb") as f:
+            f.write(base64.b64decode(b64))
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+             "-af", VOICE_EFFECT, "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", out],
+            check=True,
+        )
+        with open(out, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii"), "audio/ogg"
+    except Exception:  # noqa: BLE001 - best-effort, cai pro áudio sem efeito
+        logger.debug("jarvis: efeito de voz falhou; usando áudio original", exc_info=True)
+        return b64, mime
+    finally:
+        for p in (src, out):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 async def _synth(text: str) -> tuple[str, str] | None:
     loop = asyncio.get_running_loop()
     try:
+        result: tuple[str, str] | None = None
         if TTS_MODE == "api":
-            return await loop.run_in_executor(None, _synth_api_sync, text)
-        if TTS_MODE == "piper":
-            return await loop.run_in_executor(None, _synth_piper_sync, text)
-        if TTS_MODE == "xtts":
+            result = await loop.run_in_executor(None, _synth_api_sync, text)
+        elif TTS_MODE == "piper":
+            result = await loop.run_in_executor(None, _synth_piper_sync, text)
+        elif TTS_MODE == "xtts":
             # Tenta a voz boa (xtts); cai p/ `say` se o servidor estiver fora.
             try:
-                r = await loop.run_in_executor(None, _synth_xtts_sync, text)
-                if r:
-                    return r
+                result = await loop.run_in_executor(None, _synth_xtts_sync, text)
             except Exception:  # noqa: BLE001 - fallback gracioso
                 logger.debug("jarvis: xtts falhou; caindo p/ say", exc_info=True)
-            return await loop.run_in_executor(None, _synth_say_sync, text)
-        return await loop.run_in_executor(None, _synth_say_sync, text)
+            if not result:
+                result = await loop.run_in_executor(None, _synth_say_sync, text)
+        else:
+            result = await loop.run_in_executor(None, _synth_say_sync, text)
+        if result is None:
+            return None
+        return await loop.run_in_executor(None, _apply_voice_effect_sync, result)
     except Exception:  # noqa: BLE001 - best-effort
         logger.debug("jarvis: sintese (%s) falhou", TTS_MODE, exc_info=True)
         return None
