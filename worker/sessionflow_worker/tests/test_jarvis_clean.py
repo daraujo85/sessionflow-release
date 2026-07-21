@@ -7,19 +7,23 @@ from __future__ import annotations
 
 import pytest
 
-from sessionflow_worker.jarvis import _clean_for_speech
+from sessionflow_worker.jarvis import _clean_for_speech, _owner_display_name, _summary_sys
 
 
 @pytest.mark.parametrize(
     "raw, expected",
     [
         # Pontuação solta/repetida → some (não vira "ponto, ponto" no TTS).
-        ("Sessão pratinha. . resumo", "Sessão pratinha. resumo"),
-        ("Sessão pratinha... terminei", "Sessão pratinha. terminei"),
-        ("deploy. , feito", "deploy. feito"),
-        ("ok .. pronto", "ok. pronto"),
-        # Frase normal: ponto interno é pausa (preservado), ponto final cai na borda.
-        ("Primeira frase. Segunda frase.", "Primeira frase. Segunda frase"),
+        # Ponto (interno, não-borda) vira VÍRGULA (decisão do projeto: o TTS
+        # falava a palavra "ponto" em voz alta; vírgula dá a mesma pausa e
+        # não é lida — ver comentário "PONTO → VÍRGULA" em _clean_for_speech).
+        ("Sessão pratinha. . resumo", "Sessão pratinha, resumo"),
+        ("Sessão pratinha... terminei", "Sessão pratinha, terminei"),
+        ("deploy. , feito", "deploy, feito"),
+        ("ok .. pronto", "ok, pronto"),
+        # Frase normal: ponto interno vira vírgula (pausa, não a palavra "ponto");
+        # ponto final cai por estar na borda.
+        ("Primeira frase. Segunda frase.", "Primeira frase, Segunda frase"),
         # Markdown/símbolos somem.
         ("item *negrito* e (paren) #tag", "item negrito e paren tag"),
         # Ponto entre letras/números (arquivo/versão/decimal) NÃO vira "ponto".
@@ -36,3 +40,30 @@ def test_clean_for_speech_strips_edges_and_urls() -> None:
     assert "http" not in out
     assert not out.startswith(".")
     assert not out.endswith(".")
+
+
+def test_owner_display_name_from_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Deriva do local-part do e-mail, primeiro token antes de "." (mesma lógica
+    # do Perfil no frontend) — evita "você" ambíguo no resumo falado.
+    monkeypatch.setenv("SESSIONFLOW_EMAIL", "heverton.pablo@example.com")
+    assert _owner_display_name() == "Heverton"
+
+
+def test_owner_display_name_empty_without_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SESSIONFLOW_EMAIL", raising=False)
+    assert _owner_display_name() == ""
+
+
+def test_summary_sys_defines_agent_vs_owner_roles() -> None:
+    # Regressão do feedback do usuário: "a pessoa... não sei o que lá, só que é
+    # você... é o agente" — o prompt precisa deixar claro que o AGENTE é
+    # terceira pessoa e o DONO é chamado pelo nome, nunca um "você" ambíguo.
+    prompt = _summary_sys("Diego")
+    assert "Diego" in prompt
+    assert "TERCEIRA PESSOA" in prompt
+    assert "agente" in prompt.lower()
+
+
+def test_summary_sys_falls_back_to_voce_without_owner() -> None:
+    prompt = _summary_sys("")
+    assert "você" in prompt.lower()

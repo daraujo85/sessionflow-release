@@ -105,19 +105,38 @@ _HTTP_TIMEOUT = 25
 APP_SETTINGS_ID = "app"
 APP_SETTINGS_COLLECTION = os.environ.get("SESSIONFLOW_APP_SETTINGS_COLLECTION", "app_settings")
 
-_SUMMARY_SYS = (
-    "Voce gera um texto curto que sera LIDO EM VOZ ALTA por um sintetizador de "
-    "voz (TTS) em portugues do Brasil. Escreva como fala humana natural, do "
-    "jeito que uma pessoa contaria rapidinho o que aconteceu. Seja BEM curto: "
-    "uma ou no maximo duas frases curtas e diretas. NAO use nenhum simbolo nem "
-    "marcacao: nada de asteriscos, crases, "
-    "hashtags, colchetes, parenteses, barras, setas, marcadores, emojis, URLs, "
-    "caminhos de arquivo, nomes de variaveis ou trechos de codigo. NAO leia nem "
-    "soletre simbolos ou pontuacao (nunca diga a palavra 'ponto'). Use no maximo "
-    "virgulas e um ponto final por frase, como na escrita normal. Diga o que o "
-    "agente fez e, se estiver esperando, qual decisao a pessoa precisa tomar. "
-    "Responda APENAS com a frase falada, sem aspas."
-)
+def _summary_sys(owner: str) -> str:
+    """Prompt de sistema do resumo falado — papeis (agente vs dono) parametrizados
+    pelo NOME de quem instalou/roda esta sessão (ver ``_owner_display_name``).
+
+    Motivo (feedback direto do usuário): sem isso, o resumo às vezes fica
+    ambíguo sobre QUEM fez o quê — "a pessoa"/"você" podia se referir tanto ao
+    AGENTE (que executou o trabalho) quanto ao DONO da sessão (quem precisa
+    decidir algo). Definir os dois papéis explicitamente, e chamar o dono pelo
+    nome em vez de um "você" solto, resolve a ambiguidade.
+    """
+    who = owner or "você"
+    return (
+        "Voce gera um texto curto que sera LIDO EM VOZ ALTA por um sintetizador de "
+        "voz (TTS) em portugues do Brasil. Escreva como fala humana natural, do "
+        "jeito que uma pessoa contaria rapidinho o que aconteceu. Seja BEM curto: "
+        "uma ou no maximo duas frases curtas e diretas. "
+        "PAPEIS (nao confunda os dois, isso e importante): quem EXECUTOU o "
+        "trabalho e o AGENTE (a IA rodando na sessao) — refira-se a ele em "
+        "TERCEIRA PESSOA ('o agente fez X', 'ele terminou Y', 'ele esta "
+        f"esperando Z'), NUNCA em primeira pessoa ('eu fiz'). Quem PRECISA ler o "
+        f"resultado ou tomar uma decisao e o dono da sessao, chamado {who} — "
+        f"quando for falar com ele, chame PELO NOME ('{who}, falta decidir se...') "
+        "em vez de um 'voce' solto e ambiguo (fica dificil saber se 'voce' e a "
+        "pessoa ou o agente). NAO use nenhum simbolo nem marcacao: nada de "
+        "asteriscos, crases, hashtags, colchetes, parenteses, barras, setas, "
+        "marcadores, emojis, URLs, caminhos de arquivo, nomes de variaveis ou "
+        "trechos de codigo. NAO leia nem soletre simbolos ou pontuacao (nunca "
+        "diga a palavra 'ponto'). Use no maximo virgulas e um ponto final por "
+        "frase, como na escrita normal. Diga o que o agente fez e, se estiver "
+        f"esperando, qual decisao {who} precisa tomar. Responda APENAS com a "
+        "frase falada, sem aspas."
+    )
 
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -218,13 +237,23 @@ def _ollama_sync(
     return (out.get("response") or "").strip()
 
 
-def _summary_ollama_sync(prompt: str) -> str:
-    return _ollama_sync(_SUMMARY_SYS, prompt)
+def _summary_ollama_sync(prompt: str, owner: str) -> str:
+    return _ollama_sync(_summary_sys(owner), prompt)
 
 
-def _summary_api_sync(prompt: str) -> str:
-    out = _post_form("/ai", {"text": f"{_SUMMARY_SYS}\n\n{prompt}", "sanitize": "false"})
+def _summary_api_sync(prompt: str, owner: str) -> str:
+    out = _post_form("/ai", {"text": f"{_summary_sys(owner)}\n\n{prompt}", "sanitize": "false"})
     return (out.get("text_output") or "").strip()
+
+
+# Nome do DONO desta instalação (quem instalou/roda o SessionFlow), usado pra
+# desambiguar o resumo falado (ver ``_summary_sys``). Deriva do e-mail de login
+# (mesma lógica do Perfil no frontend: pega o local-part, primeiro token antes
+# de "."), já que hoje não existe um campo dedicado "nome do dono" na config.
+def _owner_display_name() -> str:
+    email = os.environ.get("SESSIONFLOW_EMAIL", "").strip()
+    local = email.split("@")[0].split(".")[0] if email else ""
+    return local.capitalize() if local else ""
 
 
 async def _summary(screen_text: str, title: str, desc: str) -> str:
@@ -233,11 +262,12 @@ async def _summary(screen_text: str, title: str, desc: str) -> str:
     tail = (screen_text or "").strip()[-_SCREEN_TAIL:]
     if not tail or SUMMARY_MODE == "none":
         return fallback
+    owner = _owner_display_name()
     prompt = f"Contexto: {title}.\n\nConteudo da tela:\n\n{tail}\n\nResumo falado:"
     fn = _summary_api_sync if SUMMARY_MODE == "api" else _summary_ollama_sync
     try:
         loop = asyncio.get_running_loop()
-        out = await loop.run_in_executor(None, fn, prompt)
+        out = await loop.run_in_executor(None, fn, prompt, owner)
         return out or fallback
     except Exception:  # noqa: BLE001 - best-effort
         logger.debug("jarvis: resumo (%s) falhou; usando evento", SUMMARY_MODE, exc_info=True)
