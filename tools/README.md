@@ -63,6 +63,26 @@ externas.
 # opções: --to <nome-ou-id> (default: a própria sessão, via $TMUX)
 ```
 
+### Controlar a instância de OUTRO amigo (`--remote`)
+
+`check`/`list`/`send`/`share` aceitam `--remote <alias>` pra falar com uma
+instância SessionFlow de outro amigo/deploy (não a local) — útil quando uma
+sessão sua quer acompanhar/mandar mensagem pra sessão de alguém em outra
+instalação (ex.: a `pvax` do Heverton). Credenciais ficam FORA do git, em
+`~/.claude/secrets/sf-remotes.env`, no formato `<ALIAS>_BASE_URL`/`_EMAIL`/
+`_PASSWORD` (alias em maiúsculas)::
+
+```
+HEVERTON_BASE_URL=https://api-sessionflow.anthonygabriel.com.br
+HEVERTON_EMAIL=heverton@...
+HEVERTON_PASSWORD=...
+```
+
+```bash
+./tools/sf list --remote heverton
+./tools/sf send pvax "oi, tudo certo por aí?" --remote heverton
+```
+
 `delegate` cria a sessão (POST /sessions), faz poll até `running` (~40s) e injeta
 a tarefa (+ bloco de handoff) via `/input`. Grava um registro local em
 `<DIR>/.sessionflow/handoff/<NOME>.json` para o `check` resolver por nome.

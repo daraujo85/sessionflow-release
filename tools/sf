@@ -60,8 +60,54 @@ def load_env(path=ENV_PATH):
 
 
 def api_base(env):
+    # Instância REMOTA (ver --remote / load_remote): já vem com a URL completa,
+    # não com porta local — usa direto, sem montar 127.0.0.1.
+    if env.get("API_BASE_URL"):
+        return env["API_BASE_URL"].rstrip("/")
     port = env.get("API_HOST_PORT", "8000")
     return f"http://127.0.0.1:{port}"
+
+
+REMOTES_ENV_PATH = os.path.expanduser("~/.claude/secrets/sf-remotes.env")
+
+
+def load_remote(alias):
+    """Credenciais de uma instância SessionFlow REMOTA (outro amigo/deploy),
+    fora do git (``~/.claude/secrets/sf-remotes.env``).
+
+    Formato: ``<ALIAS>_BASE_URL``/``<ALIAS>_EMAIL``/``<ALIAS>_PASSWORD``
+    (alias em maiúsculas), ex.::
+
+        HEVERTON_BASE_URL=https://api-sessionflow.anthonygabriel.com.br
+        HEVERTON_EMAIL=heverton@...
+        HEVERTON_PASSWORD=...
+
+    Devolve um dict no mesmo formato de :func:`load_env` (compatível com
+    :func:`login`/:func:`api_base`) — assim o resto do script nem sabe que é
+    remoto.
+    """
+    remotes = load_env(REMOTES_ENV_PATH)
+    prefix = alias.strip().upper()
+    base_url = remotes.get(f"{prefix}_BASE_URL")
+    email = remotes.get(f"{prefix}_EMAIL")
+    password = remotes.get(f"{prefix}_PASSWORD")
+    if not (base_url and email and password):
+        die(
+            f"remote '{alias}' incompleto/ausente em {REMOTES_ENV_PATH} "
+            f"(esperado {prefix}_BASE_URL / {prefix}_EMAIL / {prefix}_PASSWORD)"
+        )
+    return {
+        "API_BASE_URL": base_url,
+        "SESSIONFLOW_EMAIL": email,
+        "SESSIONFLOW_PASSWORD": password,
+    }
+
+
+def resolve_env(args):
+    """``load_remote(args.remote)`` se ``--remote`` foi passado, senão o
+    ``.env`` local de sempre — ponto único usado por todo comando."""
+    remote = getattr(args, "remote", None)
+    return load_remote(remote) if remote else load_env()
 
 
 def detect_parent():
@@ -273,7 +319,7 @@ def cmd_delegate(args):
     # gemini não tem dimensão de esforço → força None.
     effort = None if provider == "gemini" else args.effort
 
-    env = load_env()
+    env = resolve_env(args)
     token = login(env)
     base = api_base(env)
 
@@ -370,7 +416,7 @@ def cmd_check(args):
         except (OSError, json.JSONDecodeError):
             reg = None
 
-    env = load_env()
+    env = resolve_env(args)
     token = login(env)
     sessions = list_sessions(env, token)
 
@@ -410,7 +456,7 @@ def cmd_check(args):
 # comando: list
 # --------------------------------------------------------------------------- #
 def cmd_list(args):
-    env = load_env()
+    env = resolve_env(args)
     token = login(env)
     sessions = list_sessions(env, token)
     if not sessions:
@@ -428,7 +474,7 @@ def cmd_list(args):
 # comando: send
 # --------------------------------------------------------------------------- #
 def cmd_send(args):
-    env = load_env()
+    env = resolve_env(args)
     token = login(env)
     base = api_base(env)
     sessions = list_sessions(env, token)
@@ -465,7 +511,7 @@ def cmd_share(args):
     if not os.path.isfile(path):
         die(f"arquivo não encontrado: {path}")
 
-    env = load_env()
+    env = resolve_env(args)
     token = login(env)
     base = api_base(env)
     sessions = list_sessions(env, token)
@@ -531,9 +577,16 @@ def build_parser():
         "check",
         help="mostra status/activity do worker e imprime o handoff se existir.",
     )
+    _REMOTE_HELP = (
+        "controla uma instância SessionFlow de OUTRO amigo/deploy em vez da "
+        "local — credenciais em ~/.claude/secrets/sf-remotes.env "
+        "(<ALIAS>_BASE_URL/_EMAIL/_PASSWORD), ex.: --remote heverton."
+    )
+
     c.add_argument("target", help="nome (tmux_name) ou id da sessão.")
     c.add_argument("--dir", default=None,
                    help="work_dir onde está o handoff (default: diretório atual).")
+    c.add_argument("--remote", default=None, help=_REMOTE_HELP)
     c.set_defaults(func=cmd_check)
 
     l = sub.add_parser(
@@ -541,6 +594,7 @@ def build_parser():
         help="lista as sessões ativas (nome, agente, status, host, id) — "
              "use pra descobrir o alvo do 'sf send'.",
     )
+    l.add_argument("--remote", default=None, help=_REMOTE_HELP)
     l.set_defaults(func=cmd_list)
 
     m = sub.add_parser(
@@ -552,6 +606,7 @@ def build_parser():
     m.add_argument("text", help="texto a enviar pro terminal da sessão-alvo.")
     m.add_argument("--no-enter", action="store_true",
                    help="não aperta Enter depois do texto (default: aperta).")
+    m.add_argument("--remote", default=None, help=_REMOTE_HELP)
     m.set_defaults(func=cmd_send)
 
     h = sub.add_parser(
@@ -563,6 +618,7 @@ def build_parser():
     h.add_argument("--to", default=None,
                    help="sessão-alvo (nome ou id). Default: a própria sessão "
                         "de onde o comando roda (detecta via $TMUX).")
+    h.add_argument("--remote", default=None, help=_REMOTE_HELP)
     h.set_defaults(func=cmd_share)
     return p
 
