@@ -1,5 +1,31 @@
 # tools/
 
+## `self-update.sh` / `self-update-loop.sh` — auto-atualização (pull + rebuild sozinho)
+
+Pra instalações de amigo (Heverton, Alvarenga, Lucas…), o `origin` do clone
+aponta pro mirror PÚBLICO `daraujo85/sessionflow-release` (sem precisar de
+token/deploy key — repo é só leitura pra quem clona). `self-update.sh` checa
+se `origin/main` avançou; se sim, faz `git merge --ff-only`, reconstrói os
+containers (`docker compose --profile app up -d --build`) e reinicia o worker
+(sessão tmux `sessionflow-worker`, se existir — o `uv run` resincroniza deps
+sozinho). Só atualiza com a árvore de trabalho LIMPA (nunca reseta/descarta
+mudança local por engano).
+
+```bash
+# Rodar 1x (ex.: via cron)
+./tools/self-update.sh
+
+# Rodar em loop (default 30min) — crie numa sessão tmux de infra dedicada
+# (o app já esconde da tela de Sessões, igual sessionflow-worker/cloudflared-tunnel):
+tmux new-session -d -s sessionflow-autoupdate './tools/self-update-loop.sh'
+```
+
+Cortar uma versão nova pros amigos = espelhar o `main` privado pro público:
+
+```bash
+git push public main:main   # remote "public" = https://github.com/daraujo85/sessionflow-release.git
+```
+
 ## `sf` — delega tarefa / fala com sessão irmã / compartilha arquivo (Fatia 1-3)
 
 CLI (Python 3, só stdlib) que faz uma sessão-chefe do SessionFlow **delegar uma

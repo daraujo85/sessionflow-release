@@ -117,7 +117,9 @@ _AUTOCONT_STABLE_S = 6.0
 # ser uma sessão de trabalho velha, derrubando o acesso externo até o próximo
 # restart manual. ``sessionflow-worker``/``cloudflared-tunnel`` são os nomes
 # usados pelo próprio setup (ver tools/ e o script de startup do host).
-INFRA_SESSION_NAMES = frozenset({"sessionflow-worker", "cloudflared-tunnel"})
+INFRA_SESSION_NAMES = frozenset(
+    {"sessionflow-worker", "cloudflared-tunnel", "sessionflow-autoupdate"}
+)
 
 
 def _screen_has_api_error(text: str) -> bool:

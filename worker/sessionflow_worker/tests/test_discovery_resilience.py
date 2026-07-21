@@ -112,7 +112,12 @@ async def test_infra_sessions_never_discovered_or_stopped() -> None:
     excluídas do ``present_names`` passado pro mark-stopped (não entram no
     ciclo de stopped/transição também).
     """
-    infos = [_info("cloudflared-tunnel"), _info("sessionflow-worker"), _info("pvax")]
+    infos = [
+        _info("cloudflared-tunnel"),
+        _info("sessionflow-worker"),
+        _info("sessionflow-autoupdate"),
+        _info("pvax"),
+    ]
     disc = _make_discovery(infos)
 
     seen: list[str] = []
