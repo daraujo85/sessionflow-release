@@ -10,7 +10,7 @@ dependencies = [
     "aio-pika",
     "pydantic",
     "python-dotenv",
-    "mlx-whisper",
+    "mlx-whisper; sys_platform == 'darwin'",
     "faster-whisper",
     "pywebpush>=2.3.0",
 ]

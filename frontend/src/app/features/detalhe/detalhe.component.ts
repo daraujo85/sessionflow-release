@@ -9,6 +9,7 @@ import {
   inject,
   signal,
   viewChild,
+  viewChildren,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -43,7 +44,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [FormsModule, AudioRecorderComponent, SessionPanelComponent],
   template: `
-    <section class="overlay" [class.focus]="focusMode()" [class.split-active]="!!compareId()">
+    <section class="overlay" [class.focus]="focusMode()" [class.split-active]="splitActive()">
       <!-- Header -->
       <header class="hdr">
         <div class="hdr-top">
@@ -206,13 +207,13 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                 </svg>
               </button>
             }
-            @if (!guest() && !compareId()) {
+            @if (!guest()) {
               <button
                 type="button"
                 class="act act--ghost"
                 (click)="openSplitPicker()"
                 aria-label="Dividir tela com outra sessão"
-                title="Dividir tela: acompanhar/conversar com outra sessão lado a lado"
+                [attr.title]="splitActive() ? 'Adicionar mais uma sessão à divisão de tela' : 'Dividir tela: acompanhar/conversar com outra sessão lado a lado'"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -312,11 +313,12 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         </div>
       </header>
 
-      <!-- Picker "dividir tela": escolhe a 2ª sessão -->
+      <!-- Picker "dividir tela": escolhe mais uma sessão pra somar ao split
+           (sem limite fixo — o usuário adiciona quantas achar que consegue ver) -->
       @if (splitPickerOpen()) {
         <section class="split-picker" aria-label="Escolher sessão para dividir tela">
           <div class="split-picker-hdr">
-            <span>Dividir tela com…</span>
+            <span>{{ splitActive() ? 'Adicionar mais uma…' : 'Dividir tela com…' }}</span>
             <button type="button" class="close-btn" (click)="closeSplitPicker()">✕</button>
           </div>
           <input
@@ -343,29 +345,37 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         </section>
       }
 
-      <!-- Modo split: duas sessões lado a lado (painel leve, ver
+      <!-- Modo split: N sessões lado a lado (painel leve, ver
            SessionPanelComponent) — some com o resto do corpo via CSS
-           (.overlay.split-active) sem mexer no template normal abaixo.
-           Divisor arrastável: arraste pra dar mais espaço a um lado (horizontal
-           no desktop, vertical quando empilha no celular); duplo-toque no
-           divisor volta pro 50/50. -->
-      @if (compareId(); as cmp) {
+           (.overlay.split-active) sem mexer no template normal abaixo. Sem
+           limite fixo de painéis: "+ dividir" no header soma mais um a
+           qualquer momento. Divisor arrastável entre CADA par de painéis
+           vizinhos: arraste pra dar mais espaço a um lado (horizontal no
+           desktop, vertical quando empilha no celular); duplo-toque no
+           divisor volta os dois vizinhos pro 50/50 entre si. Fechar o painel
+           principal (índice 0) sai do split inteiro; fechar qualquer outro
+           só remove aquele painel. -->
+      @if (splitActive()) {
         <div class="split-view" #splitViewEl [class.dragging]="splitDragging()">
-          <div class="split-pane" [style.flex]="splitFlexA()">
-            <app-session-panel [sessionId]="id()" (closeRequested)="exitSplit()" />
-          </div>
-          <div
-            class="split-divider"
-            (pointerdown)="onSplitDividerDown($event)"
-            (dblclick)="resetSplitRatio()"
-            aria-label="Arraste pra redimensionar os painéis; duplo-toque reseta 50/50"
-            role="separator"
-          >
-            <span class="split-grip"></span>
-          </div>
-          <div class="split-pane" [style.flex]="splitFlexB()">
-            <app-session-panel [sessionId]="cmp" (closeRequested)="exitSplit()" />
-          </div>
+          @for (pid of allPanelIds(); track pid; let i = $index; let last = $last) {
+            <div class="split-pane" #pane [style.flex]="panelFlex(i)">
+              <app-session-panel
+                [sessionId]="pid"
+                (closeRequested)="i === 0 ? exitSplit() : removeSplitPanel(pid)"
+              />
+            </div>
+            @if (!last) {
+              <div
+                class="split-divider"
+                (pointerdown)="onSplitDividerDown($event, i)"
+                (dblclick)="resetSplitPair(i)"
+                aria-label="Arraste pra redimensionar os painéis vizinhos; duplo-toque reseta 50/50 entre eles"
+                role="separator"
+              >
+                <span class="split-grip"></span>
+              </div>
+            }
+          }
         </div>
       }
 
@@ -1536,15 +1546,33 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       @media (max-width: 700px) {
         .hdr-controls {
           flex-basis: 100%;
+          /* Sem isso, um item flex não encolhe abaixo do min-content do seu
+             CONTEÚDO (aqui, a soma de todos os botões) — o item crescia além
+             da tela e o overflow-x:auto do .status-actions nunca entrava em
+             ação, cortando a lixeira/parte do play-stop pra fora da viewport. */
+          min-width: 0;
           margin-left: 0;
           flex-wrap: nowrap;
         }
         .status-actions {
-          flex: none;
+          flex: 1 1 auto;
+          min-width: 0;
           margin-left: auto;
           gap: 6px;
+          /* Muitos botões (compartilhar/JARVIS/foco/terminal/split/
+             comandos/arquivos/play-stop/lixeira) não cabem numa linha só em
+             tela estreita — sem isso os últimos (lixeira, parte do
+             play/stop) ficavam CORTADOS pelo overflow do header, invisíveis
+             e inclicáveis. Rola em vez de cortar; sem barra de scroll visível. */
+          overflow-x: auto;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .status-actions::-webkit-scrollbar {
+          display: none;
         }
         .act {
+          flex: none;
           padding: 6px 8px;
         }
         /* CC (tipo do agente) escondido no celular — o espaço é dos botões. */
@@ -3371,25 +3399,34 @@ export class DetalheComponent implements AfterViewChecked {
   );
 
   /**
-   * Modo "dividir tela": mostra esta sessão + outra lado a lado (query param
-   * `compare`), cada lado num painel leve (`SessionPanelComponent`) — pensado
-   * pra acompanhar/conversar entre duas sessões (ver skill `sf-delegate`,
-   * `sf send`). Não some do estado normal por baixo: sair do split volta pra
-   * cá exatamente onde estava.
+   * Modo "dividir tela": mostra esta sessão + N outras lado a lado (query
+   * param `compare`, lista CSV de ids), cada lado num painel leve
+   * (`SessionPanelComponent`) — pensado pra acompanhar/conversar entre várias
+   * sessões (ver skill `sf-delegate`, `sf send`). Sem limite fixo: o usuário
+   * soma quantos painéis achar que consegue ver. Não some do estado normal
+   * por baixo: sair do split volta pra cá exatamente onde estava.
    */
-  protected readonly compareId = signal<string | null>(
-    this.route.snapshot.queryParamMap.get('compare') || null,
+  protected readonly panelIds = signal<string[]>(
+    parsePanelIds(this.route.snapshot.queryParamMap.get('compare')),
   );
+  /** Sessão principal (índice 0) + as adicionadas — a lista que o template renderiza. */
+  protected readonly allPanelIds = computed(() => {
+    const mine = this.id();
+    return [mine, ...this.panelIds().filter((pid) => pid !== mine)];
+  });
+  protected readonly splitActive = computed(() => this.panelIds().length > 0);
   protected readonly splitPickerOpen = signal<boolean>(false);
   protected readonly splitCandidates = signal<Session[]>([]);
   protected readonly splitSearch = signal<string>('');
-  /** Candidatos do picker: filtrados pela busca, ativos primeiro, depois nome. */
+  /** Candidatos do picker: exclui quem já está no split, filtra pela busca, ativos primeiro. */
   protected readonly splitCandidatesFiltered = computed(() => {
     const q = this.splitSearch().trim().toLowerCase();
+    const already = new Set(this.allPanelIds());
     const nameOf = (s: Session) => (s.display_name || s.tmux_name || '').toLowerCase();
     const isActive = (s: Session) =>
       s.status === 'running' || s.status === 'waiting_input';
     return this.splitCandidates()
+      .filter((s) => !already.has(s.id))
       .filter((s) => !q || nameOf(s).includes(q))
       .sort((a, b) => {
         const activeDiff = Number(isActive(b)) - Number(isActive(a));
@@ -3627,12 +3664,15 @@ export class DetalheComponent implements AfterViewChecked {
     return hours < 24 ? `há ${hours}h` : `há ${Math.round(hours / 24)}d`;
   }
 
-  /** Proporção do painel A (0.2–0.8) no split — arrastável, persistida. */
-  protected readonly splitRatio = signal<number>(readSplitRatio());
+  /** Tamanho (flex-grow) de cada painel do split — arrastável por par vizinho, persistido. */
+  protected readonly panelSizes = signal<number[]>(readSplitSizes(1));
   protected readonly splitDragging = signal<boolean>(false);
-  protected readonly splitFlexA = computed(() => `${this.splitRatio()} 0 0%`);
-  protected readonly splitFlexB = computed(() => `${1 - this.splitRatio()} 0 0%`);
+  /** `flex` CSS do painel `i` (fallback 1 se o array ainda não acompanhou o resize). */
+  protected panelFlex(i: number): string {
+    return `${this.panelSizes()[i] ?? 1} 0 0%`;
+  }
   private readonly splitViewEl = viewChild<ElementRef<HTMLDivElement>>('splitViewEl');
+  private readonly splitPaneEls = viewChildren<ElementRef<HTMLDivElement>>('pane');
   private splitDragMove?: (ev: PointerEvent) => void;
   private splitDragUp?: (ev: PointerEvent) => void;
 
@@ -3812,65 +3852,84 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * Escolhe a 2ª sessão do split — vira query param `compare` (linkável).
-   * `replaceUrl: true`: liga/desliga o split é um estado de EXIBIÇÃO, não uma
-   * navegação — sem isso, cada toggle empilhava uma entrada no histórico do
-   * navegador e o botão "voltar" ficava alternando o split ligado/desligado
-   * antes de finalmente sair da sessão (em vez de sair direto).
+   * Soma mais uma sessão ao split — vira query param `compare` (CSV,
+   * linkável). Sem limite: pode chamar de novo pra ir empilhando painéis.
+   * `replaceUrl: true`: ligar/desligar/somar painel é um estado de EXIBIÇÃO,
+   * não uma navegação — sem isso, cada toggle empilhava uma entrada no
+   * histórico do navegador e o botão "voltar" ficava alternando o split
+   * ligado/desligado antes de finalmente sair da sessão (em vez de sair direto).
    */
   protected pickSplit(otherId: string): void {
     this.splitPickerOpen.set(false);
-    void this.router.navigate([], {
-      relativeTo: this.route,
-      queryParams: { compare: otherId },
-      queryParamsHandling: 'merge',
-      replaceUrl: true,
-    });
+    if (otherId === this.id() || this.panelIds().includes(otherId)) {
+      return;
+    }
+    this.syncCompareQueryParam([...this.panelIds(), otherId]);
   }
 
-  /** Sai do modo split, voltando à tela normal desta sessão (ver `pickSplit`). */
+  /** Remove só este painel do split (os demais continuam). */
+  protected removeSplitPanel(otherId: string): void {
+    this.syncCompareQueryParam(this.panelIds().filter((pid) => pid !== otherId));
+  }
+
+  /** Sai do modo split inteiro, voltando à tela normal desta sessão. */
   protected exitSplit(): void {
+    this.syncCompareQueryParam([]);
+  }
+
+  private syncCompareQueryParam(ids: string[]): void {
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { compare: null },
+      queryParams: { compare: ids.length ? ids.join(',') : null },
       queryParamsHandling: 'merge',
       replaceUrl: true,
     });
   }
 
   /**
-   * Início do arrasto do divisor do split. Funciona em pointer (mouse/touch)
-   * e detecta o eixo NA HORA (horizontal quando os painéis estão lado a lado,
-   * vertical quando o CSS empilha em telas estreitas) medindo o próprio
-   * container — não depende de replicar o breakpoint do media query em JS.
+   * Início do arrasto do divisor ENTRE o painel `i` e o painel `i+1`.
+   * Funciona em pointer (mouse/touch) e detecta o eixo NA HORA (horizontal
+   * quando os painéis estão lado a lado, vertical quando o CSS empilha em
+   * telas estreitas) medindo o container — não depende de replicar o
+   * breakpoint do media query em JS. Só os dois painéis vizinhos mudam de
+   * tamanho (os demais painéis do split ficam como estavam).
    */
-  protected onSplitDividerDown(ev: PointerEvent): void {
-    const el = this.splitViewEl()?.nativeElement;
-    if (!el) {
+  protected onSplitDividerDown(ev: PointerEvent, i: number): void {
+    const container = this.splitViewEl()?.nativeElement;
+    const panes = this.splitPaneEls();
+    const paneA = panes[i]?.nativeElement;
+    const paneB = panes[i + 1]?.nativeElement;
+    if (!container || !paneA || !paneB) {
       return;
     }
     ev.preventDefault();
     this.splitDragging.set(true);
-    const rect = () => el.getBoundingClientRect();
-    // Colunas lado a lado quando a largura do container manda mais que a
-    // altura visível de cada painel — na prática: usa o CSS real (a mesma
-    // media query já decide flex-direction); lemos via computedStyle.
-    const vertical = getComputedStyle(el).flexDirection === 'column';
+    const vertical = getComputedStyle(container).flexDirection === 'column';
+    const combined = () => {
+      const ra = paneA.getBoundingClientRect();
+      const rb = paneB.getBoundingClientRect();
+      return vertical
+        ? { start: ra.top, size: rb.bottom - ra.top }
+        : { start: ra.left, size: rb.right - ra.left };
+    };
+    const startSizes = this.panelSizes();
+    const pairTotal = (startSizes[i] ?? 1) + (startSizes[i + 1] ?? 1);
 
     const move = (e: PointerEvent) => {
-      const r = rect();
-      const ratio = vertical
-        ? (e.clientY - r.top) / r.height
-        : (e.clientX - r.left) / r.width;
-      this.splitRatio.set(Math.min(0.8, Math.max(0.2, ratio)));
+      const c = combined();
+      if (c.size <= 0) {
+        return;
+      }
+      const pos = vertical ? e.clientY : e.clientX;
+      const frac = Math.min(0.85, Math.max(0.15, (pos - c.start) / c.size));
+      const next = [...this.panelSizes()];
+      next[i] = pairTotal * frac;
+      next[i + 1] = pairTotal * (1 - frac);
+      this.panelSizes.set(next);
     };
     const up = () => {
       this.splitDragging.set(false);
-      try {
-        localStorage.setItem('sf.split.ratio', String(this.splitRatio()));
-      } catch {
-        /* storage indisponível — silencioso */
-      }
+      persistSplitSizes(this.panelSizes());
       if (this.splitDragMove) {
         window.removeEventListener('pointermove', this.splitDragMove);
       }
@@ -3886,14 +3945,14 @@ export class DetalheComponent implements AfterViewChecked {
     window.addEventListener('pointercancel', up);
   }
 
-  /** Duplo-toque/clique no divisor: volta pro 50/50. */
-  protected resetSplitRatio(): void {
-    this.splitRatio.set(0.5);
-    try {
-      localStorage.setItem('sf.split.ratio', '0.5');
-    } catch {
-      /* storage indisponível — silencioso */
-    }
+  /** Duplo-toque/clique no divisor `i`: volta o par de painéis vizinhos pro 50/50 entre si. */
+  protected resetSplitPair(i: number): void {
+    const sizes = [...this.panelSizes()];
+    const pairTotal = (sizes[i] ?? 1) + (sizes[i + 1] ?? 1);
+    sizes[i] = pairTotal / 2;
+    sizes[i + 1] = pairTotal / 2;
+    this.panelSizes.set(sizes);
+    persistSplitSizes(sizes);
   }
 
   /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
@@ -4198,13 +4257,24 @@ export class DetalheComponent implements AfterViewChecked {
         }
       });
 
-    // Modo split (query param `compare`): reativo p/ back/forward do navegador
-    // e pra refletir o que o picker escreve na URL.
+    // Modo split (query param `compare`, CSV de ids): reativo p/ back/forward
+    // do navegador e pra refletir o que o picker escreve na URL.
     this.route.queryParamMap
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((qp) => {
-        this.compareId.set(qp.get('compare') || null);
+        this.panelIds.set(parsePanelIds(qp.get('compare')));
       });
+
+    // Ao mudar a QUANTIDADE de painéis (somar/remover), redimensiona o array
+    // de tamanhos pro novo total — mantém as proporções já existentes e
+    // reparte igual pro(s) painel(is) novo(s)/removido(s).
+    effect(() => {
+      const n = this.allPanelIds().length;
+      const cur = this.panelSizes();
+      if (cur.length !== n) {
+        this.panelSizes.set(readSplitSizes(n));
+      }
+    });
 
     // Espelho PUSHADO: o worker empurra a tela (SSE) assim que muda. Aplicamos
     // o último frame da NOSSA sessão (casado por tmux_name) — feedback quase
@@ -6131,13 +6201,44 @@ function readFocusMode(): boolean {
   }
 }
 
-/** Lê a proporção salva do split (painel A), com fallback 0.5 e clamp 0.2–0.8. */
-function readSplitRatio(): number {
+/** Parseia o query param `compare` (CSV de ids) — vazio/ausente = split desligado. */
+function parsePanelIds(raw: string | null): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Lê os tamanhos (flex-grow) salvos dos painéis do split. Só reaproveita o
+ * array salvo se tiver o MESMO total de painéis (`n`) — trocar a quantidade
+ * de painéis invalida proporções antigas, então cai no fallback (todos
+ * iguais, 1 cada).
+ */
+function readSplitSizes(n: number): number[] {
   try {
-    const v = Number(localStorage.getItem('sf.split.ratio'));
-    return v >= 0.2 && v <= 0.8 ? v : 0.5;
+    const raw = localStorage.getItem('sf.split.sizes');
+    if (raw) {
+      const parsed = raw.split(',').map(Number);
+      if (parsed.length === n && parsed.every((v) => Number.isFinite(v) && v > 0)) {
+        return parsed;
+      }
+    }
   } catch {
-    return 0.5;
+    /* storage indisponível — cai no fallback */
+  }
+  return new Array(n).fill(1);
+}
+
+/** Persiste os tamanhos atuais dos painéis do split. */
+function persistSplitSizes(sizes: number[]): void {
+  try {
+    localStorage.setItem('sf.split.sizes', sizes.join(','));
+  } catch {
+    /* storage indisponível — silencioso */
   }
 }
 
