@@ -51,7 +51,7 @@ from sessionflow_worker import dir_scanner, jarvis
 from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
 from sessionflow_worker.events import emit_event
-from sessionflow_worker.host_identity import capabilities_for, detect_platform, get_host_id
+from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id
 from sessionflow_worker.model_discovery import (
     cache_is_fresh,
     discover_all_data,
@@ -481,6 +481,10 @@ async def heartbeat_loop(
     hostname = socket.gethostname()
     started = datetime.now(timezone.utc)
     pid = os.getpid()
+    # Hardware/SO (CPU/RAM/GPU/disco/versão) não muda em runtime — calculado
+    # 1x aqui (alguns probes, tipo system_profiler no Mac, são lentos demais
+    # pra rodar a cada heartbeat) e reenviado no $set de cada ciclo.
+    hw = hardware_info(platform)
     while True:
         await coll.update_one(
             {"_id": host_id},
@@ -492,6 +496,7 @@ async def heartbeat_loop(
                     "started_at": started,
                     "updated_at": datetime.now(timezone.utc),
                     "pid": pid,
+                    "hardware": hw,
                 }
             },
             upsert=True,

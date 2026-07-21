@@ -23,6 +23,7 @@ import {
   Session,
   SessionStatus,
   UsageInfo,
+  WorkerHardware,
   WorkerStatus,
 } from '../../core/models';
 
@@ -137,6 +138,33 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               }
             </div>
             <div class="sf-worker-meta">{{ workerMeta() }}</div>
+            @if (worker()?.hardware; as hw) {
+              <button
+                type="button"
+                class="sf-hw-summary"
+                (click)="toggleHardware(primaryHostId())"
+                aria-label="Ver detalhes de hardware deste host"
+              >
+                {{ hwSummary(hw) }}
+                <span class="sf-hw-caret">{{ expandedHostId() === primaryHostId() ? '▲' : '▼' }}</span>
+              </button>
+              @if (expandedHostId() === primaryHostId()) {
+                <div class="sf-hw-detail">
+                  <div>CPU: {{ hw.cpu_model || '—' }}{{ hw.cpu_cores ? ' (' + hw.cpu_cores + ' núcleos)' : '' }}</div>
+                  <div>RAM: {{ hw.ram_total_gb ? hw.ram_total_gb + ' GB' : '—' }}</div>
+                  <div>GPU: {{ hw.gpu || 'não detectada' }}</div>
+                  <div>
+                    SO: {{ hw.os_detail?.distro || '—' }}
+                    @if (hw.os_detail?.host_os) {
+                      — rodando em {{ hw.os_detail?.host_os }}
+                    }
+                  </div>
+                  @for (d of hw.disks || []; track d.mount) {
+                    <div>Disco {{ d.mount }}: {{ d.used_gb }} / {{ d.total_gb }} GB usados</div>
+                  }
+                </div>
+              }
+            }
           }
         </div>
         <span
@@ -207,6 +235,33 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               <div class="sf-worker-meta">
                 {{ w.platform ?? '—' }} · uptime {{ formatUptimeFor(w) }}
               </div>
+              @if (w.hardware; as hw) {
+                <button
+                  type="button"
+                  class="sf-hw-summary"
+                  (click)="toggleHardware(w.host_id ?? null)"
+                  aria-label="Ver detalhes de hardware deste host"
+                >
+                  {{ hwSummary(hw) }}
+                  <span class="sf-hw-caret">{{ expandedHostId() === w.host_id ? '▲' : '▼' }}</span>
+                </button>
+                @if (expandedHostId() === w.host_id) {
+                  <div class="sf-hw-detail">
+                    <div>CPU: {{ hw.cpu_model || '—' }}{{ hw.cpu_cores ? ' (' + hw.cpu_cores + ' núcleos)' : '' }}</div>
+                    <div>RAM: {{ hw.ram_total_gb ? hw.ram_total_gb + ' GB' : '—' }}</div>
+                    <div>GPU: {{ hw.gpu || 'não detectada' }}</div>
+                    <div>
+                      SO: {{ hw.os_detail?.distro || '—' }}
+                      @if (hw.os_detail?.host_os) {
+                        — rodando em {{ hw.os_detail?.host_os }}
+                      }
+                    </div>
+                    @for (d of hw.disks || []; track d.mount) {
+                      <div>Disco {{ d.mount }}: {{ d.used_gb }} / {{ d.total_gb }} GB usados</div>
+                    }
+                  </div>
+                }
+              }
             }
           </div>
           <span
@@ -655,7 +710,10 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         padding: 16px;
         margin-bottom: 18px;
         display: flex;
-        align-items: center;
+        /* flex-start (não center): com o detalhe de hardware expandido o
+           corpo do card fica bem mais alto — center jogava a bolinha/pill
+           pro MEIO do card em vez de ficarem alinhados com o nome do host. */
+        align-items: flex-start;
         gap: 13px;
       }
       .sf-worker-dot {
@@ -663,6 +721,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         height: 11px;
         border-radius: 50%;
         flex: none;
+        margin-top: 4px;
       }
       .sf-pulse {
         animation: sf-pulse-green 2.4s infinite;
@@ -708,12 +767,43 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-family: 'JetBrains Mono', monospace;
         margin-top: 2px;
       }
+      /* Resumo de hardware (ícones) + detalhe expandido, dentro do card do
+         host — some por padrão, só um botão discreto que expande. */
+      .sf-hw-summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        background: none;
+        border: none;
+        padding: 0;
+        font-size: 11.5px;
+        color: #7a8090;
+        cursor: pointer;
+        font-family: 'JetBrains Mono', monospace;
+      }
+      .sf-hw-caret {
+        color: #4a5058;
+        font-size: 9px;
+      }
+      .sf-hw-detail {
+        margin-top: 6px;
+        padding: 8px 10px;
+        background: #0e1113;
+        border: 1px solid #20262a;
+        border-radius: 10px;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: #9aa0ae;
+        font-family: 'JetBrains Mono', monospace;
+      }
       .sf-worker-pill {
         font-size: 11px;
         font-weight: 700;
         padding: 4px 9px;
         border-radius: 8px;
         flex: none;
+        margin-top: 2px;
       }
       /* Renomear host (multi-host, AD-011) */
       .sf-worker-edit-btn {
@@ -1217,6 +1307,40 @@ export class PerfilComponent implements OnInit, OnDestroy {
   /** Uptime formatado de um worker da lista `otherWorkers` (não o principal). */
   protected formatUptimeFor(w: WorkerStatus): string {
     return w.online ? formatUptime(w.uptime_seconds) : '—';
+  }
+
+  // ── Hardware/SO por host (resumo em ícones + expandir pra ver detalhe) ──
+  /** host_id com o detalhe de hardware ABERTO agora, ou null (nenhum). */
+  protected readonly expandedHostId = signal<string | null>(null);
+
+  protected toggleHardware(hostId: string | null): void {
+    if (!hostId) {
+      return;
+    }
+    this.expandedHostId.update((cur) => (cur === hostId ? null : hostId));
+  }
+
+  /** Linha resumida (ícones) do hardware — o detalhe completo só aparece
+   * expandido, pra não virar um card gigante por padrão. */
+  protected hwSummary(hw: WorkerHardware | null | undefined): string {
+    if (!hw) {
+      return '';
+    }
+    const parts: string[] = [];
+    if (hw.cpu_cores) {
+      parts.push(`🧩 ${hw.cpu_cores}-core`);
+    }
+    if (hw.ram_total_gb) {
+      parts.push(`💾 ${hw.ram_total_gb}GB`);
+    }
+    if (hw.gpu) {
+      parts.push('🎮 GPU');
+    }
+    const disk = hw.disks?.[0];
+    if (disk) {
+      parts.push(`💽 ${Math.round(disk.total_gb)}GB`);
+    }
+    return parts.join('   ');
   }
 
   // ── Editar nome/emoji de exibição do host (multi-host, AD-011) ──────────

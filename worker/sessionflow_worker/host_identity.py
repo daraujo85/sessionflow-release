@@ -12,10 +12,18 @@ Ver ``docs/multi-host-plan.md`` no repo pro desenho completo.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
+import re
+import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
+
+import psutil
+
+logger = logging.getLogger(__name__)
 
 #: Arquivo onde o host_id é persistido (1 por máquina, sobrevive a restarts).
 HOST_ID_PATH = Path.home() / ".claude" / ".sessionflow-host-id"
@@ -94,3 +102,171 @@ def capabilities_for(plat: str) -> dict:
         "transcription": is_darwin or transcription_local,
         "open_terminal": is_darwin,  # "abrir no Mac" via osascript
     }
+
+
+# --- Hardware/SO detalhado (Perfil > card do host, expandido) ---------------
+#
+# Tudo aqui é BEST-EFFORT: qualquer probe que falhe (comando ausente, timeout,
+# permissão) devolve None pro campo específico — nunca derruba o heartbeat
+# inteiro. Calculado 1x no boot (mesmo momento de `capabilities_for`), não a
+# cada heartbeat — hardware não muda em runtime, e alguns probes (system_profiler
+# no Mac, cmd.exe no WSL) são lentos demais pra rodar em loop curto.
+
+
+def _run(cmd: list[str], timeout: float = 5.0) -> str | None:
+    """Roda um comando externo, devolve stdout (str) ou None em qualquer falha."""
+    try:
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+        return out.stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _cpu_model() -> str | None:
+    system = platform.system().lower()
+    if system == "darwin":
+        return _run(["sysctl", "-n", "machdep.cpu.brand_string"])
+    if system == "linux":
+        try:
+            text = Path("/proc/cpuinfo").read_text()
+            m = re.search(r"^model name\s*:\s*(.+)$", text, re.MULTILINE)
+            return m.group(1).strip() if m else None
+        except OSError:
+            return None
+    return platform.processor() or None
+
+
+def _gpu_name() -> str | None:
+    """Nome da GPU, se detectável. NVIDIA (Linux/WSL2 com passthrough) via
+    ``nvidia-smi``; Mac via ``system_profiler`` (Apple Silicon = GPU integrada
+    no chip, então cai no nome do chip). None = sem GPU dedicada detectada ou
+    sem ferramenta disponível (não é erro, é o caso comum)."""
+    nvidia = _run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    if nvidia:
+        return nvidia.splitlines()[0].strip()
+    if platform.system().lower() == "darwin":
+        out = _run(["system_profiler", "SPDisplaysDataType"], timeout=8.0)
+        if out:
+            m = re.search(r"Chipset Model:\s*(.+)", out)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def _windows_version_from_wsl() -> str | None:
+    """Versão do Windows HOSPEDEIRO, vista de dentro do WSL2 (interop com
+    binários do Windows via PATH — ``cmd.exe``/``powershell.exe``). None se a
+    interop estiver desligada ou o comando não existir."""
+    out = _run(["cmd.exe", "/c", "ver"], timeout=5.0)
+    if out:
+        m = re.search(r"Version\s+([\d.]+)", out)
+        if m:
+            return f"Windows (build {m.group(1)})"
+    return None
+
+
+def _os_detail(plat: str) -> dict[str, Any]:
+    """Detalhe do sistema operacional. No WSL2, ``distro`` é a distro Linux
+    visível (ex.: Ubuntu) e ``host_os`` é o Windows REAL por baixo — evita a
+    confusão "isso aqui é Linux ou é Windows?" que o usuário quer clareada."""
+    detail: dict[str, Any] = {"distro": None, "host_os": None}
+    if plat == "darwin":
+        ver = _run(["sw_vers", "-productVersion"])
+        detail["distro"] = f"macOS {ver}" if ver else "macOS"
+        return detail
+    if plat in ("linux", "wsl2"):
+        try:
+            text = Path("/etc/os-release").read_text()
+            m = re.search(r'^PRETTY_NAME="?([^"\n]+)"?', text, re.MULTILINE)
+            detail["distro"] = m.group(1).strip() if m else "Linux"
+        except OSError:
+            detail["distro"] = "Linux"
+        if plat == "wsl2":
+            detail["host_os"] = _windows_version_from_wsl()
+        return detail
+    detail["distro"] = f"Windows {platform.release()}".strip()
+    return detail
+
+
+def _disks() -> list[dict[str, Any]]:
+    """Discos "reais" com capacidade total/usada em GB.
+
+    Dois filtros de ruído, sem os quais um único disco físico vira vários
+    "discos" na lista:
+
+    1. ``fstype`` virtual óbvio (overlay do Docker, tmpfs etc.) e os
+       containers internos do APFS no macOS (``/System/Volumes/*``, exceto
+       ``Data`` que é onde ficam os arquivos do usuário) — pulados de cara.
+    2. Dedup por CAPACIDADE TOTAL: volumes/partições diferentes que
+       compartilham o MESMO container físico quase sempre reportam o
+       ``total`` idêntico (ex.: "/" e "/System/Volumes/Data" no macOS); dois
+       discos físicos DISTINTOS com bytes idênticos de capacidade são
+       praticamente impossíveis, então isso é seguro.
+
+    Best-effort: um disco que falhar ao consultar (ex.: unidade de rede
+    offline) é pulado, não derruba os demais.
+    """
+    skip_fstypes = {"tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs"}
+    seen_totals: set[float] = set()
+    disks: list[dict[str, Any]] = []
+    try:
+        partitions = psutil.disk_partitions(all=False)
+    except Exception:  # noqa: BLE001 - best-effort
+        return disks
+    for part in partitions:
+        if part.fstype in skip_fstypes:
+            continue
+        if part.mountpoint.startswith("/System/Volumes/") and part.mountpoint != "/System/Volumes/Data":
+            continue
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+        except (OSError, PermissionError):
+            continue
+        total_gb = round(usage.total / (1024**3), 1)
+        if total_gb in seen_totals:
+            continue
+        seen_totals.add(total_gb)
+        disks.append(
+            {
+                "mount": part.mountpoint,
+                "total_gb": total_gb,
+                "used_gb": round(usage.used / (1024**3), 1),
+            }
+        )
+    return disks
+
+
+def hardware_info(plat: str) -> dict[str, Any]:
+    """Snapshot de hardware/SO deste host — CPU/RAM/GPU/disco/versão do SO
+    (com o Windows real por trás do WSL2, quando aplicável). Calculado 1x no
+    boot do worker; ver docstring da seção acima sobre a filosofia best-effort.
+    """
+    info: dict[str, Any] = {
+        "cpu_model": None,
+        "cpu_cores": None,
+        "ram_total_gb": None,
+        "gpu": None,
+        "os_detail": {},
+        "disks": [],
+    }
+    try:
+        info["cpu_model"] = _cpu_model()
+        info["cpu_cores"] = psutil.cpu_count(logical=True)
+        info["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("hardware_info: cpu/ram falhou", exc_info=True)
+    try:
+        info["gpu"] = _gpu_name()
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("hardware_info: gpu falhou", exc_info=True)
+    try:
+        info["os_detail"] = _os_detail(plat)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("hardware_info: os_detail falhou", exc_info=True)
+    try:
+        info["disks"] = _disks()
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("hardware_info: disks falhou", exc_info=True)
+    return info

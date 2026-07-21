@@ -53,6 +53,9 @@ class WorkerOut(BaseModel):
     # None = segue a env var do host (SESSIONFLOW_JARVIS_TTS / efeito ligado).
     tts_mode: str | None = None
     voice_effect: bool | None = None
+    # Hardware/SO detalhado (Perfil > card do host, expandido) — calculado 1x
+    # no boot do worker (ver worker/sessionflow_worker/host_identity.py).
+    hardware: dict | None = None
 
 
 class WorkerDisplayName(BaseModel):
@@ -110,6 +113,7 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         updated_at=updated,
         tts_mode=doc.get("tts_mode"),
         voice_effect=doc.get("voice_effect"),
+        hardware=doc.get("hardware"),
     )
 
 

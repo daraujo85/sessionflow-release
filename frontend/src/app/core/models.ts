@@ -263,6 +263,18 @@ export interface WorkerStatus {
    * host (env var / efeito ligado). */
   tts_mode?: string | null;
   voice_effect?: boolean | null;
+  /** Hardware/SO detalhado (Perfil > card do host, expandido). */
+  hardware?: WorkerHardware | null;
+}
+
+/** Snapshot de hardware/SO de um host — calculado 1x no boot do worker. */
+export interface WorkerHardware {
+  cpu_model?: string | null;
+  cpu_cores?: number | null;
+  ram_total_gb?: number | null;
+  gpu?: string | null;
+  os_detail?: { distro?: string | null; host_os?: string | null } | null;
+  disks?: { mount: string; total_gb: number; used_gb: number }[] | null;
 }
 
 /** Limites reais do Claude (scrape do /usage). */
