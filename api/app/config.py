@@ -131,6 +131,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SESSIONFLOW_JARVIS_TOKEN", "jarvis_token"),
     )
 
+    # SHA curto do commit deployado — build arg do Dockerfile (git rev-parse
+    # --short HEAD no host, no momento do `docker compose build`). "unknown"
+    # fora de um build via compose (ex.: rodando testes no host).
+    git_sha: str = Field(
+        default="unknown",
+        validation_alias=AliasChoices("SESSIONFLOW_GIT_SHA", "git_sha"),
+    )
+
     # CORS origins allowed for the front-end.
     cors_origins: list[str] = [
         "https://sessionflow.boletoazap.dev.br",

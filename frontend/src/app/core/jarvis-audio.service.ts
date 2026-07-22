@@ -52,6 +52,10 @@ export class JarvisAudioService {
   private lastText: string | null = null;
   private lastTextAt = 0;
   private started = false;
+  /** Sessões visíveis na tela AGORA (Detalhe registra a(s) sua(s) via
+   * {@link setViewingSessions}) — se o áudio é da MESMA sessão que o usuário
+   * já está vendo, ele não precisa do aviso falado (já sabe o que houve). */
+  private viewingSessionIds = new Set<string>();
 
   /** Liga o pipeline: efeito no signal de SSE + desbloqueio por gesto. */
   init(): void {
@@ -117,12 +121,41 @@ export class JarvisAudioService {
       if (!this.enabled()) {
         return;
       }
+      // Já está vendo a sessão de origem: sem aviso falado, ele já sabe.
+      if (frame.session_id && this.viewingSessionIds.has(frame.session_id)) {
+        return;
+      }
       if (!this.unlocked) {
         this.pending = frame; // toca no 1º gesto
         return;
       }
       this.enqueue(frame);
     });
+  }
+
+  /**
+   * Registra quais sessões estão visíveis na tela AGORA (Detalhe chama a cada
+   * mudança de rota/split, e limpa — `[]` — ao sair). Se o clipe tocando (ou
+   * aguardando a repetição) é de uma sessão que acabou de entrar nessa lista,
+   * para na hora: o usuário já está vendo o que aconteceu.
+   */
+  setViewingSessions(ids: Iterable<string>): void {
+    this.viewingSessionIds = new Set(ids);
+    // Descarta da fila qualquer clipe de sessão que passou a estar visível.
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const qsid = this.queue[i].session_id;
+      if (qsid && this.viewingSessionIds.has(qsid)) {
+        this.queue.splice(i, 1);
+      }
+    }
+    const sid = this.currentFrame?.session_id;
+    if (sid && this.viewingSessionIds.has(sid)) {
+      this.clearRepeatTimer();
+      if (this.el) {
+        this.el.pause();
+      }
+      this.playNext();
+    }
   }
 
   /** Ajusta o volume (0–100), persiste em localStorage e aplica na hora, mesmo

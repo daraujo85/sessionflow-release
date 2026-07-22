@@ -19,6 +19,7 @@ import { Location } from '@angular/common';
 
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
+import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
 import { SessionPrefsStore } from '../../core/session-prefs-store';
@@ -3354,6 +3355,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
+  private readonly jarvisAudio = inject(JarvisAudioService);
   private readonly drafts = inject(DraftStore);
   private readonly prefs = inject(SessionPrefsStore);
   private readonly workers = inject(WorkersStore);
@@ -4190,6 +4192,13 @@ export class DetalheComponent implements AfterViewChecked {
     }
 
     this.sse.connect(); // idempotente — garante o canal p/ o push do espelho
+
+    // O JARVIS não precisa avisar em voz alta sobre uma sessão que o usuário
+    // já está olhando (aqui, no split) — registra quais estão na tela.
+    effect(() => {
+      this.jarvisAudio.setViewingSessions(this.allPanelIds());
+    });
+    this.destroyRef.onDestroy(() => this.jarvisAudio.setViewingSessions([]));
 
     // Ao trocar o filtro de tarefas, recomeça a paginação do topo (senão o
     // "Ver mais 3" de um filtro vaza pro outro, mostrando itens demais/de menos).

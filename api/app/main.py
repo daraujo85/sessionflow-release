@@ -105,7 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # (login + public webauthn). Everything else needs a valid JWT.
         if (
             method == "OPTIONS"
-            or (method == "GET" and path == "/health")
+            or (method == "GET" and path in ("/health", "/version"))
             or path.startswith("/auth/")
             # Webhook inbound do JARVIS (host → API): protegido por token próprio
             # (X-Jarvis-Token), não pelo JWT de usuário.
@@ -159,6 +159,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             mongo_ok = False
         return {"status": "ok", "mongo": mongo_ok}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+        return {"git_sha": app.state.settings.git_sha}
 
     app.include_router(auth_router.router)
     app.include_router(sessions_router.router)

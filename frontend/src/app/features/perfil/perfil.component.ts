@@ -640,6 +640,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
 
       <!-- Logout -->
       <div class="sf-logout" (click)="logout()">Sair</div>
+
+      <!-- Versão deployada (SHA curto do commit) -->
+      @if (gitSha()) {
+        <div class="sf-version">v{{ gitSha() }}</div>
+      }
     </section>
   `,
   styles: [
@@ -1320,6 +1325,13 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-weight: 600;
         cursor: pointer;
       }
+      .sf-version {
+        margin-top: 10px;
+        text-align: center;
+        font-size: 12px;
+        opacity: 0.4;
+        font-family: monospace;
+      }
     `,
   ],
 })
@@ -1339,6 +1351,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
 
   /** Foto de perfil (data URL) persistida no cliente — null = inicial "D". */
   readonly photo = signal<string | null>(null);
+  /** SHA curto do commit deployado nesta instância (rodapé) — `null` até carregar. */
+  readonly gitSha = signal<string | null>(null);
 
   /**
    * Mostra a opção de instalar (prompt nativo ou instruções iOS). Computed para
@@ -1788,6 +1802,13 @@ export class PerfilComponent implements OnInit, OnDestroy {
       },
       error: () => {
         /* mantém default (on) */
+      },
+    });
+    // SHA do commit deployado (rodapé) — não crítico, falha em silêncio.
+    this.api.getVersion().subscribe({
+      next: (v) => this.gitSha.set(v.git_sha && v.git_sha !== 'unknown' ? v.git_sha : null),
+      error: () => {
+        /* instância antiga sem /version — sem rodapé */
       },
     });
     // Foto vem do servidor (vale em qualquer dispositivo).

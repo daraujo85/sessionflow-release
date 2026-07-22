@@ -35,6 +35,7 @@ LOG "nova versão encontrada: $LOCAL -> $REMOTE. Atualizando…"
 git merge --ff-only "origin/$BRANCH"
 
 LOG "reconstruindo containers (docker compose --profile app up -d --build)…"
+export GIT_SHA="$(git rev-parse --short HEAD)"
 docker compose --profile app up -d --build
 
 # Worker roda no HOST (fora do docker, precisa de tmux pra gerenciar as

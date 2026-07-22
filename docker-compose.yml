@@ -64,6 +64,8 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: sessionflow-api
     restart: unless-stopped
     env_file: .env
