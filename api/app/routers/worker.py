@@ -56,6 +56,9 @@ class WorkerOut(BaseModel):
     # Hardware/SO detalhado (Perfil > card do host, expandido) — calculado 1x
     # no boot do worker (ver worker/sessionflow_worker/host_identity.py).
     hardware: dict | None = None
+    # Disponibilidade de cada motor de TTS NESTE host — {motor: {installed,
+    # installable}} (ver worker/sessionflow_worker/jarvis.tts_engine_status).
+    tts_engines: dict | None = None
 
 
 class WorkerDisplayName(BaseModel):
@@ -114,6 +117,7 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         tts_mode=doc.get("tts_mode"),
         voice_effect=doc.get("voice_effect"),
         hardware=doc.get("hardware"),
+        tts_engines=doc.get("tts_engines"),
     )
 
 
@@ -194,6 +198,23 @@ async def set_worker_audio_settings(
     if not doc:
         raise HTTPException(status_code=404, detail="Host not found")
     return _to_worker_out(doc)
+
+
+@router.post("/workers/{host_id}/install-tts-engine", status_code=202)
+async def install_tts_engine(request: Request, host_id: str, engine: str) -> dict:
+    """Pede pro worker DESTE host baixar/instalar um motor de TTS que ainda
+    não está presente (hoje só ``piper`` é auto-instalável — ver
+    ``jarvis.tts_engine_status``/``install_piper_sync``). Botão "Instalar"
+    do Perfil > Áudio, quando o motor escolhido não está pronto no host."""
+    if engine != "piper":
+        raise HTTPException(
+            status_code=422, detail=f"motor não instalável automaticamente: {engine!r}"
+        )
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings, type="jarvis_install_piper", payload={}, host_id=host_id
+    )
+    return {"status": "queued", "command_id": command_id}
 
 
 @router.post("/workers/{host_id}/jarvis-test", status_code=202)

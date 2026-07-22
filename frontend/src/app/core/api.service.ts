@@ -425,6 +425,15 @@ export class ApiService {
     return this.http.post<void>(this.url(`/workers/${hostId}/jarvis-test`), {});
   }
 
+  /** Pede pro worker deste host baixar/instalar um motor de TTS que ainda
+   * não está presente (hoje só "piper" é auto-instalável). */
+  installTtsEngine(hostId: string, engine: string): Observable<void> {
+    return this.http.post<void>(
+      this.url(`/workers/${hostId}/install-tts-engine?engine=${encodeURIComponent(engine)}`),
+      {},
+    );
+  }
+
   /** Limites de uso reais por provider (hoje só Claude). */
   getUsage(): Observable<UsageInfo> {
     return this.http.get<UsageInfo>(this.url('/usage'));

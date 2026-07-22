@@ -51,6 +51,7 @@ from sessionflow_worker import dir_scanner, jarvis
 from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
 from sessionflow_worker.events import emit_event
+from sessionflow_worker import jarvis
 from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id
 from sessionflow_worker.model_discovery import (
     cache_is_fresh,
@@ -486,6 +487,10 @@ async def heartbeat_loop(
     # pra rodar a cada heartbeat) e reenviado no $set de cada ciclo.
     hw = hardware_info(platform)
     while True:
+        # tts_engines: recalculado a cada ciclo (não 1x como hardware) — muda
+        # assim que uma instalação (ex.: Piper) terminar, sem precisar
+        # reiniciar o worker pra o Perfil refletir.
+        tts_engines = jarvis.tts_engine_status()
         await coll.update_one(
             {"_id": host_id},
             {
@@ -497,6 +502,7 @@ async def heartbeat_loop(
                     "updated_at": datetime.now(timezone.utc),
                     "pid": pid,
                     "hardware": hw,
+                    "tts_engines": tts_engines,
                 }
             },
             upsert=True,

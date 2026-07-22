@@ -265,6 +265,10 @@ export interface WorkerStatus {
   voice_effect?: boolean | null;
   /** Hardware/SO detalhado (Perfil > card do host, expandido). */
   hardware?: WorkerHardware | null;
+  /** Disponibilidade de cada motor de TTS NESTE host — {motor: {installed,
+   * installable}}. Usado pra só oferecer motores compatíveis com o SO e
+   * mostrar "Instalar" (com progresso) quando dá pra baixar sozinho. */
+  tts_engines?: Record<string, { installed: boolean; installable: boolean }> | null;
 }
 
 /** Snapshot de hardware/SO de um host — calculado 1x no boot do worker. */

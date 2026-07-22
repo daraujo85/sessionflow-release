@@ -52,6 +52,7 @@ import base64
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import tempfile
@@ -444,6 +445,99 @@ def _synth_piper_sync(text: str) -> tuple[str, str] | None:
                 os.remove(p)
             except OSError:
                 pass
+
+
+# --- Disponibilidade/instalação de motores (Perfil > Áudio) -----------------
+#
+# "installed": o motor JÁ FUNCIONA nesse host agora. "installable": não está
+# instalado, mas dá pra baixar/instalar sozinho (hoje só o Piper — say é
+# nativo do SO, xtts é um servidor à parte que não instalamos por aqui, api
+# não precisa instalar nada). O Perfil usa isso pra: (1) nem OFERECER um
+# motor impossível nesse SO (ex.: "say" fora do Mac), (2) mostrar um botão
+# de instalar (com indicador de progresso) em vez de falhar calado quando o
+# usuário escolhe um motor que ainda não está no host.
+
+_PIPER_RELEASE_TAG = "2023.11.14-2"
+_PIPER_RELEASE_BASE = f"https://github.com/rhasspy/piper/releases/download/{_PIPER_RELEASE_TAG}"
+_PIPER_VOICE_BASE = (
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium"
+)
+_PIPER_ASSETS = {
+    ("darwin", "arm64"): "piper_macos_aarch64.tar.gz",
+    ("darwin", "x86_64"): "piper_macos_x64.tar.gz",
+    ("linux", "aarch64"): "piper_linux_aarch64.tar.gz",
+    ("linux", "x86_64"): "piper_linux_x86_64.tar.gz",
+}
+
+
+def is_piper_installed() -> bool:
+    return os.path.isfile(PIPER_BIN) and os.path.isfile(PIPER_MODEL)
+
+
+def piper_asset_for_this_host() -> str | None:
+    """Nome do asset do release do Piper certo pra ESTE host (SO+arquitetura),
+    ou None se a plataforma não tem build oficial (ex.: Windows nativo — o
+    worker aqui sempre roda em WSL2/Linux ou macOS)."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in ("arm64", "aarch64") else "x86_64"
+    return _PIPER_ASSETS.get((system, arch))
+
+
+def tts_engine_status() -> dict[str, dict[str, bool]]:
+    """Status de cada motor NESTE host: instalado? instalável (auto)?"""
+    is_darwin = platform.system().lower() == "darwin"
+    return {
+        "say": {"installed": is_darwin, "installable": False},
+        "xtts": {"installed": is_darwin, "installable": False},
+        "piper": {
+            "installed": is_piper_installed(),
+            "installable": not is_piper_installed() and piper_asset_for_this_host() is not None,
+        },
+        "api": {"installed": True, "installable": False},
+    }
+
+
+def install_piper_sync() -> bool:
+    """Baixa o binário do Piper (release do GitHub) + o modelo de voz pt-BR
+    (HuggingFace) pros caminhos padrão (``PIPER_BIN``/``PIPER_MODEL``).
+
+    Sem dependência nova (``urllib``/``tarfile``, stdlib). Idempotente: se já
+    estiver instalado, nem baixa de novo. Best-effort: qualquer falha (rede,
+    plataforma sem build oficial) devolve ``False`` sem lançar — o caller
+    (comando ``jarvis_install_piper``) vira erro de comando normal.
+    """
+    if is_piper_installed():
+        return True
+    asset = piper_asset_for_this_host()
+    if not asset:
+        return False
+    import tarfile
+
+    dest_dir = os.path.dirname(os.path.dirname(PIPER_BIN))  # ~/.local/share/piper
+    os.makedirs(dest_dir, exist_ok=True)
+    tar_path = os.path.join(dest_dir, "piper-download.tar.gz")
+    try:
+        urllib.request.urlretrieve(f"{_PIPER_RELEASE_BASE}/{asset}", tar_path)
+        with tarfile.open(tar_path) as tf:
+            tf.extractall(dest_dir)  # noqa: S202 - fonte fixa (nosso release URL), não input do usuário
+        if os.path.isfile(PIPER_BIN):
+            os.chmod(PIPER_BIN, 0o755)
+        urllib.request.urlretrieve(
+            f"{_PIPER_VOICE_BASE}/pt_BR-faber-medium.onnx", PIPER_MODEL
+        )
+        urllib.request.urlretrieve(
+            f"{_PIPER_VOICE_BASE}/pt_BR-faber-medium.onnx.json", f"{PIPER_MODEL}.json"
+        )
+        return is_piper_installed()
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: install_piper falhou", exc_info=True)
+        return False
+    finally:
+        try:
+            os.remove(tar_path)
+        except OSError:
+            pass
 
 
 def _synth_api_sync(text: str) -> tuple[str, str] | None:

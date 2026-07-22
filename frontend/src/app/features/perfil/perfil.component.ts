@@ -339,17 +339,21 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         @if (primaryHostId() && hostSupportsTts(primaryHostId())) {
           <div class="sf-audio-host">
             <span class="sf-audio-host-name">{{ worker()?.display_name || worker()?.hostname || 'este host' }}</span>
-            <select
-              class="sf-audio-select"
-              [value]="worker()?.tts_mode || ''"
-              (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, $event)"
-            >
-              <option value="">Padrão do host</option>
-              <option value="say">Nativo do SO (say)</option>
-              <option value="xtts">Alta qualidade (XTTS)</option>
-              <option value="piper">Leve (Piper)</option>
-              <option value="api">API hospedada</option>
-            </select>
+            @if (installingHostId() === primaryHostId()) {
+              <div class="sf-audio-progress">
+                <div class="sf-audio-progress-bar"><span></span></div>
+                <span class="sf-audio-progress-label">Instalando motor de voz…</span>
+              </div>
+            } @else {
+              <select
+                class="sf-audio-select"
+                (change)="onTtsModeChange(primaryHostId()!, worker()?.voice_effect, worker()?.tts_engines, $event)"
+              >
+                @for (opt of engineOptions(worker()?.tts_engines); track opt.value) {
+                  <option [value]="opt.value" [selected]="opt.value === (worker()?.tts_mode || '')">{{ opt.label }}</option>
+                }
+              </select>
+            }
             <div class="sf-audio-controls">
               <label class="sf-audio-effect">
                 <input
@@ -362,7 +366,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               <button
                 type="button"
                 class="sf-audio-test"
-                [disabled]="!!testingVoice()"
+                [disabled]="!!testingVoice() || installingHostId() === primaryHostId()"
                 (click)="testVoice(primaryHostId()!)"
               >
                 {{ testingVoice() === primaryHostId() ? 'Tocando…' : '🔊 Testar' }}
@@ -371,6 +375,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             @if (testVoiceErrorHostId() === primaryHostId()) {
               <div class="sf-audio-error">⚠️ {{ testVoiceErrorMsg() }}</div>
             }
+            @if (installErrorHostId() === primaryHostId()) {
+              <div class="sf-audio-error">⚠️ {{ installErrorMsg() }}</div>
+            }
           </div>
         }
 
@@ -378,17 +385,21 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           @if (w.host_id && hostSupportsTts(w.host_id)) {
             <div class="sf-audio-host">
               <span class="sf-audio-host-name">{{ w.display_name || w.hostname || 'host' }}</span>
-              <select
-                class="sf-audio-select"
-                [value]="w.tts_mode || ''"
-                (change)="onTtsModeChange(w.host_id!, w.voice_effect, $event)"
-              >
-                <option value="">Padrão do host</option>
-                <option value="say">Nativo do SO (say)</option>
-                <option value="xtts">Alta qualidade (XTTS)</option>
-                <option value="piper">Leve (Piper)</option>
-                <option value="api">API hospedada</option>
-              </select>
+              @if (installingHostId() === w.host_id) {
+                <div class="sf-audio-progress">
+                  <div class="sf-audio-progress-bar"><span></span></div>
+                  <span class="sf-audio-progress-label">Instalando motor de voz…</span>
+                </div>
+              } @else {
+                <select
+                  class="sf-audio-select"
+                  (change)="onTtsModeChange(w.host_id!, w.voice_effect, w.tts_engines, $event)"
+                >
+                  @for (opt of engineOptions(w.tts_engines); track opt.value) {
+                    <option [value]="opt.value" [selected]="opt.value === (w.tts_mode || '')">{{ opt.label }}</option>
+                  }
+                </select>
+              }
               <div class="sf-audio-controls">
                 <label class="sf-audio-effect">
                   <input
@@ -401,12 +412,15 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 <button
                   type="button"
                   class="sf-audio-test"
-                  [disabled]="!!testingVoice()"
+                  [disabled]="!!testingVoice() || installingHostId() === w.host_id"
                   (click)="testVoice(w.host_id!)"
                 >
                   {{ testingVoice() === w.host_id ? 'Tocando…' : '🔊 Testar' }}
                 </button>
               </div>
+              @if (installErrorHostId() === w.host_id) {
+                <div class="sf-audio-error">⚠️ {{ installErrorMsg() }}</div>
+              }
               @if (testVoiceErrorHostId() === w.host_id) {
                 <div class="sf-audio-error">⚠️ {{ testVoiceErrorMsg() }}</div>
               }
@@ -1048,6 +1062,41 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: #f0b429;
         line-height: 1.4;
       }
+      /* Barra indeterminada (sem % real — o download não expõe progresso
+         byte a byte de forma simples) — ainda assim deixa claro que ALGO
+         está acontecendo em vez do select sumir sem explicação. */
+      .sf-audio-progress {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .sf-audio-progress-bar {
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: #0e1113;
+        overflow: hidden;
+      }
+      .sf-audio-progress-bar span {
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #2cecc4, #00a482);
+        animation: sf-audio-progress-slide 1.2s ease-in-out infinite;
+      }
+      @keyframes sf-audio-progress-slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(250%);
+        }
+      }
+      .sf-audio-progress-label {
+        font-size: 11.5px;
+        color: #7a8090;
+      }
       .sf-audio-test:disabled {
         opacity: 0.5;
         cursor: default;
@@ -1415,23 +1464,122 @@ export class PerfilComponent implements OnInit, OnDestroy {
   protected readonly testVoiceErrorHostId = signal<string | null>(null);
   protected readonly testVoiceErrorMsg = signal<string>('');
 
+  /** host_id instalando um motor agora (mostra progresso), ou null. */
+  protected readonly installingHostId = signal<string | null>(null);
+  protected readonly installErrorHostId = signal<string | null>(null);
+  protected readonly installErrorMsg = signal<string>('');
+
   protected onVolumeInput(ev: Event): void {
     this.jarvisAudio.setVolume(Number((ev.target as HTMLInputElement).value));
   }
 
+  /**
+   * Opções do motor de voz PRA ESTE HOST — só oferece o que é compatível
+   * (ex.: "say" nem aparece fora do Mac) e, pra motores instaláveis (hoje só
+   * o Piper) que ainda não estão presentes, rotula "— instalar" em vez de
+   * deixar escolher e falhar calado. Sem `tts_engines` (worker mais antigo,
+   * ainda não reiniciou com esse código) cai no comportamento de sempre —
+   * mostra todas as opções, sem saber ao certo o que está instalado.
+   */
+  protected engineOptions(
+    engines: WorkerStatus['tts_engines'] | null | undefined,
+  ): { value: string; label: string; needsInstall: boolean }[] {
+    const opts: { value: string; label: string; needsInstall: boolean }[] = [
+      { value: '', label: 'Padrão do host', needsInstall: false },
+    ];
+    const add = (value: string, label: string, installLabel?: string) => {
+      if (!engines) {
+        opts.push({ value, label, needsInstall: false });
+        return;
+      }
+      const e = engines[value];
+      if (e?.installed) {
+        opts.push({ value, label, needsInstall: false });
+      } else if (e?.installable && installLabel) {
+        opts.push({ value, label: installLabel, needsInstall: true });
+      }
+    };
+    add('say', 'Nativo do SO (say)');
+    add('xtts', 'Alta qualidade (XTTS)');
+    add('piper', 'Leve (Piper)', 'Leve (Piper) — instalar');
+    add('api', 'API hospedada');
+    return opts;
+  }
+
   /** Salva o modo de TTS deste host — manda o voice_effect ATUAL junto (evita
-   * apagar um pelo outro, mesmo padrão do nome/emoji). */
+   * apagar um pelo outro, mesmo padrão do nome/emoji). Se o motor escolhido
+   * ainda não está instalado (mas dá pra instalar sozinho), instala PRIMEIRO
+   * — com indicador de progresso — e só então salva a escolha. */
   protected onTtsModeChange(
     hostId: string,
     currentVoiceEffect: boolean | null | undefined,
+    engines: WorkerStatus['tts_engines'] | null | undefined,
     ev: Event,
   ): void {
     const mode = (ev.target as HTMLSelectElement).value || null;
+    const entry = mode ? engines?.[mode] : null;
+    if (mode && entry && !entry.installed && entry.installable) {
+      this.installEngineThenSave(hostId, mode, currentVoiceEffect);
+      return;
+    }
     this.api.setWorkerAudioSettings(hostId, mode, currentVoiceEffect ?? null).subscribe({
       next: () => this.onAudioSettingsSaved(hostId),
       error: () => {
         /* best-effort: valor no <select> volta a refletir o real no próximo refresh */
       },
+    });
+  }
+
+  /** Pede a instalação (ex.: Piper) e, quando o heartbeat confirmar que
+   * terminou, salva o modo escolhido — é só aí que a troca "conta" de
+   * verdade (evita salvar um motor que falhou na instalação). */
+  private installEngineThenSave(
+    hostId: string,
+    engine: string,
+    currentVoiceEffect: boolean | null | undefined,
+  ): void {
+    this.installingHostId.set(hostId);
+    this.installErrorHostId.set(null);
+    this.api.installTtsEngine(hostId, engine).subscribe({
+      next: () =>
+        this.pollForInstall(hostId, engine, currentVoiceEffect, Date.now() + 60_000),
+      error: () => {
+        this.installingHostId.set(null);
+        this.installErrorHostId.set(hostId);
+        this.installErrorMsg.set('Falha ao pedir a instalação (API indisponível?).');
+      },
+    });
+  }
+
+  private pollForInstall(
+    hostId: string,
+    engine: string,
+    currentVoiceEffect: boolean | null | undefined,
+    deadline: number,
+  ): void {
+    this.api.listWorkers().subscribe({
+      next: (list) => {
+        const match = list.find((w) => w.host_id === hostId);
+        if (match?.tts_engines?.[engine]?.installed) {
+          this.installingHostId.set(null);
+          this.workers.refresh();
+          this.api.setWorkerAudioSettings(hostId, engine, currentVoiceEffect ?? null).subscribe({
+            next: () => this.onAudioSettingsSaved(hostId),
+            error: () => {
+              /* best-effort */
+            },
+          });
+          return;
+        }
+        if (Date.now() > deadline) {
+          this.installingHostId.set(null);
+          this.installErrorHostId.set(hostId);
+          this.installErrorMsg.set('A instalação demorou demais ou falhou.');
+          return;
+        }
+        setTimeout(() => this.pollForInstall(hostId, engine, currentVoiceEffect, deadline), 2000);
+      },
+      error: () => setTimeout(() => this.pollForInstall(hostId, engine, currentVoiceEffect, deadline), 2000),
     });
   }
 

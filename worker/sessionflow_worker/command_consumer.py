@@ -114,6 +114,7 @@ _VALID_TYPES = frozenset(
         "resize",
         "switch_agent",
         "jarvis_test",
+        "jarvis_install_piper",
     }
 )
 
@@ -581,6 +582,8 @@ class CommandConsumer:
             return await self._handle_switch_agent(payload)
         if ctype == "jarvis_test":
             return await self._handle_jarvis_test(payload)
+        if ctype == "jarvis_install_piper":
+            return await self._handle_jarvis_install_piper(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -1775,6 +1778,19 @@ class CommandConsumer:
             },
         )
         return {"note": "teste de voz enviado"}
+
+    async def _handle_jarvis_install_piper(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Baixa/instala o Piper (binário + modelo pt-BR) NESTE host — botão
+        "Instalar" do Perfil > Áudio, quando o usuário escolhe um motor leve
+        que ainda não está presente. Roda em executor (download bloqueante);
+        idempotente (não baixa de novo se já instalado)."""
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(None, jarvis.install_piper_sync)
+        if not ok:
+            raise CommandError(
+                "instalação do Piper falhou (rede ou plataforma sem build oficial)"
+            )
+        return {"note": "piper instalado"}
 
     # -- loop -------------------------------------------------------------
 

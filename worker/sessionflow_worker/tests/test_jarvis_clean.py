@@ -135,6 +135,61 @@ async def test_host_audio_settings_ignores_invalid_mode(
     assert mode == "say"
 
 
+def test_tts_engine_status_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jarvis_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(jarvis_mod, "is_piper_installed", lambda: False)
+    monkeypatch.setattr(jarvis_mod, "piper_asset_for_this_host", lambda: "piper_macos_aarch64.tar.gz")
+    status = jarvis_mod.tts_engine_status()
+    assert status["say"] == {"installed": True, "installable": False}
+    assert status["xtts"] == {"installed": True, "installable": False}
+    assert status["piper"] == {"installed": False, "installable": True}
+    assert status["api"] == {"installed": True, "installable": False}
+
+
+def test_tts_engine_status_linux_piper_already_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(jarvis_mod, "is_piper_installed", lambda: True)
+    status = jarvis_mod.tts_engine_status()
+    assert status["say"] == {"installed": False, "installable": False}
+    assert status["xtts"] == {"installed": False, "installable": False}
+    # já instalado -> não precisa (nem deveria) oferecer instalar de novo.
+    assert status["piper"] == {"installed": True, "installable": False}
+
+
+def test_piper_asset_for_this_host_known_combo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jarvis_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(jarvis_mod.platform, "machine", lambda: "x86_64")
+    assert jarvis_mod.piper_asset_for_this_host() == "piper_linux_x86_64.tar.gz"
+
+
+def test_piper_asset_for_this_host_unknown_combo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jarvis_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(jarvis_mod.platform, "machine", lambda: "AMD64")
+    assert jarvis_mod.piper_asset_for_this_host() is None
+
+
+def test_install_piper_sync_noop_if_already_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "is_piper_installed", lambda: True)
+
+    def fail(*a, **kw):  # noqa: ANN001, ANN002, ANN003
+        raise AssertionError("não deveria tentar baixar se já está instalado")
+
+    monkeypatch.setattr(jarvis_mod.urllib.request, "urlretrieve", fail)
+    assert jarvis_mod.install_piper_sync() is True
+
+
+def test_install_piper_sync_no_asset_for_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jarvis_mod, "is_piper_installed", lambda: False)
+    monkeypatch.setattr(jarvis_mod, "piper_asset_for_this_host", lambda: None)
+    assert jarvis_mod.install_piper_sync() is False
+
+
 def test_voice_effect_falls_back_to_original_on_ffmpeg_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
