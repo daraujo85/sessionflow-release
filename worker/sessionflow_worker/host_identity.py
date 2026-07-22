@@ -114,10 +114,23 @@ def capabilities_for(plat: str) -> dict:
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> str | None:
-    """Roda um comando externo, devolve stdout (str) ou None em qualquer falha."""
+    """Roda um comando externo, devolve stdout (str) ou None em qualquer falha.
+
+    ``errors="replace"``: ``cmd.exe`` num Windows não-inglês (ex.: PT-BR)
+    responde no CODEPAGE OEM local (ex.: CP850/860), não UTF-8 — decodificar
+    como UTF-8 estrito derrubava com ``UnicodeDecodeError`` (não é
+    ``OSError``, então nem caía no except) assim que a saída tinha um
+    acento. Só usamos o texto pra achar um padrão numérico (versão do
+    Windows), então caracteres ilegíveis (`�`) no meio não atrapalham.
+    """
     try:
         out = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
         return out.stdout.strip() or None
     except (OSError, subprocess.TimeoutExpired):
