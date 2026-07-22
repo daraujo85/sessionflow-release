@@ -1,9 +1,11 @@
 FROM python:3.12-slim
 
-# SHA curto do commit deployado (build arg do docker-compose) — exposto em
-# runtime via env, lido por app/config.py e servido em GET /version.
+# Versão deployada (build args do docker-compose) — exposta em runtime via
+# env, lida por app/config.py e servida em GET /version.
 ARG GIT_SHA=unknown
+ARG RELEASE_VERSION=unknown
 ENV SESSIONFLOW_GIT_SHA=$GIT_SHA
+ENV SESSIONFLOW_RELEASE_VERSION=$RELEASE_VERSION
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/

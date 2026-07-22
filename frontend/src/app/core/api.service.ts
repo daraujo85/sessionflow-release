@@ -439,9 +439,9 @@ export class ApiService {
     return this.http.get<UsageInfo>(this.url('/usage'));
   }
 
-  /** SHA curto do commit deployado nesta instância (rodapé do Perfil). */
-  getVersion(): Observable<{ git_sha: string }> {
-    return this.http.get<{ git_sha: string }>(this.url('/version'));
+  /** Versão deployada nesta instância (rodapé do Perfil) — "1.20260722.1213". */
+  getVersion(): Observable<{ version: string; git_sha: string }> {
+    return this.http.get<{ version: string; git_sha: string }>(this.url('/version'));
   }
 
   /** Chave pública VAPID (para assinar a subscrição Web Push no navegador). */

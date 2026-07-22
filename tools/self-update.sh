@@ -36,6 +36,10 @@ git merge --ff-only "origin/$BRANCH"
 
 LOG "reconstruindo containers (docker compose --profile app up -d --build)…"
 export GIT_SHA="$(git rev-parse --short HEAD)"
+# <épico>.<data do commit AAAAMMDD>.<hora HHMM> — ex.: 1.20260722.1213. Épico
+# é um número bumped manualmente (marco grande); SESSIONFLOW_EPIC sobrescreve.
+EPIC="${SESSIONFLOW_EPIC:-1}"
+export RELEASE_VERSION="${EPIC}.$(git log -1 --format=%cd --date=format:%Y%m%d.%H%M HEAD)"
 docker compose --profile app up -d --build
 
 # Worker roda no HOST (fora do docker, precisa de tmux pra gerenciar as

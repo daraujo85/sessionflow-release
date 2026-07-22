@@ -382,8 +382,10 @@ def cmd_delegate(args):
     if status != 202:
         die(f"envio da tarefa falhou (HTTP {status}): {body}")
 
-    # Registro local p/ o 'check' resolver por nome.
-    os.makedirs(handoff_dir(work_dir), exist_ok=True)
+    # Registro local p/ o 'check' resolver por nome. Com --remote, `work_dir`
+    # é um caminho na máquina REMOTA (ex.: /mnt/c/DEV do Alvarenga) — pode nem
+    # existir aqui (ou ser read-only, ex.: /mnt em macOS). Best-effort: sem
+    # registro local, ainda dá pra achar a sessão via 'sf list --remote'.
     reg = {
         "id": session_id,
         "name": name,
@@ -394,6 +396,7 @@ def cmd_delegate(args):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
+        os.makedirs(handoff_dir(work_dir), exist_ok=True)
         with open(registry_path(work_dir, name), "w", encoding="utf-8") as fh:
             json.dump(reg, fh, indent=2, ensure_ascii=False)
     except OSError as exc:
@@ -582,18 +585,18 @@ def build_parser():
     d.add_argument("--task", required=True, help="texto da tarefa a delegar.")
     d.add_argument("--name", default=None,
                    help="nome do worker (default: slug da tarefa + sufixo).")
+    _REMOTE_HELP = (
+        "controla uma instância SessionFlow de OUTRO amigo/deploy em vez da "
+        "local — credenciais em ~/.claude/secrets/sf-remotes.env "
+        "(<ALIAS>_BASE_URL/_EMAIL/_PASSWORD), ex.: --remote heverton."
+    )
+    d.add_argument("--remote", default=None, help=_REMOTE_HELP)
     d.set_defaults(func=cmd_delegate)
 
     c = sub.add_parser(
         "check",
         help="mostra status/activity do worker e imprime o handoff se existir.",
     )
-    _REMOTE_HELP = (
-        "controla uma instância SessionFlow de OUTRO amigo/deploy em vez da "
-        "local — credenciais em ~/.claude/secrets/sf-remotes.env "
-        "(<ALIAS>_BASE_URL/_EMAIL/_PASSWORD), ex.: --remote heverton."
-    )
-
     c.add_argument("target", help="nome (tmux_name) ou id da sessão.")
     c.add_argument("--dir", default=None,
                    help="work_dir onde está o handoff (default: diretório atual).")

@@ -162,7 +162,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/version")
     async def version() -> dict[str, str]:
-        return {"git_sha": app.state.settings.git_sha}
+        s = app.state.settings
+        return {"version": s.release_version, "git_sha": s.git_sha}
 
     app.include_router(auth_router.router)
     app.include_router(sessions_router.router)

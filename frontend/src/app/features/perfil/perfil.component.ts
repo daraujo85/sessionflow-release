@@ -642,8 +642,8 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       <div class="sf-logout" (click)="logout()">Sair</div>
 
       <!-- Versão deployada (SHA curto do commit) -->
-      @if (gitSha()) {
-        <div class="sf-version">v{{ gitSha() }}</div>
+      @if (appVersion()) {
+        <div class="sf-version">v{{ appVersion() }}</div>
       }
     </section>
   `,
@@ -1352,7 +1352,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
   /** Foto de perfil (data URL) persistida no cliente — null = inicial "D". */
   readonly photo = signal<string | null>(null);
   /** SHA curto do commit deployado nesta instância (rodapé) — `null` até carregar. */
-  readonly gitSha = signal<string | null>(null);
+  readonly appVersion = signal<string | null>(null);
 
   /**
    * Mostra a opção de instalar (prompt nativo ou instruções iOS). Computed para
@@ -1804,9 +1804,9 @@ export class PerfilComponent implements OnInit, OnDestroy {
         /* mantém default (on) */
       },
     });
-    // SHA do commit deployado (rodapé) — não crítico, falha em silêncio.
+    // Versão deployada (rodapé) — não crítico, falha em silêncio.
     this.api.getVersion().subscribe({
-      next: (v) => this.gitSha.set(v.git_sha && v.git_sha !== 'unknown' ? v.git_sha : null),
+      next: (v) => this.appVersion.set(v.version && v.version !== 'unknown' ? v.version : null),
       error: () => {
         /* instância antiga sem /version — sem rodapé */
       },

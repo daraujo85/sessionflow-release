@@ -139,6 +139,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SESSIONFLOW_GIT_SHA", "git_sha"),
     )
 
+    # Versão "humana" — <épico>.<data do commit AAAAMMDD>.<hora HHMM>, ex.:
+    # "1.20260722.1213". Build arg calculado a partir da data do commit HEAD
+    # (não do momento do build): mesmo commit -> sempre a mesma versão, mesmo
+    # rebuildando sem mudança de código.
+    release_version: str = Field(
+        default="unknown",
+        validation_alias=AliasChoices("SESSIONFLOW_RELEASE_VERSION", "release_version"),
+    )
+
     # CORS origins allowed for the front-end.
     cors_origins: list[str] = [
         "https://sessionflow.boletoazap.dev.br",
