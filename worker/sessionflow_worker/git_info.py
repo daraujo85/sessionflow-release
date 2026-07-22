@@ -63,6 +63,46 @@ def list_branches(work_dir: str) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
+#: Pastas nunca vale a pena descer (nem por engano têm um .git relevante) —
+#: evita gastar tempo/IO num scan de subpasta pesada tipo node_modules.
+_SKIP_DIR_NAMES = {"node_modules", ".venv", "venv", "__pycache__", "vendor", "dist", "build"}
+
+
+def find_repos(work_dir: str) -> list[dict[str, str]]:
+    """Repositórios git em ``work_dir``: ele mesmo (se for repo) + subpastas
+    DIRETAS (1 nível) que também sejam repos — caso comum de uma pasta "guarda-
+    chuva" com vários projetos/sub-repos (ex.: admin/api/client cada um seu
+    próprio git), sem o work_dir raiz ser um repo.
+
+    Devolve ``[{"name": ..., "path": ..., "branch": ...}]`` — ``name`` é
+    ``"."`` pro repo raiz (quando existir) e o nome da subpasta pros demais.
+    Ordem: raiz primeiro (se houver), depois subpastas em ordem alfabética.
+    """
+    root = Path(work_dir).expanduser()
+    if not root.is_dir():
+        return []
+
+    repos: list[dict[str, str]] = []
+    if (root / ".git").exists():
+        branch = current_branch(str(root))
+        if branch:
+            repos.append({"name": ".", "path": str(root), "branch": branch})
+
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        children = []
+    for child in children:
+        if not child.is_dir() or child.name.startswith(".") or child.name in _SKIP_DIR_NAMES:
+            continue
+        if (child / ".git").exists():
+            branch = current_branch(str(child))
+            if branch:
+                repos.append({"name": child.name, "path": str(child), "branch": branch})
+
+    return repos
+
+
 def checkout_branch(work_dir: str, branch: str) -> tuple[bool, str]:
     """Troca a branch ativa do repo em ``work_dir``.
 
@@ -74,9 +114,10 @@ def checkout_branch(work_dir: str, branch: str) -> tuple[bool, str]:
         return False, "não é um repositório git"
     if not _BRANCH_NAME_RE.match(branch):
         return False, "nome de branch inválido"
+    resolved = str(Path(work_dir).expanduser())
     try:
         out = subprocess.run(
-            ["git", "-C", work_dir, "checkout", branch],
+            ["git", "-C", resolved, "checkout", branch],
             capture_output=True,
             text=True,
             timeout=15.0,

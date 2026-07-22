@@ -118,46 +118,53 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             </div>
             <div class="mono hdr-dir">
               <span class="hdr-dir-path">{{ session()?.work_dir || '—' }}</span>
-              @if (session()?.git_branch; as branch) {
-                <span class="branch-wrap">
-                  <button
-                    type="button"
-                    class="branch-pill"
-                    [class.switching]="branchSwitching()"
-                    [disabled]="branchSwitching()"
-                    (click)="toggleBranchList()"
-                    [title]="'Branch ativa: ' + branch + ' — clique pra trocar'"
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
-                      <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-                    </svg>
-                    {{ branchSwitching() ? 'trocando…' : branch }}
-                  </button>
-                  @if (branchListOpen()) {
-                    <div class="branch-list">
-                      @if (branchList() === null) {
-                        <div class="branch-item branch-loading">carregando…</div>
-                      } @else if (branchList()!.length === 0) {
-                        <div class="branch-item branch-loading">nenhuma outra branch</div>
-                      } @else {
-                        @for (b of branchList()!; track b) {
-                          <button
-                            type="button"
-                            class="branch-item"
-                            [class.current]="b === branch"
-                            (click)="switchBranch(b)"
-                          >
-                            {{ b }}
-                          </button>
-                        }
-                      }
-                    </div>
-                  }
-                </span>
-              }
             </div>
+            @if (session()?.git_repos?.length) {
+              <div class="branch-row">
+                @for (r of session()!.git_repos!; track r.name) {
+                  <span class="branch-wrap">
+                    <button
+                      type="button"
+                      class="branch-pill"
+                      [class.switching]="branchSwitching() === r.name"
+                      [disabled]="branchSwitching() === r.name"
+                      (click)="toggleBranchList(r.name)"
+                      [title]="(r.name === '.' ? 'Branch ativa' : r.name + ': branch ativa') + ' — ' + r.branch + ' — clique pra trocar'"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
+                        <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                      </svg>
+                      @if (r.name !== '.') {
+                        <span class="branch-repo-name">{{ r.name }}/</span>
+                      }
+                      {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
+                    </button>
+                    @if (branchListOpenFor() === r.name) {
+                      <div class="branch-list">
+                        @if (branchList() === null) {
+                          <div class="branch-item branch-loading">carregando…</div>
+                        } @else if (branchList()!.length === 0) {
+                          <div class="branch-item branch-loading">nenhuma outra branch</div>
+                        } @else {
+                          @for (b of branchList()!; track b) {
+                            <button
+                              type="button"
+                              class="branch-item"
+                              [class.current]="b === r.branch"
+                              (click)="switchBranch(r.name, b)"
+                            >
+                              {{ b }}
+                            </button>
+                          }
+                        }
+                      </div>
+                    }
+                  </span>
+                }
+              </div>
+            }
             @if (activeTask()) {
               <div class="hdr-task">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3" /><path d="m9 14 2 2 4-4" /></svg>
@@ -1962,22 +1969,32 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         color: #9fb0ad;
       }
       .hdr-dir {
-        display: flex;
-        align-items: center;
-        gap: 6px;
         font-size: 12px;
         color: #7a8090;
         min-width: 0;
       }
       .hdr-dir-path {
+        display: block;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         min-width: 0;
       }
+      /* Badges de branch — linha PRÓPRIA (não disputa espaço com o path
+         truncado do work_dir); quebra pra próxima linha sozinha quando tem
+         mais de um repo (pasta "guarda-chuva"), sem sobrepor nada. */
+      .branch-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-top: 4px;
+      }
       .branch-wrap {
         position: relative;
-        flex-shrink: 0;
+      }
+      .branch-repo-name {
+        opacity: 0.65;
       }
       .branch-pill {
         display: inline-flex;
@@ -3828,12 +3845,13 @@ export class DetalheComponent implements AfterViewChecked {
 
   /**
    * Badge de branch git (work_dir da sessão) — aberto: mostra a lista pra
-   * escolher; fechado: só o nome atual. `null` = fechado; lista vazia
-   * enquanto aguarda a resposta do worker via SSE (`git_branches`).
+   * escolher; fechado: só o nome atual. Um work_dir pode ter MAIS DE UM repo
+   * (pasta "guarda-chuva" com sub-repos) — por isso o estado é por REPO
+   * (`name` em `git_repos`, "." pro raiz), não um único booleano/lista.
    */
-  protected readonly branchListOpen = signal<boolean>(false);
+  protected readonly branchListOpenFor = signal<string | null>(null);
   protected readonly branchList = signal<string[] | null>(null);
-  protected readonly branchSwitching = signal<boolean>(false);
+  protected readonly branchSwitching = signal<string | null>(null);
   /** Reage à resposta do worker (git_branches/git_checkout), filtrando pela
    * sessão aberta AGORA — outra sessão pode ter pedido isso simultaneamente. */
   private readonly gitBranchesEffect = effect(() => {
@@ -3845,29 +3863,41 @@ export class DetalheComponent implements AfterViewChecked {
       this.branchList.set(frame.branches);
     }
     if (frame.current) {
-      this.session.update((s) => (s ? { ...s, git_branch: frame.current! } : s));
+      const repoName = frame.repo ?? '.';
+      this.session.update((s) => {
+        if (!s?.git_repos) {
+          return s;
+        }
+        return {
+          ...s,
+          git_repos: s.git_repos.map((r) =>
+            r.name === repoName ? { ...r, branch: frame.current! } : r,
+          ),
+        };
+      });
     }
-    this.branchSwitching.set(false);
+    this.branchSwitching.set(null);
   });
 
-  protected toggleBranchList(): void {
-    const opening = !this.branchListOpen();
-    this.branchListOpen.set(opening);
+  protected toggleBranchList(repo: string): void {
+    const opening = this.branchListOpenFor() !== repo;
+    this.branchListOpenFor.set(opening ? repo : null);
     if (opening) {
       this.branchList.set(null);
-      this.api.requestGitBranches(this.id()).subscribe();
+      this.api.requestGitBranches(this.id(), repo).subscribe();
     }
   }
 
-  protected switchBranch(branch: string): void {
-    if (branch === this.session()?.git_branch) {
-      this.branchListOpen.set(false);
+  protected switchBranch(repo: string, branch: string): void {
+    const current = this.session()?.git_repos?.find((r) => r.name === repo)?.branch;
+    if (branch === current) {
+      this.branchListOpenFor.set(null);
       return;
     }
-    this.branchSwitching.set(true);
-    this.branchListOpen.set(false);
-    this.api.checkoutGitBranch(this.id(), branch).subscribe({
-      error: () => this.branchSwitching.set(false),
+    this.branchSwitching.set(repo);
+    this.branchListOpenFor.set(null);
+    this.api.checkoutGitBranch(this.id(), branch, repo).subscribe({
+      error: () => this.branchSwitching.set(null),
     });
   }
 

@@ -41,6 +41,8 @@ export interface JarvisAudioFrame {
 export interface GitBranchesFrame {
   session_id: string;
   ok: boolean;
+  /** "." = repo raiz do work_dir; senão, nome da subpasta (ver `git_repos`). */
+  repo?: string;
   branches?: string[];
   current?: string;
   error?: string;

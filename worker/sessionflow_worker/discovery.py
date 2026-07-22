@@ -352,12 +352,14 @@ class Discovery:
         # SessionFlow) com vazio.
         if info.work_dir:
             set_fields["work_dir"] = info.work_dir
-            # Branch git ativa do projeto (badge no card da sessão) — barato
-            # (subprocess de ~ms) e só quando o work_dir é mesmo um repo;
-            # None (fora de um repo) some do doc em vez de gravar null.
-            branch = git_info.current_branch(info.work_dir)
-            if branch:
-                set_fields["git_branch"] = branch
+            # Repo(s) git do projeto (badge(s) no card da sessão) — barato
+            # (subprocess de ~ms cada) e cobre tanto o work_dir sendo ele
+            # mesmo um repo quanto uma pasta "guarda-chuva" com vários
+            # sub-repos (ex.: admin/api/client, cada um seu próprio .git).
+            # Vazio (fora de qualquer repo) some do doc em vez de gravar [].
+            repos = git_info.find_repos(info.work_dir)
+            if repos:
+                set_fields["git_repos"] = repos
         # agent_type: só grava quando RECONHECIDO. Esse campo é o que o resume
         # ("Retomar") usa pra saber qual CLI relançar — sobrescrever com
         # "unknown" só porque o processo caiu num ciclo (ex.: binário ausente

@@ -881,44 +881,66 @@ class CommandConsumer:
             raise CommandError(f"sessão {name!r} sem work_dir salvo")
         return work_dir
 
+    def _resolve_repo_path(self, work_dir: str, repo: str) -> str:
+        """Path real de um dos repos achados em ``work_dir`` (ver ``git_info.find_repos``).
+
+        ``repo="."`` -> o próprio ``work_dir`` (repo raiz). Qualquer outro
+        valor -> subpasta direta com esse nome — NUNCA aceita ``../`` ou um
+        caminho absoluto vindo do payload (só o NOME da subpasta), pra não
+        escapar do work_dir da sessão.
+        """
+        if repo in (".", "", None):
+            return work_dir
+        if "/" in repo or "\\" in repo or repo in (".", ".."):
+            raise CommandError(f"repo inválido: {repo!r}")
+        return str(Path(work_dir).expanduser() / repo)
+
     async def _handle_git_branches(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Lista as branches do repo do work_dir da sessão (badge de branch)."""
+        """Lista as branches de UM dos repos do work_dir da sessão (badge)."""
         name = payload.get("name")
         if not name:
             raise CommandError("git_branches requer 'name'")
         work_dir = await self._session_work_dir(name)
+        repo = payload.get("repo", ".")
+        repo_path = self._resolve_repo_path(work_dir, repo)
         loop = asyncio.get_running_loop()
-        if not await loop.run_in_executor(None, git_info.is_git_repo, work_dir):
-            raise CommandError(f"{work_dir!r} não é um repositório git")
-        branches = await loop.run_in_executor(None, git_info.list_branches, work_dir)
-        current = await loop.run_in_executor(None, git_info.current_branch, work_dir)
+        if not await loop.run_in_executor(None, git_info.is_git_repo, repo_path):
+            raise CommandError(f"{repo_path!r} não é um repositório git")
+        branches = await loop.run_in_executor(None, git_info.list_branches, repo_path)
+        current = await loop.run_in_executor(None, git_info.current_branch, repo_path)
         return {
             "name": name,
             "session_id": payload.get("session_id"),
+            "repo": repo,
             "branches": branches,
             "current": current,
         }
 
     async def _handle_git_checkout(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Troca a branch ativa (git checkout) do repo do work_dir da sessão."""
+        """Troca a branch ativa (git checkout) de UM dos repos do work_dir."""
         name = payload.get("name")
         branch = payload.get("branch")
         if not name or not branch:
             raise CommandError("git_checkout requer 'name' e 'branch'")
         work_dir = await self._session_work_dir(name)
+        repo = payload.get("repo", ".")
+        repo_path = self._resolve_repo_path(work_dir, repo)
         loop = asyncio.get_running_loop()
         ok, message = await loop.run_in_executor(
-            None, git_info.checkout_branch, work_dir, branch
+            None, git_info.checkout_branch, repo_path, branch
         )
-        if ok:
-            await self._sessions.update_one(
-                {"tmux_name": name}, {"$set": {"git_branch": message, "updated_at": _now()}}
-            )
         if not ok:
             raise CommandError(message)
+        # Recomputa os repos inteiros (barato) em vez de editar só 1 item da
+        # lista — mantém git_repos sempre consistente com o disco de verdade.
+        repos = await loop.run_in_executor(None, git_info.find_repos, work_dir)
+        await self._sessions.update_one(
+            {"tmux_name": name}, {"$set": {"git_repos": repos, "updated_at": _now()}}
+        )
         return {
             "name": name,
             "session_id": payload.get("session_id"),
+            "repo": repo,
             "current": message,
         }
 

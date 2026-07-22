@@ -59,9 +59,11 @@ class SessionOut(BaseModel):
     model: str | None = None
     effort: str | None = None
     work_dir: str | None = None
-    # Branch git ativa do work_dir (badge no card) — só existe quando o
-    # work_dir é um repositório git; ausente/None senão.
-    git_branch: str | None = None
+    # Repo(s) git do work_dir (badge(s) no card) — o work_dir sendo ele mesmo
+    # um repo (name=".") e/ou subpastas diretas que também são (ex.: pasta
+    # "guarda-chuva" com admin/api/client cada um seu próprio .git). Ausente
+    # quando não há nenhum repo git ali.
+    git_repos: list[dict[str, str]] | None = None
     status: str | None = None
     # Rótulo fino do que o agente está fazendo (derivado da tela pelo worker).
     activity: str | None = None
@@ -848,13 +850,20 @@ class GitCheckoutIn(BaseModel):
     """Request body for switching the session's project to another branch."""
 
     branch: str = Field(min_length=1)
+    # Qual repo trocar quando o work_dir tem mais de um (ver `git_repos` no
+    # doc da sessão) — "." (default) é o repo raiz.
+    repo: str = "."
 
 
 @router.post(
     "/{session_id}/git/branches", response_model=SessionCreateAccepted, status_code=202
 )
-async def list_git_branches(request: Request, session_id: str) -> SessionCreateAccepted:
-    """Pede ao worker a lista de branches do repo do work_dir desta sessão.
+async def list_git_branches(
+    request: Request, session_id: str, repo: str = "."
+) -> SessionCreateAccepted:
+    """Pede ao worker a lista de branches de UM dos repos do work_dir desta
+    sessão (``repo`` = "." pro repo raiz, ou o nome de uma subpasta — ver
+    ``git_repos`` no doc da sessão pras opções).
 
     Assíncrono (202): a lista real vem depois via SSE (evento
     ``git_branches``, filtrado por ``session_id``) — o work_dir mora no HOST
@@ -865,7 +874,7 @@ async def list_git_branches(request: Request, session_id: str) -> SessionCreateA
     command_id = await publish_command(
         settings,
         type="git_branches",
-        payload={"name": tmux_name, "session_id": session_id},
+        payload={"name": tmux_name, "session_id": session_id, "repo": repo},
         host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
@@ -877,13 +886,18 @@ async def list_git_branches(request: Request, session_id: str) -> SessionCreateA
 async def checkout_git_branch(
     request: Request, session_id: str, body: GitCheckoutIn
 ) -> SessionCreateAccepted:
-    """Troca a branch ativa (git checkout) do repo do work_dir desta sessão."""
+    """Troca a branch ativa (git checkout) de UM dos repos do work_dir desta sessão."""
     tmux_name, host_id = await _require_route(request, session_id)
     settings = request.app.state.settings
     command_id = await publish_command(
         settings,
         type="git_checkout",
-        payload={"name": tmux_name, "session_id": session_id, "branch": body.branch},
+        payload={
+            "name": tmux_name,
+            "session_id": session_id,
+            "branch": body.branch,
+            "repo": body.repo,
+        },
         host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")

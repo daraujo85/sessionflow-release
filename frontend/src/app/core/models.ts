@@ -101,8 +101,10 @@ export interface Session {
   model: string | null;
   effort: string | null;
   work_dir: string;
-  /** Branch git ativa do work_dir (badge no card) — só quando é um repo git. */
-  git_branch?: string | null;
+  /** Repo(s) git do work_dir (badge(s) no card): o work_dir sendo ele mesmo
+   * um repo (name=".") e/ou subpastas diretas que também são (pasta
+   * "guarda-chuva" com vários projetos). Ausente = nenhum repo git ali. */
+  git_repos?: { name: string; path: string; branch: string }[] | null;
   status: SessionStatus;
   /** Rótulo fino do que o agente está fazendo (worker, só p/ sessões running). */
   activity?: string;
