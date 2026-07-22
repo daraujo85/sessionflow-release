@@ -205,6 +205,33 @@ def _windows_version_from_wsl() -> str | None:
     return None
 
 
+def _windows_total_ram_gb() -> float | None:
+    """RAM FÍSICA REAL do Windows hospedeiro, vista de dentro do WSL2.
+
+    ``psutil.virtual_memory()`` dentro do WSL2 reporta a memória ALOCADA PRA
+    VM do WSL2, não a RAM física da máquina — por padrão o WSL2 limita essa VM
+    a ~50% da RAM total do Windows (sem um ``.wslconfig`` customizado). Um
+    host com 32GB físicos aparecia como ~14-16GB (a metade, arredondada pelo
+    WSL2), confundindo quem lia o card. Consultamos o Windows diretamente via
+    PowerShell (``Win32_ComputerSystem.TotalPhysicalMemory``, em bytes) —
+    caminho ABSOLUTO pela mesma razão do ``cmd.exe`` em
+    ``_windows_version_from_wsl`` (PATH mínimo do systemd)."""
+    out = _run(
+        [
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ],
+        timeout=8.0,
+    )
+    if out:
+        m = re.search(r"(\d+)", out)
+        if m:
+            return round(int(m.group(1)) / (1024**3), 1)
+    return None
+
+
 def _os_detail(plat: str) -> dict[str, Any]:
     """Detalhe do sistema operacional. No WSL2, ``distro`` é a distro Linux
     visível (ex.: Ubuntu) e ``host_os`` é o Windows REAL por baixo — evita a
@@ -296,7 +323,12 @@ def hardware_info(plat: str) -> dict[str, Any]:
     try:
         info["cpu_model"] = _cpu_model()
         info["cpu_cores"] = psutil.cpu_count(logical=True)
-        info["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
+        ram = psutil.virtual_memory().total / (1024**3)
+        if plat == "wsl2":
+            # Prefere a RAM física real do Windows (psutil vê só a VM do WSL2,
+            # limitada por padrão a ~50% do total — ver `_windows_total_ram_gb`).
+            ram = _windows_total_ram_gb() or ram
+        info["ram_total_gb"] = round(ram, 1)
     except Exception:  # noqa: BLE001 - best-effort
         logger.debug("hardware_info: cpu/ram falhou", exc_info=True)
     try:

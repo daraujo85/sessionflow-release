@@ -140,3 +140,41 @@ def test_gpu_name_none_without_any_tool(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(host_identity_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(host_identity_mod, "_run", lambda *a, **kw: None)
     assert host_identity_mod._gpu_name() is None
+
+
+def test_windows_total_ram_gb_parses_powershell_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regressão real: psutil dentro do WSL2 reporta a RAM da VM (limitada por
+    # padrão a ~50% do total), não a física real — um host com 32GB físicos
+    # aparecia como ~16GB. 34359738368 bytes = 32GB.
+    monkeypatch.setattr(host_identity_mod, "_run", lambda *a, **kw: "34359738368")
+    assert host_identity_mod._windows_total_ram_gb() == 32.0
+
+
+def test_windows_total_ram_gb_none_without_interop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(host_identity_mod, "_run", lambda *a, **kw: None)
+    assert host_identity_mod._windows_total_ram_gb() is None
+
+
+def test_hardware_info_prefers_windows_ram_over_wsl_vm_ram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        host_identity_mod, "_windows_total_ram_gb", lambda: 32.0
+    )
+    monkeypatch.setattr(host_identity_mod, "_cpu_model", lambda: None)
+    monkeypatch.setattr(host_identity_mod, "_gpu_name", lambda: None)
+    monkeypatch.setattr(host_identity_mod, "_os_detail", lambda plat: {})
+    monkeypatch.setattr(host_identity_mod, "_disks", lambda: [])
+
+    class _FakeVM:
+        total = 16 * 1024**3  # a VM do WSL2 só enxerga metade
+
+    monkeypatch.setattr(
+        host_identity_mod.psutil, "virtual_memory", lambda: _FakeVM()
+    )
+    info = host_identity_mod.hardware_info("wsl2")
+    assert info["ram_total_gb"] == 32.0

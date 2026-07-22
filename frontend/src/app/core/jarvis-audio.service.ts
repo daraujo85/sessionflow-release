@@ -41,6 +41,11 @@ export class JarvisAudioService {
   /** Enquanto o usuário grava áudio, segura a reprodução (evita vazar no mic). */
   private suppressed = false;
   private pending: JarvisAudioFrame | null = null;
+  /** Frame tocando agora, p/ saber se o próximo `onClipDone` deve repetir
+   * (1ª vez) ou seguir pro próximo da fila (repetição já feita). */
+  private currentFrame: JarvisAudioFrame | null = null;
+  private repeating = false;
+  private repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private lastAt: string | null = null;
   /** Reforço anti-repetição: último TEXTO falado + quando (ms). Pega casos de
    * reconexão do SSE reentregando um frame com `at` diferente mas mesmo conteúdo. */
@@ -157,6 +162,7 @@ export class JarvisAudioService {
   setRecording(on: boolean): void {
     this.suppressed = on;
     if (on) {
+      this.clearRepeatTimer();
       if (this.el) {
         this.el.pause();
       }
@@ -170,6 +176,7 @@ export class JarvisAudioService {
 
   /** Interrompe o áudio atual e limpa a fila. */
   stop(): void {
+    this.clearRepeatTimer();
     this.queue.length = 0;
     if (this.el) {
       this.el.pause();
@@ -177,6 +184,14 @@ export class JarvisAudioService {
     this.playing = false;
     this.speaking.set(false);
     this.speakingSessionId.set(null);
+  }
+
+  private clearRepeatTimer(): void {
+    if (this.repeatTimer !== null) {
+      clearTimeout(this.repeatTimer);
+      this.repeatTimer = null;
+    }
+    this.repeating = false;
   }
 
   private enqueue(frame: JarvisAudioFrame): void {
@@ -187,10 +202,23 @@ export class JarvisAudioService {
   }
 
   private onClipDone(): void {
+    if (!this.repeating && this.currentFrame && !this.suppressed) {
+      // 1ª vez que este clipe termina: repete uma vez após uma pausa (ajuda a
+      // pegar quem não escutou/percebeu de primeira).
+      this.repeating = true;
+      const frame = this.currentFrame;
+      this.repeatTimer = setTimeout(() => {
+        this.repeatTimer = null;
+        this.playFrame(frame);
+      }, REPEAT_DELAY_MS);
+      return;
+    }
     this.playNext();
   }
 
   private playNext(): void {
+    this.currentFrame = null;
+    this.repeating = false;
     if (this.suppressed) {
       this.playing = false;
       this.speaking.set(false);
@@ -198,13 +226,24 @@ export class JarvisAudioService {
       return;
     }
     const frame = this.queue.shift();
-    const el = this.el;
-    if (!frame || !el) {
+    if (!frame) {
       this.playing = false;
       this.speaking.set(false);
       this.speakingSessionId.set(null);
       return;
     }
+    this.playFrame(frame);
+  }
+
+  private playFrame(frame: JarvisAudioFrame): void {
+    const el = this.el;
+    if (!el || this.suppressed) {
+      this.playing = false;
+      this.speaking.set(false);
+      this.speakingSessionId.set(null);
+      return;
+    }
+    this.currentFrame = frame;
     this.playing = true;
     this.speaking.set(true);
     this.speakingSessionId.set(frame.session_id ?? null);
@@ -222,6 +261,9 @@ export class JarvisAudioService {
 
 const STORAGE_KEY = 'sf.jarvis.audio';
 const VOLUME_KEY = 'sf.jarvis.volume';
+/** Pausa antes de repetir o clipe uma 2ª vez (dá tempo de perceber e ainda
+ * reforça caso a pessoa não tenha ouvido de primeira). */
+const REPEAT_DELAY_MS = 5000;
 
 function readEnabled(): boolean {
   try {
