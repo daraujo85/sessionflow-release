@@ -164,8 +164,16 @@ def _windows_version_from_wsl() -> str | None:
     [versão 10.0.22621.4317]" em PT-BR, não "[Version ...]") — por isso o
     regex busca o PADRÃO NUMÉRICO (x.y.z[.w]) direto, sem depender da palavra
     "Version" em inglês, que nunca batia num Windows em outro idioma.
+
+    Caminho ABSOLUTO do ``cmd.exe`` (não só o nome): o worker roda como
+    serviço systemd, cujo ``PATH`` é o mínimo do systemd (sem a extensão do
+    WSL que injeta ``/mnt/c/Windows/system32`` — essa vem do shell
+    interativo/``.bashrc``, não existe num processo de serviço) — por isso
+    ``subprocess.run(["cmd.exe", ...])`` nunca achava o binário nesse
+    contexto (silenciosamente, via ``OSError``), mesmo funcionando na mão
+    num terminal comum.
     """
-    out = _run(["cmd.exe", "/c", "ver"], timeout=5.0)
+    out = _run(["/mnt/c/Windows/system32/cmd.exe", "/c", "ver"], timeout=5.0)
     if out:
         m = re.search(r"(\d+\.\d+\.\d+(?:\.\d+)?)", out)
         if m:
