@@ -158,10 +158,16 @@ def _gpu_name() -> str | None:
 def _windows_version_from_wsl() -> str | None:
     """Versão do Windows HOSPEDEIRO, vista de dentro do WSL2 (interop com
     binários do Windows via PATH — ``cmd.exe``/``powershell.exe``). None se a
-    interop estiver desligada ou o comando não existir."""
+    interop estiver desligada ou o comando não existir.
+
+    ``cmd.exe /c ver`` responde no IDIOMA do Windows (ex.: "Microsoft Windows
+    [versão 10.0.22621.4317]" em PT-BR, não "[Version ...]") — por isso o
+    regex busca o PADRÃO NUMÉRICO (x.y.z[.w]) direto, sem depender da palavra
+    "Version" em inglês, que nunca batia num Windows em outro idioma.
+    """
     out = _run(["cmd.exe", "/c", "ver"], timeout=5.0)
     if out:
-        m = re.search(r"Version\s+([\d.]+)", out)
+        m = re.search(r"(\d+\.\d+\.\d+(?:\.\d+)?)", out)
         if m:
             return f"Windows (build {m.group(1)})"
     return None
@@ -196,9 +202,11 @@ def _disks() -> list[dict[str, Any]]:
     Dois filtros de ruído, sem os quais um único disco físico vira vários
     "discos" na lista:
 
-    1. ``fstype`` virtual óbvio (overlay do Docker, tmpfs etc.) e os
+    1. ``fstype`` virtual óbvio (overlay do Docker, tmpfs etc.), os
        containers internos do APFS no macOS (``/System/Volumes/*``, exceto
-       ``Data`` que é onde ficam os arquivos do usuário) — pulados de cara.
+       ``Data`` que é onde ficam os arquivos do usuário), e os mounts
+       internos do WSL2 (``/mnt/wsl/*`` — distros/ferramentas do Docker
+       Desktop, não um disco de verdade) — pulados de cara.
     2. Dedup por CAPACIDADE TOTAL: volumes/partições diferentes que
        compartilham o MESMO container físico quase sempre reportam o
        ``total`` idêntico (ex.: "/" e "/System/Volumes/Data" no macOS); dois
@@ -219,6 +227,8 @@ def _disks() -> list[dict[str, Any]]:
         if part.fstype in skip_fstypes:
             continue
         if part.mountpoint.startswith("/System/Volumes/") and part.mountpoint != "/System/Volumes/Data":
+            continue
+        if part.mountpoint.startswith("/mnt/wsl/"):
             continue
         try:
             usage = psutil.disk_usage(part.mountpoint)
