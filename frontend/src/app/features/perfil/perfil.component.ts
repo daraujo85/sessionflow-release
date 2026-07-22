@@ -1002,6 +1002,10 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         display: flex;
         flex-direction: column;
         gap: 12px;
+        /* Faltava — todo outro card da tela (.sf-worker/.sf-limits/etc.) tem
+           18px de respiro; sem isso o card de Áudio ficava colado direto no
+           próximo bloco (Configurações), sem separação nenhuma. */
+        margin-bottom: 18px;
       }
       .sf-audio-head {
         font-size: 13px;
