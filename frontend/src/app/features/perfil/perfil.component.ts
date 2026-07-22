@@ -145,7 +145,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 (click)="toggleHardware(primaryHostId())"
                 aria-label="Ver detalhes de hardware deste host"
               >
-                {{ hwSummary(hw) }}
+                <span class="sf-hw-stats">
+                  @for (p of hwSummaryParts(hw); track p) {
+                    <span class="sf-hw-stat">{{ p }}</span>
+                  }
+                </span>
                 <span class="sf-hw-caret">{{ expandedHostId() === primaryHostId() ? '▲' : '▼' }}</span>
               </button>
               @if (expandedHostId() === primaryHostId()) {
@@ -242,7 +246,11 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   (click)="toggleHardware(w.host_id ?? null)"
                   aria-label="Ver detalhes de hardware deste host"
                 >
-                  {{ hwSummary(hw) }}
+                  <span class="sf-hw-stats">
+                    @for (p of hwSummaryParts(hw); track p) {
+                      <span class="sf-hw-stat">{{ p }}</span>
+                    }
+                  </span>
                   <span class="sf-hw-caret">{{ expandedHostId() === w.host_id ? '▲' : '▼' }}</span>
                 </button>
                 @if (expandedHostId() === w.host_id) {
@@ -775,11 +783,12 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         gap: 6px;
         min-width: 0;
       }
+      /* Deixa QUEBRAR em vez de truncar com reticências — nome do host
+         cortado no meio (ex.: "Duck Ser…") era pior que ocupar 2 linhas,
+         já que o card cresce mesmo (tem o resumo de hardware embaixo). */
       .sf-worker-name {
         min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        word-break: break-word;
       }
       .sf-worker-meta {
         font-size: 12.5px;
@@ -791,7 +800,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
          host — some por padrão, só um botão discreto que expande. */
       .sf-hw-summary {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px;
         margin-top: 6px;
         background: none;
@@ -801,10 +810,26 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         color: #7a8090;
         cursor: pointer;
         font-family: 'JetBrains Mono', monospace;
+        text-align: left;
+      }
+      /* Cada estatística no seu PRÓPRIO span — o wrap acontece ENTRE elas
+         (nunca no meio de uma, ex.: ícone numa linha e o valor sozinho na
+         próxima), diferente de antes (tudo um texto só). */
+      .sf-hw-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px 10px;
+        flex: 1;
+        min-width: 0;
+      }
+      .sf-hw-stat {
+        white-space: nowrap;
       }
       .sf-hw-caret {
+        flex: none;
         color: #4a5058;
         font-size: 9px;
+        margin-top: 2px;
       }
       .sf-hw-detail {
         margin-top: 6px;
@@ -1381,11 +1406,17 @@ export class PerfilComponent implements OnInit, OnDestroy {
     this.expandedHostId.update((cur) => (cur === hostId ? null : hostId));
   }
 
-  /** Linha resumida (ícones) do hardware — o detalhe completo só aparece
-   * expandido, pra não virar um card gigante por padrão. */
-  protected hwSummary(hw: WorkerHardware | null | undefined): string {
+  /**
+   * Estatísticas resumidas (ícones) do hardware — o detalhe completo só
+   * aparece expandido, pra não virar um card gigante por padrão. Devolve
+   * um ARRAY (não uma string única) pra cada estatística ficar num `<span>`
+   * próprio no template — assim o `flex-wrap` quebra ENTRE estatísticas
+   * (nunca no meio de uma, ex.: "🎮" numa linha e "228GB" sozinho na
+   * próxima), que era o problema real reportado.
+   */
+  protected hwSummaryParts(hw: WorkerHardware | null | undefined): string[] {
     if (!hw) {
-      return '';
+      return [];
     }
     const parts: string[] = [];
     if (hw.cpu_cores) {
@@ -1401,7 +1432,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
     if (disk) {
       parts.push(`💽 ${Math.round(disk.total_gb)}GB`);
     }
-    return parts.join('   ');
+    return parts;
   }
 
   // ── Editar nome/emoji de exibição do host (multi-host, AD-011) ──────────

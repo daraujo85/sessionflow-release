@@ -119,3 +119,24 @@ def test_disks_skips_wsl_internal_mounts(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(host_identity_mod.psutil, "disk_usage", lambda mp: usages[mp])
     disks = host_identity_mod._disks()
     assert [d["mount"] for d in disks] == ["/"]
+
+
+def test_gpu_name_falls_back_to_wsl_absolute_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regressão real: nvidia-smi puro não é achado no PATH mínimo do serviço
+    # systemd (só o binário absoluto em /usr/lib/wsl/lib funciona nesse
+    # contexto) — sem o fallback, uma GPU real (RTX 3060) não era detectada.
+    monkeypatch.setattr(host_identity_mod.platform, "system", lambda: "Linux")
+
+    def fake_run(cmd, timeout=5.0):  # noqa: ANN001
+        if cmd[0] == "/usr/lib/wsl/lib/nvidia-smi":
+            return "NVIDIA GeForce RTX 3060"
+        return None
+
+    monkeypatch.setattr(host_identity_mod, "_run", fake_run)
+    assert host_identity_mod._gpu_name() == "NVIDIA GeForce RTX 3060"
+
+
+def test_gpu_name_none_without_any_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(host_identity_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(host_identity_mod, "_run", lambda *a, **kw: None)
+    assert host_identity_mod._gpu_name() is None

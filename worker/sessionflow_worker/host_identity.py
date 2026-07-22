@@ -151,14 +151,25 @@ def _cpu_model() -> str | None:
     return platform.processor() or None
 
 
+#: candidatos pro binário do nvidia-smi, na ordem em que tentamos. O nome
+#: puro depende do PATH achar; no WSL2 com passthrough de GPU, o binário
+#: real fica em ``/usr/lib/wsl/lib`` — caminho que o PATH MÍNIMO de um
+#: serviço systemd não inclui (só o shell interativo/``.bashrc`` estende o
+#: PATH com os diretórios de interop do WSL). Mesma classe de bug do
+#: ``cmd.exe`` em ``_windows_version_from_wsl`` — sem o caminho absoluto,
+#: uma GPU NVIDIA de verdade (testado: RTX 3060) nunca era encontrada.
+_NVIDIA_SMI_CANDIDATES = ("nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi")
+
+
 def _gpu_name() -> str | None:
     """Nome da GPU, se detectável. NVIDIA (Linux/WSL2 com passthrough) via
     ``nvidia-smi``; Mac via ``system_profiler`` (Apple Silicon = GPU integrada
     no chip, então cai no nome do chip). None = sem GPU dedicada detectada ou
     sem ferramenta disponível (não é erro, é o caso comum)."""
-    nvidia = _run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
-    if nvidia:
-        return nvidia.splitlines()[0].strip()
+    for candidate in _NVIDIA_SMI_CANDIDATES:
+        nvidia = _run([candidate, "--query-gpu=name", "--format=csv,noheader"])
+        if nvidia:
+            return nvidia.splitlines()[0].strip()
     if platform.system().lower() == "darwin":
         out = _run(["system_profiler", "SPDisplaysDataType"], timeout=8.0)
         if out:
