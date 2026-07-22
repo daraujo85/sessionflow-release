@@ -33,9 +33,17 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
-# Caminho fixo do .env do projeto SessionFlow (fonte das credenciais/porta).
-ENV_PATH = "/Users/diegoaraujo/Documents/projects/sessionflow/.env"
+# .env do projeto SessionFlow (fonte das credenciais/porta) — relativo à
+# localização deste script (tools/sf -> raiz do repo), NÃO um caminho fixo:
+# `sf` roda em qualquer host (Alvarenga, Lucas, Duck Server, ...), cada um
+# com o repo num lugar diferente. SESSIONFLOW_ENV_PATH sobrescreve (útil se
+# `sf` for instalado fora do repo, ex. /usr/local/bin/sf).
+ENV_PATH = os.environ.get(
+    "SESSIONFLOW_ENV_PATH",
+    str(Path(__file__).resolve().parent.parent / ".env"),
+)
 
 PROVIDERS = ("gemini", "codex", "opencode", "claude")
 
@@ -314,8 +322,9 @@ def build_handoff_task(task, work_dir, name):
         "Crie o diretório se necessário. Depois de escrever esse arquivo, "
         "PARE — não faça mais nada.\n\n"
         "----- FERRAMENTAS DE COORDENAÇÃO (sf) -----\n"
-        "Você tem acesso ao comando `sf` (mesma pasta deste projeto ou "
-        "~/.claude/skills/sf-delegate/sf). Use quando fizer sentido:\n"
+        "Você tem acesso ao comando `sf` (já no PATH deste host — funciona "
+        "de qualquer diretório, com qualquer provedor de agente, não é "
+        "específico do Claude Code). Use quando fizer sentido:\n"
         "- `sf list` — lista TODAS as sessões ativas (nome, agente, status, "
         "host) — inclusive em OUTRAS estações/máquinas, não só a sua.\n"
         "- `sf send <sessão> \"texto\"` — manda uma mensagem/instrução direto "
