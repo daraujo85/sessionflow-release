@@ -326,7 +326,12 @@ def build_handoff_task(task, work_dir, name):
         "seu disco com OUTRA sessão (mesmo em outro host) — fica disponível "
         "pra ela via API (GET /sessions/{id}/shared-files + "
         "/shared-files/{id}/download); sem --to, compartilha na sua própria "
-        "sessão (visível no app, inclusive celular)."
+        "sessão (visível no app, inclusive celular).\n\n"
+        "Se OUTRA sessão te mandar uma mensagem (via `sf send`) enquanto "
+        "você trabalha, RESPONDA de volta pra ela (também via `sf send`) "
+        "pra manter o fluxo de conversa — continue trocando mensagens até "
+        "que a necessidade daquela conversa esteja de fato resolvida, em "
+        "vez de responder só uma vez e parar."
     )
 
 
