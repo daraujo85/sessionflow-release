@@ -155,6 +155,22 @@ class Settings(BaseSettings):
         "http://127.0.0.1:4200",
     ]
 
+    # Domínio PÚBLICO extra (frontend de uma instância de amigo, ex.
+    # ``https://alvarenga.boletoazap.dev.br``) liberado no CORS via .env — sem
+    # precisar editar/commitar este arquivo a cada onboarding (o que quebrava
+    # o `git pull` depois, por deixar o config.py com diff local). Configure
+    # ``SESSIONFLOW_EXTRA_ORIGIN`` no ``.env`` da instância do amigo.
+    extra_origin: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SESSIONFLOW_EXTRA_ORIGIN", "extra_origin"),
+    )
+
+    @property
+    def effective_cors_origins(self) -> list[str]:
+        if self.extra_origin and self.extra_origin not in self.cors_origins:
+            return [*self.cors_origins, self.extra_origin]
+        return self.cors_origins
+
     @property
     def effective_mongo_uri(self) -> str:
         if self.use_host_uris and self.mongo_uri_host:
