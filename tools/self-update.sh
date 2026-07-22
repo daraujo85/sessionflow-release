@@ -34,6 +34,18 @@ fi
 LOG "nova versão encontrada: $LOCAL -> $REMOTE. Atualizando…"
 git merge --ff-only "origin/$BRANCH"
 
+# Fix defensivo: hosts que rodaram Docker Desktop (WSL2) antes de migrar pro
+# Docker Engine nativo às vezes ficam com ~/.docker/config.json apontando pro
+# credential-helper do Desktop ("desktop.exe"), que não existe mais nesse
+# contexto — `docker compose build` falha ao puxar imagem pública com
+# "error getting credentials". Reproduziu 2x no Duck Server; resetar aqui
+# evita quebrar o auto-update sozinho no meio da madrugada.
+DOCKER_CFG="$HOME/.docker/config.json"
+if [ -f "$DOCKER_CFG" ] && grep -q '"credsStore"' "$DOCKER_CFG" 2>/dev/null; then
+  LOG "~/.docker/config.json tem credsStore configurado — resetando (evita 'error getting credentials' em pull de imagem pública)."
+  echo '{}' > "$DOCKER_CFG"
+fi
+
 LOG "reconstruindo containers (docker compose --profile app up -d --build)…"
 export GIT_SHA="$(git rev-parse --short HEAD)"
 # <épico>.<data do commit AAAAMMDD>.<hora HHMM> — ex.: 1.20260722.1213. Épico
