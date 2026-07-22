@@ -116,7 +116,48 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                 </span>
               }
             </div>
-            <div class="mono hdr-dir">{{ session()?.work_dir || '—' }}</div>
+            <div class="mono hdr-dir">
+              <span class="hdr-dir-path">{{ session()?.work_dir || '—' }}</span>
+              @if (session()?.git_branch; as branch) {
+                <span class="branch-wrap">
+                  <button
+                    type="button"
+                    class="branch-pill"
+                    [class.switching]="branchSwitching()"
+                    [disabled]="branchSwitching()"
+                    (click)="toggleBranchList()"
+                    [title]="'Branch ativa: ' + branch + ' — clique pra trocar'"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
+                      <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                    </svg>
+                    {{ branchSwitching() ? 'trocando…' : branch }}
+                  </button>
+                  @if (branchListOpen()) {
+                    <div class="branch-list">
+                      @if (branchList() === null) {
+                        <div class="branch-item branch-loading">carregando…</div>
+                      } @else if (branchList()!.length === 0) {
+                        <div class="branch-item branch-loading">nenhuma outra branch</div>
+                      } @else {
+                        @for (b of branchList()!; track b) {
+                          <button
+                            type="button"
+                            class="branch-item"
+                            [class.current]="b === branch"
+                            (click)="switchBranch(b)"
+                          >
+                            {{ b }}
+                          </button>
+                        }
+                      }
+                    </div>
+                  }
+                </span>
+              }
+            </div>
             @if (activeTask()) {
               <div class="hdr-task">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3" /><path d="m9 14 2 2 4-4" /></svg>
@@ -1921,11 +1962,86 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         color: #9fb0ad;
       }
       .hdr-dir {
+        display: flex;
+        align-items: center;
+        gap: 6px;
         font-size: 12px;
         color: #7a8090;
+        min-width: 0;
+      }
+      .hdr-dir-path {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .branch-wrap {
+        position: relative;
+        flex-shrink: 0;
+      }
+      .branch-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid #2a3038;
+        background: #1c2027;
+        color: #9fb0ad;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .branch-pill:hover:not(:disabled) {
+        border-color: #3a4048;
+        color: #d6dbe0;
+      }
+      .branch-pill:disabled {
+        cursor: default;
+        opacity: 0.7;
+      }
+      .branch-list {
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        z-index: 20;
+        min-width: 160px;
+        max-height: 220px;
+        overflow-y: auto;
+        background: #1c2027;
+        border: 1px solid #2a3038;
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        padding: 4px;
+      }
+      .branch-item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 6px 10px;
+        border: none;
+        background: transparent;
+        color: #c9cdd6;
+        font-size: 12px;
+        font-family: inherit;
+        border-radius: 6px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .branch-item:hover {
+        background: #2a3038;
+      }
+      .branch-item.current {
+        color: #4ade80;
+        font-weight: 600;
+      }
+      .branch-item.branch-loading {
+        color: #7a8090;
+        cursor: default;
+      }
+      .branch-item.branch-loading:hover {
+        background: transparent;
       }
       .hdr-task {
         display: inline-flex;
@@ -3709,6 +3825,51 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly hostEmoji = computed(() =>
     this.workers.emoji(this.session()?.host_id),
   );
+
+  /**
+   * Badge de branch git (work_dir da sessão) — aberto: mostra a lista pra
+   * escolher; fechado: só o nome atual. `null` = fechado; lista vazia
+   * enquanto aguarda a resposta do worker via SSE (`git_branches`).
+   */
+  protected readonly branchListOpen = signal<boolean>(false);
+  protected readonly branchList = signal<string[] | null>(null);
+  protected readonly branchSwitching = signal<boolean>(false);
+  /** Reage à resposta do worker (git_branches/git_checkout), filtrando pela
+   * sessão aberta AGORA — outra sessão pode ter pedido isso simultaneamente. */
+  private readonly gitBranchesEffect = effect(() => {
+    const frame = this.sse.gitBranches();
+    if (!frame || frame.session_id !== this.id()) {
+      return;
+    }
+    if (frame.branches) {
+      this.branchList.set(frame.branches);
+    }
+    if (frame.current) {
+      this.session.update((s) => (s ? { ...s, git_branch: frame.current! } : s));
+    }
+    this.branchSwitching.set(false);
+  });
+
+  protected toggleBranchList(): void {
+    const opening = !this.branchListOpen();
+    this.branchListOpen.set(opening);
+    if (opening) {
+      this.branchList.set(null);
+      this.api.requestGitBranches(this.id()).subscribe();
+    }
+  }
+
+  protected switchBranch(branch: string): void {
+    if (branch === this.session()?.git_branch) {
+      this.branchListOpen.set(false);
+      return;
+    }
+    this.branchSwitching.set(true);
+    this.branchListOpen.set(false);
+    this.api.checkoutGitBranch(this.id(), branch).subscribe({
+      error: () => this.branchSwitching.set(false),
+    });
+  }
 
   /** Tarefas/marcos desta sessão (painel recolhível). */
   protected readonly tasks = signal<Task[]>([]);

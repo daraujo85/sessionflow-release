@@ -439,6 +439,16 @@ export class ApiService {
     return this.http.get<UsageInfo>(this.url('/usage'));
   }
 
+  /** Pede a lista de branches do repo do work_dir da sessão — resposta assíncrona via SSE (`git_branches`). */
+  requestGitBranches(id: string): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/git/branches`), {});
+  }
+
+  /** Troca a branch ativa (git checkout) do repo da sessão — resposta assíncrona via SSE (`git_checkout`). */
+  checkoutGitBranch(id: string, branch: string): Observable<void> {
+    return this.http.post<void>(this.url(`/sessions/${id}/git/checkout`), { branch });
+  }
+
   /** Versão deployada nesta instância (rodapé do Perfil) — "1.20260722.1213". */
   getVersion(): Observable<{ version: string; git_sha: string }> {
     return this.http.get<{ version: string; git_sha: string }>(this.url('/version'));

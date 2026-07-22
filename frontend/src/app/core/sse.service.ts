@@ -37,6 +37,15 @@ export interface JarvisAudioFrame {
   at?: string;
 }
 
+/** Resposta do worker a um pedido `git_branches` (badge de branch no card). */
+export interface GitBranchesFrame {
+  session_id: string;
+  ok: boolean;
+  branches?: string[];
+  current?: string;
+  error?: string;
+}
+
 /** Maximum entries kept in each rolling buffer. */
 const MAX_BUFFER = 500;
 
@@ -84,6 +93,12 @@ export class SseService {
    * reage a este signal e toca no aparelho.
    */
   readonly jarvisAudio = signal<JarvisAudioFrame | null>(null);
+  /**
+   * Última resposta a um `git_branches`/`git_checkout` (badge de branch no
+   * card da sessão) — transiente, o componente lê e reage via `effect()`
+   * filtrando por `session_id === this.id()` (mesmo padrão de `screens`).
+   */
+  readonly gitBranches = signal<GitBranchesFrame | null>(null);
 
   private source: EventSource | null = null;
   private sessionId?: string;
@@ -213,6 +228,15 @@ export class SseService {
     const jv = parsed as { type?: string; audio_b64?: string };
     if (jv.type === 'jarvis_audio' && jv.audio_b64) {
       this.jarvisAudio.set(parsed as JarvisAudioFrame);
+      return;
+    }
+
+    // Resposta do worker a git_branches (lista) OU git_checkout (troca) — o
+    // handler do checkout devolve `current` mas não `branches`; o componente
+    // trata os dois campos como opcionais e usa o que precisar.
+    const gb = parsed as { type?: string; session_id?: string };
+    if ((gb.type === 'git_branches' || gb.type === 'git_checkout') && gb.session_id) {
+      this.gitBranches.set(parsed as GitBranchesFrame);
       return;
     }
 

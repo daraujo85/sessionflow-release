@@ -62,7 +62,7 @@ import aio_pika
 import libtmux
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import jarvis, milestones, transcriber
+from sessionflow_worker import git_info, jarvis, milestones, transcriber
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
 from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
 from sessionflow_worker.state import SessionState
@@ -115,6 +115,8 @@ _VALID_TYPES = frozenset(
         "switch_agent",
         "jarvis_test",
         "jarvis_install_piper",
+        "git_branches",
+        "git_checkout",
     }
 )
 
@@ -584,6 +586,10 @@ class CommandConsumer:
             return await self._handle_jarvis_test(payload)
         if ctype == "jarvis_install_piper":
             return await self._handle_jarvis_install_piper(payload)
+        if ctype == "git_branches":
+            return await self._handle_git_branches(payload)
+        if ctype == "git_checkout":
+            return await self._handle_git_checkout(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -865,6 +871,55 @@ class CommandConsumer:
             "name": name,
             "note": "recreated" if tmux_id else "relaunched-in-pane",
             "launch_cmd": launch_cmd,
+        }
+
+    async def _session_work_dir(self, name: str) -> str:
+        """work_dir salvo da sessão ``name`` ou levanta ``CommandError``."""
+        doc = await self._sessions.find_one({"tmux_name": name}, projection={"work_dir": 1})
+        work_dir = doc.get("work_dir") if doc else None
+        if not work_dir:
+            raise CommandError(f"sessão {name!r} sem work_dir salvo")
+        return work_dir
+
+    async def _handle_git_branches(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Lista as branches do repo do work_dir da sessão (badge de branch)."""
+        name = payload.get("name")
+        if not name:
+            raise CommandError("git_branches requer 'name'")
+        work_dir = await self._session_work_dir(name)
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, git_info.is_git_repo, work_dir):
+            raise CommandError(f"{work_dir!r} não é um repositório git")
+        branches = await loop.run_in_executor(None, git_info.list_branches, work_dir)
+        current = await loop.run_in_executor(None, git_info.current_branch, work_dir)
+        return {
+            "name": name,
+            "session_id": payload.get("session_id"),
+            "branches": branches,
+            "current": current,
+        }
+
+    async def _handle_git_checkout(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Troca a branch ativa (git checkout) do repo do work_dir da sessão."""
+        name = payload.get("name")
+        branch = payload.get("branch")
+        if not name or not branch:
+            raise CommandError("git_checkout requer 'name' e 'branch'")
+        work_dir = await self._session_work_dir(name)
+        loop = asyncio.get_running_loop()
+        ok, message = await loop.run_in_executor(
+            None, git_info.checkout_branch, work_dir, branch
+        )
+        if ok:
+            await self._sessions.update_one(
+                {"tmux_name": name}, {"$set": {"git_branch": message, "updated_at": _now()}}
+            )
+        if not ok:
+            raise CommandError(message)
+        return {
+            "name": name,
+            "session_id": payload.get("session_id"),
+            "current": message,
         }
 
     async def _await_agent_ready(self, name: str, timeout: float = 20.0) -> None:

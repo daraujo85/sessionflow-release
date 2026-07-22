@@ -30,7 +30,7 @@ import aio_pika
 from libtmux.exc import LibTmuxException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import jarvis
+from sessionflow_worker import git_info, jarvis
 from sessionflow_worker.agent_launcher import AgentType
 from sessionflow_worker.codex_metrics import codex_metrics_for
 from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
@@ -352,6 +352,12 @@ class Discovery:
         # SessionFlow) com vazio.
         if info.work_dir:
             set_fields["work_dir"] = info.work_dir
+            # Branch git ativa do projeto (badge no card da sessão) — barato
+            # (subprocess de ~ms) e só quando o work_dir é mesmo um repo;
+            # None (fora de um repo) some do doc em vez de gravar null.
+            branch = git_info.current_branch(info.work_dir)
+            if branch:
+                set_fields["git_branch"] = branch
         # agent_type: só grava quando RECONHECIDO. Esse campo é o que o resume
         # ("Retomar") usa pra saber qual CLI relançar — sobrescrever com
         # "unknown" só porque o processo caiu num ciclo (ex.: binário ausente

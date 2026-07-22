@@ -59,6 +59,9 @@ class SessionOut(BaseModel):
     model: str | None = None
     effort: str | None = None
     work_dir: str | None = None
+    # Branch git ativa do work_dir (badge no card) — só existe quando o
+    # work_dir é um repositório git; ausente/None senão.
+    git_branch: str | None = None
     status: str | None = None
     # Rótulo fino do que o agente está fazendo (derivado da tela pelo worker).
     activity: str | None = None
@@ -837,6 +840,51 @@ async def resume_session(request: Request, session_id: str) -> SessionCreateAcce
     settings = request.app.state.settings
     command_id = await publish_command(
         settings, type="resume", payload={"name": tmux_name}, host_id=host_id
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+class GitCheckoutIn(BaseModel):
+    """Request body for switching the session's project to another branch."""
+
+    branch: str = Field(min_length=1)
+
+
+@router.post(
+    "/{session_id}/git/branches", response_model=SessionCreateAccepted, status_code=202
+)
+async def list_git_branches(request: Request, session_id: str) -> SessionCreateAccepted:
+    """Pede ao worker a lista de branches do repo do work_dir desta sessão.
+
+    Assíncrono (202): a lista real vem depois via SSE (evento
+    ``git_branches``, filtrado por ``session_id``) — o work_dir mora no HOST
+    do worker, a API não tem acesso direto ao disco pra rodar `git` nele.
+    """
+    tmux_name, host_id = await _require_route(request, session_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="git_branches",
+        payload={"name": tmux_name, "session_id": session_id},
+        host_id=host_id,
+    )
+    return SessionCreateAccepted(command_id=command_id, status="accepted")
+
+
+@router.post(
+    "/{session_id}/git/checkout", response_model=SessionCreateAccepted, status_code=202
+)
+async def checkout_git_branch(
+    request: Request, session_id: str, body: GitCheckoutIn
+) -> SessionCreateAccepted:
+    """Troca a branch ativa (git checkout) do repo do work_dir desta sessão."""
+    tmux_name, host_id = await _require_route(request, session_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="git_checkout",
+        payload={"name": tmux_name, "session_id": session_id, "branch": body.branch},
+        host_id=host_id,
     )
     return SessionCreateAccepted(command_id=command_id, status="accepted")
 
