@@ -27,7 +27,7 @@ router = APIRouter(tags=["shared-files"])
 
 # Teto generoso mas finito — evita encher o disco do host por engano (loop
 # de agente, vídeo grande etc.). Ajustável se um caso legítimo precisar mais.
-_MAX_FILE_BYTES = 50 * 1024 * 1024
+_MAX_FILE_BYTES = 200 * 1024 * 1024
 
 
 class SharedFileOut(BaseModel):
