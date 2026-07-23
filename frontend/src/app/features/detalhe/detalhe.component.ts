@@ -2189,28 +2189,39 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       }
       .repos-modal-list {
         overflow-y: auto;
-        padding: 12px;
+        padding: 16px;
         display: grid;
         /* Colunas que se ajustam à largura: numa tela larga cabem 2-3 repos
            lado a lado (usa o espaço) — numa tela estreita cai pra 1 coluna
            sozinho (mesmo comportamento de antes). */
-        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-        gap: 14px 16px;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 12px;
         align-content: start;
       }
+      /* Card por repo — sem isso, numa tela larga o grid virava texto solto
+         flutuando (sem contorno nenhum), difícil de ler cada item como um
+         bloco separado. */
       .repos-modal-item {
         display: flex;
         flex-direction: column;
-        gap: 5px;
+        gap: 8px;
         min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid #262b33;
+        border-radius: 10px;
+        background: #1e222a;
       }
       .repos-modal-item-name {
         display: flex;
         align-items: center;
-        gap: 5px;
+        gap: 6px;
         font-size: 12px;
         font-weight: 600;
         color: #d6dbe0;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .repos-modal-item-name svg {
         opacity: 0.55;
