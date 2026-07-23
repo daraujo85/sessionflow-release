@@ -245,6 +245,10 @@ export class ApiService {
       .pipe(this.items<RemoteSession>());
   }
 
+  getRemoteSession(id: string): Observable<RemoteSession> {
+    return this.http.get<RemoteSession>(this.url(`/remote-sessions/${id}`));
+  }
+
   createRemoteSession(label: string, url: string): Observable<RemoteSession> {
     return this.http.post<RemoteSession>(this.url('/remote-sessions'), { label, url });
   }

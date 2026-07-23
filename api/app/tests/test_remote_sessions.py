@@ -86,6 +86,10 @@ async def test_create_list_delete_remote_session(settings):
             assert body["total"] == 1
             assert body["items"][0]["id"] == created["id"]
 
+            get_resp = await client.get(f"/remote-sessions/{created['id']}")
+            assert get_resp.status_code == 200
+            assert get_resp.json()["label"] == "Lucas"
+
             del_resp = await client.delete(f"/remote-sessions/{created['id']}")
             assert del_resp.status_code == 204
 
@@ -114,4 +118,13 @@ async def test_delete_unknown_not_found(settings):
     async with await _client(app) as client:
         async with app.router.lifespan_context(app):
             resp = await client.delete(f"/remote-sessions/{ObjectId()}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_get_unknown_not_found(settings):
+    app = create_app(settings=settings)
+    async with await _client(app) as client:
+        async with app.router.lifespan_context(app):
+            resp = await client.get(f"/remote-sessions/{ObjectId()}")
     assert resp.status_code == 404

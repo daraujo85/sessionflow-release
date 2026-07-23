@@ -62,6 +62,14 @@ async def list_remote_sessions(request: Request) -> RemoteSessionListOut:
     return RemoteSessionListOut(items=items, total=len(items))
 
 
+@router.get("/remote-sessions/{remote_id}", response_model=RemoteSessionOut)
+async def get_remote_session(request: Request, remote_id: str) -> RemoteSessionOut:
+    doc = await _repo(request).get(remote_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Remote session not found")
+    return RemoteSessionOut.from_doc(doc)
+
+
 @router.post("/remote-sessions", response_model=RemoteSessionOut, status_code=201)
 async def create_remote_session(
     request: Request, body: RemoteSessionIn

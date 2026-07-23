@@ -41,6 +41,13 @@ class RemoteSessionsRepository:
         cursor = self._collection.find({}).sort("created_at", 1)
         return [doc async for doc in cursor]
 
+    async def get(self, remote_id: str) -> dict[str, Any] | None:
+        try:
+            oid = ObjectId(remote_id)
+        except (InvalidId, TypeError):
+            return None
+        return await self._collection.find_one({"_id": oid})
+
     async def delete(self, remote_id: str) -> dict[str, Any] | None:
         try:
             oid = ObjectId(remote_id)

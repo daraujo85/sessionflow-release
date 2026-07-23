@@ -30,6 +30,70 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
         <h1>Nova sessão</h1>
       </header>
 
+      <div class="mode-tabs" role="tablist" aria-label="Tipo de sessão">
+        <button
+          type="button"
+          role="tab"
+          class="mode-tab"
+          [class.selected]="mode() === 'local'"
+          [attr.aria-selected]="mode() === 'local'"
+          (click)="mode.set('local')"
+        >
+          Local
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="mode-tab"
+          [class.selected]="mode() === 'compartilhada'"
+          [attr.aria-selected]="mode() === 'compartilhada'"
+          (click)="mode.set('compartilhada')"
+        >
+          Compartilhada
+        </button>
+      </div>
+
+      @if (mode() === 'compartilhada') {
+        <div class="body">
+          <label class="field">
+            <span class="label">Nome de quem compartilhou</span>
+            <input
+              class="input"
+              type="text"
+              placeholder="ex: Lucas"
+              [ngModel]="remoteLabel()"
+              (ngModelChange)="remoteLabel.set($event)"
+            />
+          </label>
+          <label class="field">
+            <span class="label">Link de convidado</span>
+            <input
+              class="input mono"
+              type="text"
+              placeholder="https://.../s/...?k=..."
+              autocomplete="off"
+              [ngModel]="remoteUrl()"
+              (ngModelChange)="remoteUrl.set($event)"
+            />
+            <span class="hint-muted">
+              Cole o link que a pessoa gerou no botão de compartilhar da sessão dela.
+            </span>
+          </label>
+          @if (errorMsg()) {
+            <p class="error">{{ errorMsg() }}</p>
+          }
+        </div>
+        <footer class="ftr">
+          <button
+            type="button"
+            class="submit"
+            [disabled]="!canSubmitRemote() || remoteSubmitting()"
+            (click)="submitRemote()"
+          >
+            {{ remoteSubmitting() ? 'Adicionando…' : 'Adicionar' }}
+          </button>
+        </footer>
+      } @else {
       <div class="body">
         <!-- Nome -->
         <label class="field">
@@ -197,6 +261,7 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
           {{ submitting() ? 'Criando…' : 'Criar sessão' }}
         </button>
       </footer>
+      }
     </section>
   `,
   styles: [
@@ -226,6 +291,27 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
         font-size: var(--text-md);
         font-weight: var(--fw-semibold);
         color: var(--text-strong);
+      }
+      .mode-tabs {
+        display: flex;
+        gap: var(--space-2);
+        padding: var(--space-3) var(--space-4) 0;
+      }
+      .mode-tab {
+        flex: 1;
+        padding: var(--space-2) var(--space-3);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-full);
+        background: var(--surface-card);
+        color: var(--text-body);
+        font-size: var(--text-sm);
+        font-weight: var(--fw-medium);
+        cursor: pointer;
+      }
+      .mode-tab.selected {
+        border-color: var(--color-accent);
+        background: rgba(var(--color-accent-rgb), 0.12);
+        color: var(--color-accent);
       }
       .back {
         display: grid;
@@ -439,6 +525,37 @@ export class CriarComponent {
   /** Static option lists exposed to the template. */
   readonly agents = AGENTS;
   readonly efforts = EFFORTS;
+
+  /** "Local" = fluxo de sempre (agente novo); "Compartilhada" = cola o link
+   * de convidado de uma sessão de OUTRA conta (ver `remote-sessions`). */
+  readonly mode = signal<'local' | 'compartilhada'>('local');
+  readonly remoteLabel = signal('');
+  readonly remoteUrl = signal('');
+  readonly remoteSubmitting = signal(false);
+  readonly canSubmitRemote = computed(
+    () => this.remoteLabel().trim().length > 0 && this.remoteUrl().trim().length > 0,
+  );
+
+  submitRemote(): void {
+    if (!this.canSubmitRemote() || this.remoteSubmitting()) {
+      return;
+    }
+    this.errorMsg.set('');
+    this.remoteSubmitting.set(true);
+    this.api
+      .createRemoteSession(this.remoteLabel().trim(), this.remoteUrl().trim())
+      .subscribe({
+        next: () => {
+          this.remoteSubmitting.set(false);
+          this.router.navigate(['/sessoes']);
+        },
+        error: (err: HttpErrorResponse) => {
+          this.remoteSubmitting.set(false);
+          const detail = (err.error && (err.error.detail || err.error.message)) || err.message;
+          this.errorMsg.set(`Falha ao adicionar: ${detail ?? 'erro desconhecido'}`);
+        },
+      });
+  }
 
   // --- Form state (signals) ---
   /** Friendly DISPLAY name (free text; spaces/accents OK). */

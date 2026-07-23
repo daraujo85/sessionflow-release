@@ -10,7 +10,6 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { forkJoin, of, catchError, map } from 'rxjs';
 import { Router } from '@angular/router';
-import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
 import { RemoteSession, Session, SessionStatus } from '../../core/models';
 import { SseService } from '../../core/sse.service';
@@ -46,21 +45,6 @@ const FILTERS: readonly FilterChip[] = [
         <button
           type="button"
           class="sf-select-toggle"
-          (click)="toggleRemoteAdd()"
-          [class.is-active]="remoteAddOpen()"
-          [attr.aria-pressed]="remoteAddOpen()"
-          title="Adicionar sessão de outra conta (cola o link de convidado que alguém te compartilhou)"
-          aria-label="Adicionar sessão de outra conta"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-            <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          class="sf-select-toggle"
           [class.is-active]="selectionMode()"
           (click)="toggleSelectionMode()"
           [attr.aria-pressed]="selectionMode()"
@@ -82,40 +66,6 @@ const FILTERS: readonly FilterChip[] = [
           }
         </button>
       </header>
-
-      @if (remoteAddOpen()) {
-        <div class="sf-remote-form">
-          <input
-            type="text"
-            class="sf-remote-input"
-            placeholder="Nome de quem compartilhou (ex: Lucas)"
-            [value]="remoteLabelDraft()"
-            (input)="remoteLabelDraft.set($any($event.target).value)"
-            autocomplete="off"
-          />
-          <input
-            type="text"
-            class="sf-remote-input"
-            placeholder="Cole o link de convidado (https://.../s/...)"
-            [value]="remoteUrlDraft()"
-            (input)="remoteUrlDraft.set($any($event.target).value)"
-            autocomplete="off"
-          />
-          <div class="sf-remote-form-acts">
-            <button type="button" class="sf-remote-cancel" (click)="toggleRemoteAdd()">
-              Cancelar
-            </button>
-            <button
-              type="button"
-              class="sf-remote-save"
-              [disabled]="!remoteLabelDraft().trim() || !remoteUrlDraft().trim() || remoteSaving()"
-              (click)="saveRemoteSession()"
-            >
-              {{ remoteSaving() ? 'Salvando…' : 'Salvar' }}
-            </button>
-          </div>
-        </div>
-      }
 
       <div class="sf-search">
         <svg
@@ -211,9 +161,10 @@ const FILTERS: readonly FilterChip[] = [
         <ul class="sf-list">
           <!-- Sessões de OUTRAS contas: bookmark do link de convidado que
                alguém compartilhou (ver painel "Compartilhar" na sessão
-               dela). Mesmo card de sempre — só a borda/tag de cor entrega
-               que não é sua. Toque abre num iframe; ✕ só remove o bookmark
-               daqui, não afeta a conta remota. -->
+               dela). MESMA estrutura/altura do card normal — só a borda
+               colorida diferencia. Toque abre em tela cheia (like uma
+               sessão normal); ✕ só remove o bookmark daqui, não afeta a
+               conta remota. -->
           @for (r of remoteSessions(); track r.id) {
             <li class="sf-card-wrap sf-card-wrap--remote">
               <button
@@ -251,13 +202,29 @@ const FILTERS: readonly FilterChip[] = [
                     <span class="sf-info">
                       <span class="sf-name-row">
                         <span class="sf-name">{{ r.label }}</span>
-                        <span class="sf-remote-tag" [style.color]="remoteColor(r)" [style.borderColor]="remoteColor(r)">
-                          compartilhada
-                        </span>
                       </span>
-                      <span class="mono sf-dir">Sessão de outra conta · toque pra abrir</span>
+                      <span class="mono sf-dir">{{ remoteHost(r) }}</span>
                     </span>
                   </span>
+                </span>
+                <span class="sf-footer">
+                  <span
+                    class="sf-pill"
+                    [style.color]="remoteColor(r)"
+                    [style.background]="tint(remoteColor(r), 0.13)"
+                  >
+                    <span class="sf-stat-icon" [style.color]="remoteColor(r)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                        <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+                      </svg>
+                    </span>
+                    Compartilhada
+                  </span>
+                  @if (remoteTimeAgo(r)) {
+                    <span class="sf-time">{{ remoteTimeAgo(r) }}</span>
+                  }
                 </span>
               </button>
             </li>
@@ -499,31 +466,6 @@ const FILTERS: readonly FilterChip[] = [
         </div>
       }
 
-      <!-- Visualizador de sessão remota: o link de convidado já funciona
-           sozinho (sem login), então embedamos ele direto num iframe. -->
-      @if (remoteViewer(); as rv) {
-        <div class="sf-remote-modal-backdrop" (click)="closeRemoteViewer()">
-          <div class="sf-remote-modal" (click)="$event.stopPropagation()">
-            <div class="sf-remote-modal-hdr">
-              <span>{{ rv.label }}</span>
-              <button
-                type="button"
-                class="sf-remote-modal-close"
-                (click)="closeRemoteViewer()"
-                aria-label="Fechar"
-              >
-                ✕
-              </button>
-            </div>
-            <iframe
-              class="sf-remote-modal-frame"
-              [src]="rv.safeUrl"
-              allow="clipboard-write"
-              title="Sessão remota"
-            ></iframe>
-          </div>
-        </div>
-      }
     </section>
   `,
   styles: [
@@ -1287,22 +1229,11 @@ const FILTERS: readonly FilterChip[] = [
       }
 
       /* ── Sessões de outras contas ─────────────────────────────────────── */
-      /* Card de sessão remota: MESMA estrutura/classes do card normal
-         (sf-card, sf-avatar, sf-info, sf-name-row, sf-dir) — só a borda
-         colorida + a tag "compartilhada" entregam que não é sua. */
+      /* Card de sessão remota: MESMA estrutura/classes/altura do card normal
+         (sf-card, sf-avatar, sf-info, sf-name-row, sf-dir, sf-footer) — só a
+         borda colorida diferencia, lado a lado com os cards locais. */
       .sf-card--remote {
         border-color: inherit;
-      }
-      .sf-remote-tag {
-        flex: none;
-        font-size: 9.5px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-        padding: 2px 7px;
-        border-radius: 999px;
-        border: 1px solid;
-        background: transparent;
       }
       .sf-card-wrap--remote {
         position: relative;
@@ -1326,108 +1257,6 @@ const FILTERS: readonly FilterChip[] = [
         color: #f87171;
         background: rgba(248, 113, 113, 0.16);
       }
-      .sf-remote-form {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 10px;
-        margin-bottom: 10px;
-        background: #161a20;
-        border: 1px solid #262b33;
-        border-radius: 10px;
-      }
-      .sf-remote-input {
-        width: 100%;
-        box-sizing: border-box;
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid #283230;
-        background: #0f1216;
-        color: #e6e8ec;
-        font-size: 13px;
-        font-family: inherit;
-      }
-      .sf-remote-form-acts {
-        display: flex;
-        justify-content: flex-end;
-        gap: 12px;
-      }
-      .sf-remote-cancel {
-        background: none;
-        border: none;
-        color: #9aa0ae;
-        font-size: 12.5px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      .sf-remote-save {
-        background: #2cecc4;
-        border: none;
-        color: #06231d;
-        font-size: 12.5px;
-        font-weight: 700;
-        padding: 6px 14px;
-        border-radius: 8px;
-        cursor: pointer;
-      }
-      .sf-remote-save:disabled {
-        opacity: 0.5;
-        cursor: default;
-      }
-      .sf-remote-modal-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        z-index: 300;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-      }
-      .sf-remote-modal {
-        width: 100%;
-        max-width: min(94vw, 480px);
-        height: min(88vh, 900px);
-        background: #14171c;
-        border: 1px solid #2a3038;
-        border-radius: 14px;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
-      }
-      .sf-remote-modal-hdr {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 12px 14px;
-        border-bottom: 1px solid #2a3038;
-        font-size: 13px;
-        font-weight: 700;
-        color: #d6dbe0;
-        flex: none;
-      }
-      .sf-remote-modal-close {
-        appearance: none;
-        background: none;
-        border: none;
-        color: #7a8090;
-        font-size: 14px;
-        line-height: 1;
-        padding: 4px;
-        cursor: pointer;
-        border-radius: 6px;
-      }
-      .sf-remote-modal-close:hover {
-        color: #d6dbe0;
-        background: #23272f;
-      }
-      .sf-remote-modal-frame {
-        flex: 1;
-        width: 100%;
-        border: none;
-        background: #000;
-      }
     `,
   ],
 })
@@ -1436,7 +1265,6 @@ export class SessoesComponent {
   private readonly sse = inject(SseService);
   private readonly jarvis = inject(JarvisAudioService);
   private readonly router = inject(Router);
-  private readonly sanitizer = inject(DomSanitizer);
   protected readonly workers = inject(WorkersStore);
 
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
@@ -2002,17 +1830,10 @@ export class SessoesComponent {
     return fmtTimeAgo(raw);
   }
 
-  // ── Sessões de OUTRAS contas (bookmark de link de convidado) ────────────
+  // ── Sessões de OUTRAS contas (bookmark de link de convidado, criado na
+  //    tela "Nova sessão" → aba "Compartilhada") ───────────────────────────
 
   protected readonly remoteSessions = signal<RemoteSession[]>([]);
-  protected readonly remoteAddOpen = signal<boolean>(false);
-  protected readonly remoteLabelDraft = signal<string>('');
-  protected readonly remoteUrlDraft = signal<string>('');
-  protected readonly remoteSaving = signal<boolean>(false);
-  /** Sessão remota aberta agora (modal com iframe), ou null se fechado. */
-  protected readonly remoteViewer = signal<{ label: string; safeUrl: SafeResourceUrl } | null>(
-    null,
-  );
 
   private loadRemoteSessions(): void {
     this.api
@@ -2022,38 +1843,6 @@ export class SessoesComponent {
         next: (list) => this.remoteSessions.set(list ?? []),
         error: () => {
           /* mantém o último estado conhecido em erro transitório */
-        },
-      });
-  }
-
-  protected toggleRemoteAdd(): void {
-    this.remoteAddOpen.update((v) => !v);
-    if (!this.remoteAddOpen()) {
-      this.remoteLabelDraft.set('');
-      this.remoteUrlDraft.set('');
-    }
-  }
-
-  protected saveRemoteSession(): void {
-    const label = this.remoteLabelDraft().trim();
-    const url = this.remoteUrlDraft().trim();
-    if (!label || !url) {
-      return;
-    }
-    this.remoteSaving.set(true);
-    this.api
-      .createRemoteSession(label, url)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (created) => {
-          this.remoteSessions.update((list) => [...list, created]);
-          this.remoteSaving.set(false);
-          this.remoteAddOpen.set(false);
-          this.remoteLabelDraft.set('');
-          this.remoteUrlDraft.set('');
-        },
-        error: () => {
-          this.remoteSaving.set(false);
         },
       });
   }
@@ -2077,15 +1866,22 @@ export class SessoesComponent {
     return palette[hash % palette.length];
   }
 
-  protected openRemoteSession(r: RemoteSession): void {
-    this.remoteViewer.set({
-      label: r.label,
-      safeUrl: this.sanitizer.bypassSecurityTrustResourceUrl(r.url),
-    });
+  /** Domínio do link de convidado — equivalente ao "diretório" do card normal. */
+  protected remoteHost(r: RemoteSession): string {
+    try {
+      return new URL(r.url).hostname;
+    } catch {
+      return r.url;
+    }
   }
 
-  protected closeRemoteViewer(): void {
-    this.remoteViewer.set(null);
+  protected remoteTimeAgo(r: RemoteSession): string {
+    return fmtTimeAgo(r.created_at ?? undefined);
+  }
+
+  /** Abre em TELA CHEIA, igual uma sessão normal — não é modal. */
+  protected openRemoteSession(r: RemoteSession): void {
+    void this.router.navigate(['/remota', r.id]);
   }
 
   private load(status?: SessionStatus): void {

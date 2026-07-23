@@ -58,6 +58,12 @@ export const routes: Routes = [
       import('./features/detalhe/detalhe.component').then((m) => m.DetalheComponent),
   },
   {
+    path: 'remota/:id',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/remota/remota.component').then((m) => m.RemotaComponent),
+  },
+  {
     path: 'notificacoes',
     canActivate: [authGuard],
     loadComponent: () =>
