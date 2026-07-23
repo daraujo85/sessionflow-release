@@ -56,8 +56,17 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         </button>
       </header>
 
-      <div class="term" #termEl (scroll)="onScroll()">
+      <div class="term" #termEl (scroll)="onScroll()" (mouseup)="onTermSelect()">
         <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
+        @if (copied()) {
+          <div class="term-copied" role="status" aria-live="polite">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 12l4 4 10-10" />
+            </svg>
+            Copiado
+          </div>
+        }
       </div>
 
       <div class="keypad">
@@ -311,6 +320,39 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         white-space: pre-wrap;
         word-break: break-word;
         color: #d4d4d4;
+      }
+      .term-copied {
+        position: sticky;
+        bottom: 12px;
+        float: left;
+        margin-left: 2px;
+        z-index: 5;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        color: #06231d;
+        font-size: 11.5px;
+        font-weight: 700;
+        font-family: inherit;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+        animation: term-copied-in 0.15s ease-out;
+      }
+      .term-copied svg {
+        flex: none;
+      }
+      @keyframes term-copied-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
       }
       .keypad {
         display: flex;
@@ -598,6 +640,8 @@ export class SessionPanelComponent {
   protected readonly moreOpen = signal<boolean>(false);
   protected readonly dragOver = signal<boolean>(false);
   protected readonly attaching = signal<boolean>(false);
+  protected readonly copied = signal<boolean>(false);
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Captura de tela (só onde o navegador suporta — desktop/Mac), igual ao Detalhe cheio. */
   protected readonly canScreenshot =
@@ -757,6 +801,34 @@ export class SessionPanelComponent {
   protected onScroll(): void {
     // Sem "modo histórico" neste painel leve — o poll/SSE sempre substitui a
     // tela; deixamos o scroll nativo livre pro usuário olhar pra trás.
+  }
+
+  /** Selecionou texto no terminal → copia pro clipboard e avisa ("Copiado"). */
+  protected onTermSelect(): void {
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
+    const text = sel?.toString() ?? '';
+    if (!text.trim()) {
+      return;
+    }
+    const el = this.termEl()?.nativeElement;
+    if (el && sel?.anchorNode && !el.contains(sel.anchorNode)) {
+      return; // seleção começou fora do terminal
+    }
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => this.flashCopied())
+      .catch(() => {
+        /* clipboard indisponível — silencioso */
+      });
+  }
+
+  /** Mostra o toast "Copiado" e agenda o sumiço. */
+  private flashCopied(): void {
+    this.copied.set(true);
+    if (this.copyTimer) {
+      clearTimeout(this.copyTimer);
+    }
+    this.copyTimer = setTimeout(() => this.copied.set(false), 1500);
   }
 
   protected sendKey(key: TerminalKey): void {

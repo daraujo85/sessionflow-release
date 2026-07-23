@@ -1041,7 +1041,7 @@ class CommandConsumer:
             rows = int(payload.get("rows", 0))
         except (TypeError, ValueError) as exc:
             raise CommandError("resize requer cols/rows inteiros") from exc
-        cols = max(40, min(400, cols))
+        cols = max(20, min(400, cols))
         rows = max(10, min(200, rows))
         socket_name = getattr(self._server, "socket_name", None)
         base = ["tmux"]
