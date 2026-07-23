@@ -49,32 +49,21 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       <!-- Header -->
       <header class="hdr">
         <div class="hdr-top">
-          @if (!guest()) {
-            <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#C9CDD6"
-                stroke-width="2.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M15 18l-6-6 6-6" />
-              </svg>
-            </button>
-          } @else {
-            <span class="guest-badge" title="Você está vendo um link compartilhado desta sessão">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M18 8a6 6 0 0 0-9.33-5M6 8a6 6 0 0 0 9.33 5" />
-                <circle cx="12" cy="12" r="3" /><path d="M12 2v2M12 20v2" />
-              </svg>
-              Compartilhado
-            </span>
-          }
+          <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#C9CDD6"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
 
           <div class="hdr-info">
             <div class="hdr-title">
@@ -99,6 +88,16 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                 <span class="status-dot" [style.background]="statusMeta().dot"></span>
                 <span class="status-label">{{ statusMeta().label }}</span>
               </span>
+              @if (guest()) {
+                <span class="guest-badge" title="Você está vendo um link compartilhado desta sessão">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 8a6 6 0 0 0-9.33-5M6 8a6 6 0 0 0 9.33 5" />
+                    <circle cx="12" cy="12" r="3" /><path d="M12 2v2M12 20v2" />
+                  </svg>
+                  Compartilhado
+                </span>
+              }
               @if (hostBadge(); as host) {
                 <span class="host-pill" [title]="'Roda em: ' + host">
                   @if (hostEmoji(); as emoji) {
@@ -2328,18 +2327,27 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         gap: 8px;
       }
       /* Badge "Compartilhado" no lugar do voltar (modo convidado). */
+      /* Chip discreto na linha do título (mesma escala do status/host-pill) —
+         antes ocupava sozinho o slot do botão de voltar (some/some some
+         escondia o "voltar" de quem chega via bookmark próprio, ver
+         RemotaComponent). Guest de verdade (link cru, sem conta) ainda vê o
+         botão — ele só não faz nada útil ali, mas não atrapalha. */
       .guest-badge {
-        flex: none;
+        flex: 0 1 auto;
         display: inline-flex;
         align-items: center;
         gap: 5px;
-        padding: 5px 9px;
-        border-radius: 999px;
+        padding: 5px 11px;
+        border-radius: 9px;
         border: 1px solid #283230;
         background: #14201c;
         color: #00e4b4;
-        font-size: 11.5px;
-        font-weight: 700;
+        font-size: 12.5px;
+        font-weight: 600;
+        white-space: nowrap;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       /* Painel "Compartilhar" — faixa abaixo do header, estilo das outras. */
       .share {
