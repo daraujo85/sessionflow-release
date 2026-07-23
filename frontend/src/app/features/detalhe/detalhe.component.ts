@@ -136,10 +136,12 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                         <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
                         <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
                       </svg>
-                      @if (r.name !== '.') {
-                        <span class="branch-repo-name">{{ r.name }}/</span>
-                      }
-                      {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
+                      <span class="branch-label">
+                        @if (r.name !== '.') {
+                          <span class="branch-repo-name">{{ r.name }}/</span>
+                        }
+                        {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
+                      </span>
                     </button>
                     @if (branchListOpenFor() === r.name) {
                       <div class="branch-list">
@@ -1989,9 +1991,13 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         align-items: center;
         gap: 6px;
         margin-top: 4px;
+        min-width: 0;
+        max-width: 100%;
       }
       .branch-wrap {
         position: relative;
+        min-width: 0;
+        max-width: 100%;
       }
       .branch-repo-name {
         opacity: 0.65;
@@ -2008,7 +2014,15 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         font-size: 11px;
         font-family: inherit;
         cursor: pointer;
+        max-width: 100%;
+        min-width: 0;
+      }
+      .branch-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
+        min-width: 0;
+        max-width: min(52vw, 220px);
       }
       .branch-pill:hover:not(:disabled) {
         border-color: #3a4048;
