@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # usuário (sentido inverso do upload acima — ver ``sf share``).
     shared_files_collection: str = "shared_files"
 
+    # Collection holding bookmarks de links de sessão de OUTRAS contas (ver
+    # ``routers/remote_sessions.py``) — {label, url, created_at}.
+    remote_sessions_collection: str = "remote_sessions"
+
     # When true, prefer the *_HOST URIs (used by tests on the host).
     use_host_uris: bool = False
 

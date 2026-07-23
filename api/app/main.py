@@ -32,6 +32,7 @@ from app.routers import models as models_router
 from app.routers import outputs as outputs_router
 from app.routers import profile as profile_router
 from app.routers import push as push_router
+from app.routers import remote_sessions as remote_sessions_router
 from app.routers import schedules as schedules_router
 from app.routers import screen as screen_router
 from app.routers import sessions as sessions_router
@@ -180,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jarvis_router.router)
     app.include_router(schedules_router.router)
     app.include_router(shared_files_router.router)
+    app.include_router(remote_sessions_router.router)
 
     return app
 

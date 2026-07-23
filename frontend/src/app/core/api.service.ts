@@ -11,6 +11,7 @@ import {
   EventItem,
   Notification,
   OutputLine,
+  RemoteSession,
   Schedule,
   Session,
   SessionStatus,
@@ -234,6 +235,22 @@ export class ApiService {
     const token = this.auth.token();
     const qs = token ? `?token=${encodeURIComponent(token)}` : '';
     return this.url(`/shared-files/${id}/download${qs}`);
+  }
+
+  // --- Sessões de outras contas (bookmarks de link de convidado) ---
+
+  listRemoteSessions(): Observable<RemoteSession[]> {
+    return this.http
+      .get<{ items: RemoteSession[] }>(this.url('/remote-sessions'))
+      .pipe(this.items<RemoteSession>());
+  }
+
+  createRemoteSession(label: string, url: string): Observable<RemoteSession> {
+    return this.http.post<RemoteSession>(this.url('/remote-sessions'), { label, url });
+  }
+
+  deleteRemoteSession(id: string): Observable<void> {
+    return this.http.delete<void>(this.url(`/remote-sessions/${id}`));
   }
 
   // --- Models ---

@@ -10,8 +10,9 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { forkJoin, of, catchError, map } from 'rxjs';
 import { Router } from '@angular/router';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
-import { Session, SessionStatus } from '../../core/models';
+import { RemoteSession, Session, SessionStatus } from '../../core/models';
 import { SseService } from '../../core/sse.service';
 import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
@@ -147,6 +148,86 @@ const FILTERS: readonly FilterChip[] = [
           }
         </nav>
       }
+
+      <!-- Sessões de OUTRAS contas: bookmark do link de convidado que alguém
+           te compartilhou (ver painel "Compartilhar" na sessão dela) — some
+           destacada (cor + rótulo do dono), separada da SUA lista abaixo. -->
+      <section class="sf-remote" aria-label="Sessões de outras contas">
+        <div class="sf-remote-hdr">
+          <span class="sf-remote-title">De outras contas</span>
+          <button
+            type="button"
+            class="sf-remote-add-btn"
+            (click)="toggleRemoteAdd()"
+            [attr.aria-pressed]="remoteAddOpen()"
+            title="Colar o link de convidado que alguém compartilhou com você"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            Adicionar
+          </button>
+        </div>
+        @if (remoteAddOpen()) {
+          <div class="sf-remote-form">
+            <input
+              type="text"
+              class="sf-remote-input"
+              placeholder="Nome de quem compartilhou (ex: Lucas)"
+              [value]="remoteLabelDraft()"
+              (input)="remoteLabelDraft.set($any($event.target).value)"
+              autocomplete="off"
+            />
+            <input
+              type="text"
+              class="sf-remote-input"
+              placeholder="Cole o link de convidado (https://.../s/...)"
+              [value]="remoteUrlDraft()"
+              (input)="remoteUrlDraft.set($any($event.target).value)"
+              autocomplete="off"
+            />
+            <div class="sf-remote-form-acts">
+              <button type="button" class="sf-remote-cancel" (click)="toggleRemoteAdd()">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                class="sf-remote-save"
+                [disabled]="!remoteLabelDraft().trim() || !remoteUrlDraft().trim() || remoteSaving()"
+                (click)="saveRemoteSession()"
+              >
+                {{ remoteSaving() ? 'Salvando…' : 'Salvar' }}
+              </button>
+            </div>
+          </div>
+        }
+        @if (remoteSessions().length > 0) {
+          <ul class="sf-remote-list">
+            @for (r of remoteSessions(); track r.id) {
+              <li class="sf-remote-card" [style.borderColor]="remoteColor(r)">
+                <button type="button" class="sf-remote-open" (click)="openRemoteSession(r)">
+                  <span class="sf-remote-dot" [style.background]="remoteColor(r)"></span>
+                  <span class="sf-remote-label">{{ r.label }}</span>
+                  <span class="sf-remote-tag">não é sua</span>
+                </button>
+                <button
+                  type="button"
+                  class="sf-remote-remove"
+                  (click)="removeRemoteSession(r)"
+                  aria-label="Remover bookmark"
+                  title="Remover daqui (não afeta a conta remota)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </li>
+            }
+          </ul>
+        }
+      </section>
 
       @if (loading() && sessions().length === 0) {
         <p class="sf-msg">Carregando…</p>
@@ -392,6 +473,32 @@ const FILTERS: readonly FilterChip[] = [
                 Excluir
               }
             </button>
+          </div>
+        </div>
+      }
+
+      <!-- Visualizador de sessão remota: o link de convidado já funciona
+           sozinho (sem login), então embedamos ele direto num iframe. -->
+      @if (remoteViewer(); as rv) {
+        <div class="sf-remote-modal-backdrop" (click)="closeRemoteViewer()">
+          <div class="sf-remote-modal" (click)="$event.stopPropagation()">
+            <div class="sf-remote-modal-hdr">
+              <span>{{ rv.label }}</span>
+              <button
+                type="button"
+                class="sf-remote-modal-close"
+                (click)="closeRemoteViewer()"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </div>
+            <iframe
+              class="sf-remote-modal-frame"
+              [src]="rv.safeUrl"
+              allow="clipboard-write"
+              title="Sessão remota"
+            ></iframe>
           </div>
         </div>
       }
@@ -1156,6 +1263,199 @@ const FILTERS: readonly FilterChip[] = [
           transform: none !important;
         }
       }
+
+      /* ── Sessões de outras contas ─────────────────────────────────────── */
+      .sf-remote {
+        margin-bottom: 14px;
+      }
+      .sf-remote-hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .sf-remote-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: #7a8090;
+      }
+      .sf-remote-add-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: none;
+        border: 1px solid #283230;
+        color: #9aa0ae;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .sf-remote-add-btn[aria-pressed='true'] {
+        color: #2cecc4;
+        border-color: #2cecc4;
+      }
+      .sf-remote-form {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #161a20;
+        border: 1px solid #262b33;
+        border-radius: 10px;
+      }
+      .sf-remote-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #283230;
+        background: #0f1216;
+        color: #e6e8ec;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      .sf-remote-form-acts {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+      }
+      .sf-remote-cancel {
+        background: none;
+        border: none;
+        color: #9aa0ae;
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .sf-remote-save {
+        background: #2cecc4;
+        border: none;
+        color: #06231d;
+        font-size: 12.5px;
+        font-weight: 700;
+        padding: 6px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .sf-remote-save:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .sf-remote-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .sf-remote-card {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border: 1px solid;
+        border-radius: 999px;
+        background: #1c2027;
+        padding-right: 4px;
+      }
+      .sf-remote-open {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: none;
+        border: none;
+        color: #d6dbe0;
+        font-size: 12.5px;
+        font-weight: 600;
+        padding: 6px 4px 6px 10px;
+        cursor: pointer;
+      }
+      .sf-remote-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        flex: none;
+      }
+      .sf-remote-tag {
+        font-size: 10px;
+        font-weight: 600;
+        color: #7a8090;
+        text-transform: uppercase;
+      }
+      .sf-remote-remove {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: none;
+        border: none;
+        color: #7a8090;
+        padding: 5px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .sf-remote-remove:hover {
+        color: #f87171;
+        background: rgba(248, 113, 113, 0.12);
+      }
+      .sf-remote-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 300;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .sf-remote-modal {
+        width: 100%;
+        max-width: min(94vw, 480px);
+        height: min(88vh, 900px);
+        background: #14171c;
+        border: 1px solid #2a3038;
+        border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      }
+      .sf-remote-modal-hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px;
+        border-bottom: 1px solid #2a3038;
+        font-size: 13px;
+        font-weight: 700;
+        color: #d6dbe0;
+        flex: none;
+      }
+      .sf-remote-modal-close {
+        appearance: none;
+        background: none;
+        border: none;
+        color: #7a8090;
+        font-size: 14px;
+        line-height: 1;
+        padding: 4px;
+        cursor: pointer;
+        border-radius: 6px;
+      }
+      .sf-remote-modal-close:hover {
+        color: #d6dbe0;
+        background: #23272f;
+      }
+      .sf-remote-modal-frame {
+        flex: 1;
+        width: 100%;
+        border: none;
+        background: #000;
+      }
     `,
   ],
 })
@@ -1164,6 +1464,7 @@ export class SessoesComponent {
   private readonly sse = inject(SseService);
   private readonly jarvis = inject(JarvisAudioService);
   private readonly router = inject(Router);
+  private readonly sanitizer = inject(DomSanitizer);
   protected readonly workers = inject(WorkersStore);
 
   /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
@@ -1561,6 +1862,7 @@ export class SessoesComponent {
 
   constructor() {
     this.load();
+    this.loadRemoteSessions();
 
     // SSE drives live status updates. Each new event re-applies any status
     // changes carried on the session feed; we re-read the broker's events.
@@ -1726,6 +2028,92 @@ export class SessoesComponent {
       (s['updated_at'] as string | undefined) ??
       (s['created_at'] as string | undefined);
     return fmtTimeAgo(raw);
+  }
+
+  // ── Sessões de OUTRAS contas (bookmark de link de convidado) ────────────
+
+  protected readonly remoteSessions = signal<RemoteSession[]>([]);
+  protected readonly remoteAddOpen = signal<boolean>(false);
+  protected readonly remoteLabelDraft = signal<string>('');
+  protected readonly remoteUrlDraft = signal<string>('');
+  protected readonly remoteSaving = signal<boolean>(false);
+  /** Sessão remota aberta agora (modal com iframe), ou null se fechado. */
+  protected readonly remoteViewer = signal<{ label: string; safeUrl: SafeResourceUrl } | null>(
+    null,
+  );
+
+  private loadRemoteSessions(): void {
+    this.api
+      .listRemoteSessions()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) => this.remoteSessions.set(list ?? []),
+        error: () => {
+          /* mantém o último estado conhecido em erro transitório */
+        },
+      });
+  }
+
+  protected toggleRemoteAdd(): void {
+    this.remoteAddOpen.update((v) => !v);
+    if (!this.remoteAddOpen()) {
+      this.remoteLabelDraft.set('');
+      this.remoteUrlDraft.set('');
+    }
+  }
+
+  protected saveRemoteSession(): void {
+    const label = this.remoteLabelDraft().trim();
+    const url = this.remoteUrlDraft().trim();
+    if (!label || !url) {
+      return;
+    }
+    this.remoteSaving.set(true);
+    this.api
+      .createRemoteSession(label, url)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (created) => {
+          this.remoteSessions.update((list) => [...list, created]);
+          this.remoteSaving.set(false);
+          this.remoteAddOpen.set(false);
+          this.remoteLabelDraft.set('');
+          this.remoteUrlDraft.set('');
+        },
+        error: () => {
+          this.remoteSaving.set(false);
+        },
+      });
+  }
+
+  protected removeRemoteSession(r: RemoteSession): void {
+    this.api
+      .deleteRemoteSession(r.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => this.remoteSessions.update((list) => list.filter((x) => x.id !== r.id)),
+      });
+  }
+
+  /** Cor estável derivada do rótulo (mesma pessoa sempre com a mesma cor). */
+  protected remoteColor(r: RemoteSession): string {
+    const palette = ['#4796E3', '#34D399', '#F59E0B', '#F87171', '#A78BFA', '#2CECC4'];
+    let hash = 0;
+    for (let i = 0; i < r.label.length; i++) {
+      hash = (hash * 31 + r.label.charCodeAt(i)) >>> 0;
+    }
+    return palette[hash % palette.length];
+  }
+
+  protected openRemoteSession(r: RemoteSession): void {
+    this.remoteViewer.set({
+      label: r.label,
+      safeUrl: this.sanitizer.bypassSecurityTrustResourceUrl(r.url),
+    });
+  }
+
+  protected closeRemoteViewer(): void {
+    this.remoteViewer.set(null);
   }
 
   private load(status?: SessionStatus): void {

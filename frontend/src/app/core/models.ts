@@ -179,6 +179,17 @@ export interface SharedFile {
   created_at: string | null;
 }
 
+/** Bookmark de uma sessão de OUTRA conta (link de convidado colado aqui) —
+ * aparece na lista de Sessões destacada como "não é minha" (ver `sf send`/
+ * `sf share`, painel "Compartilhar" de outra pessoa). Não tem NENHUMA
+ * ligação de dados com a conta remota, é só o link + um rótulo. */
+export interface RemoteSession {
+  id: string;
+  label: string;
+  url: string;
+  created_at: string | null;
+}
+
 /** Comando programado: instrução recorrente enviada ao terminal da sessão. */
 export interface Schedule {
   id: string;
