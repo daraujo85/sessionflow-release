@@ -1998,12 +1998,15 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         position: relative;
         min-width: 0;
         max-width: 100%;
+        flex: 1 1 100%;
       }
       .branch-repo-name {
         opacity: 0.65;
       }
       .branch-pill {
-        display: inline-flex;
+        display: flex;
+        width: 100%;
+        box-sizing: border-box;
         align-items: center;
         gap: 4px;
         padding: 2px 8px;
@@ -2022,7 +2025,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         text-overflow: ellipsis;
         white-space: nowrap;
         min-width: 0;
-        max-width: min(52vw, 220px);
+        flex: 1 1 auto;
       }
       .branch-pill:hover:not(:disabled) {
         border-color: #3a4048;
