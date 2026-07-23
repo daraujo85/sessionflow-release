@@ -8,9 +8,10 @@ import { RemoteSession } from '../../core/models';
 
 /**
  * Abre uma sessão de OUTRA conta (bookmark de link de convidado) em tela
- * cheia — mesmo tratamento visual do Detalhe (`/sessao/:id`), não um modal:
- * o link de convidado já é público/funciona sozinho (ver `ShareLink`), então
- * só embedamos ele num iframe cobrindo a tela toda.
+ * cheia — o link de convidado já é uma página completa (com o próprio
+ * cabeçalho: nome, status, botões), então NÃO temos um header próprio aqui
+ * por cima (dava dois cabeçalhos empilhados, layout quebrado). Só um botão
+ * de voltar flutuante sobre o iframe.
  */
 @Component({
   selector: 'sf-remota',
@@ -18,18 +19,12 @@ import { RemoteSession } from '../../core/models';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="overlay">
-      <header class="hdr">
-        <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6"
-               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
-        <div class="hdr-info">
-          <span class="hdr-name">{{ remote()?.label || 'Sessão remota' }}</span>
-          <span class="hdr-sub">Sessão de outra conta</span>
-        </div>
-      </header>
+      <button type="button" class="back" (click)="goBack()" aria-label="Voltar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6"
+             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 18l-6-6 6-6" />
+        </svg>
+      </button>
 
       @if (remote(); as r) {
         <iframe
@@ -54,56 +49,37 @@ import { RemoteSession } from '../../core/models';
         display: block;
       }
       .overlay {
-        display: flex;
-        flex-direction: column;
+        position: relative;
+        display: block;
         height: 100%;
         background: #0b0d10;
         color: #e6e8ec;
       }
-      .hdr {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 14px 16px;
-        border-bottom: 1px solid #22262c;
-        flex: none;
-      }
       .back {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        z-index: 1;
         display: grid;
         place-items: center;
-        width: 36px;
-        height: 36px;
+        width: 34px;
+        height: 34px;
         border: none;
-        border-radius: 10px;
-        background: #181c1b;
+        border-radius: 999px;
+        background: rgba(10, 12, 15, 0.72);
+        backdrop-filter: blur(4px);
         cursor: pointer;
-        flex: none;
-      }
-      .hdr-info {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-      }
-      .hdr-name {
-        font-size: 15px;
-        font-weight: 700;
-        color: #e7eae9;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .hdr-sub {
-        font-size: 12px;
-        color: #7a8090;
       }
       .frame {
-        flex: 1;
+        display: block;
         width: 100%;
+        height: 100%;
         border: none;
         background: #000;
       }
       .msg {
-        flex: 1;
+        position: absolute;
+        inset: 0;
         display: grid;
         place-items: center;
         color: #7a8090;

@@ -203,6 +203,19 @@ const FILTERS: readonly FilterChip[] = [
                       <span class="sf-name-row">
                         <span class="sf-name">{{ r.label }}</span>
                       </span>
+                      <span
+                        class="sf-host-chip"
+                        [style.color]="remoteColor(r)"
+                        [style.background]="tint(remoteColor(r), 0.12)"
+                        [style.borderColor]="tint(remoteColor(r), 0.28)"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+                        </svg>
+                        Compartilhada
+                      </span>
                       <span class="mono sf-dir">{{ remoteHost(r) }}</span>
                     </span>
                   </span>
@@ -213,14 +226,7 @@ const FILTERS: readonly FilterChip[] = [
                     [style.color]="remoteColor(r)"
                     [style.background]="tint(remoteColor(r), 0.13)"
                   >
-                    <span class="sf-stat-icon" [style.color]="remoteColor(r)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-                        <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
-                      </svg>
-                    </span>
-                    Compartilhada
+                    Toque pra abrir
                   </span>
                   @if (remoteTimeAgo(r)) {
                     <span class="sf-time">{{ remoteTimeAgo(r) }}</span>
