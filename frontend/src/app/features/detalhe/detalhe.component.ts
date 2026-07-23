@@ -2033,7 +2033,11 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         position: relative;
         min-width: 0;
         max-width: 100%;
-        flex: 1 1 auto;
+        /* NÃO cresce (flex-grow: 0): em telas largas, "flex: 1 1 auto" esticava
+           o pill até preencher a linha toda, deixando o badge "+N" longe dele
+           lá na ponta. Só encolhe (min-width: 0 + truncamento) quando falta
+           espaço; do contrário fica do tamanho do conteúdo, coladinho no badge. */
+        flex: 0 1 auto;
       }
       .branch-repo-name {
         opacity: 0.65;
