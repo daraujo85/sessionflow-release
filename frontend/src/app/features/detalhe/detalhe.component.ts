@@ -119,7 +119,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             <div class="mono hdr-dir">
               <span class="hdr-dir-path">{{ session()?.work_dir || '—' }}</span>
             </div>
-            <ng-template #repoPill let-r>
+            <ng-template #repoPill let-r let-hideName="hideName">
               <span class="branch-wrap">
                 <button
                   type="button"
@@ -135,7 +135,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                     <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
                   </svg>
                   <span class="branch-label">
-                    @if (r.name !== '.') {
+                    @if (!hideName && r.name !== '.') {
                       <span class="branch-repo-name">{{ r.name }}/</span>
                     }
                     {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
@@ -183,11 +183,20 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                 <div class="repos-modal" (click)="$event.stopPropagation()">
                   <div class="repos-modal-hdr">
                     <span>Repositórios ({{ session()!.git_repos!.length }})</span>
-                    <button type="button" class="close-btn" (click)="reposModalOpen.set(false)">✕</button>
+                    <button type="button" class="repos-modal-close" (click)="reposModalOpen.set(false)" aria-label="Fechar">✕</button>
                   </div>
                   <div class="repos-modal-list">
                     @for (r of session()!.git_repos!; track r.name) {
-                      <ng-container *ngTemplateOutlet="repoPill; context: { $implicit: r }" />
+                      <div class="repos-modal-item">
+                        <span class="repos-modal-item-name">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                          </svg>
+                          {{ repoLabel(r) }}
+                        </span>
+                        <ng-container *ngTemplateOutlet="repoPill; context: { $implicit: r, hideName: true }" />
+                      </div>
                     }
                   </div>
                 </div>
@@ -2013,7 +2022,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
          mais de um repo (pasta "guarda-chuva"), sem sobrepor nada. */
       .branch-row {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         align-items: center;
         gap: 6px;
         margin-top: 4px;
@@ -2024,14 +2033,13 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         position: relative;
         min-width: 0;
         max-width: 100%;
-        flex: 1 1 100%;
+        flex: 1 1 auto;
       }
       .branch-repo-name {
         opacity: 0.65;
       }
       .branch-pill {
         display: flex;
-        width: 100%;
         box-sizing: border-box;
         align-items: center;
         gap: 4px;
@@ -2106,21 +2114,24 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       .branch-more-badge {
         display: inline-flex;
         align-items: center;
-        flex: 0 0 auto;
-        padding: 2px 9px;
+        justify-content: center;
+        flex: none;
+        min-width: 17px;
+        height: 17px;
+        padding: 0 5px;
         border-radius: 999px;
-        border: 1px solid #2a3038;
-        background: #23272f;
-        color: #9fb0ad;
-        font-size: 11px;
-        font-weight: 600;
+        border: none;
+        background: #2cecc4;
+        color: #06231d;
+        font-size: 10px;
+        font-weight: 700;
         font-family: inherit;
+        line-height: 15px;
         cursor: pointer;
         white-space: nowrap;
       }
       .branch-more-badge:hover {
-        border-color: #3a4048;
-        color: #d6dbe0;
+        filter: brightness(1.08);
       }
       .repos-modal-backdrop {
         position: fixed;
@@ -2154,12 +2165,44 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         font-weight: 600;
         color: #d6dbe0;
       }
+      .repos-modal-close {
+        appearance: none;
+        background: none;
+        border: none;
+        color: #7a8090;
+        font-size: 14px;
+        line-height: 1;
+        padding: 4px;
+        cursor: pointer;
+        border-radius: 6px;
+      }
+      .repos-modal-close:hover {
+        color: #d6dbe0;
+        background: #23272f;
+      }
       .repos-modal-list {
         overflow-y: auto;
         padding: 12px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 12px;
+      }
+      .repos-modal-item {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .repos-modal-item-name {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #d6dbe0;
+      }
+      .repos-modal-item-name svg {
+        opacity: 0.55;
+        flex: none;
       }
       .repos-modal-list .branch-wrap {
         flex: none;
@@ -3974,6 +4017,16 @@ export class DetalheComponent implements AfterViewChecked {
   });
   /** Modal "Repositórios": lista TODOS quando há mais de um (pasta guarda-chuva). */
   protected readonly reposModalOpen = signal(false);
+  /** Nome de pasta pra mostrar no modal (r.name já é o nome técnico da
+   * subpasta; a raiz "." vira o nome da pasta guarda-chuva do work_dir). */
+  protected repoLabel(r: { name: string }): string {
+    if (r.name !== '.') {
+      return r.name;
+    }
+    const dir = (this.session()?.work_dir || '').replace(/\/+$/, '');
+    const base = dir.split('/').pop();
+    return base || '.';
+  }
   /** Reage à resposta do worker (git_branches/git_checkout), filtrando pela
    * sessão aberta AGORA — outra sessão pode ter pedido isso simultaneamente. */
   private readonly gitBranchesEffect = effect(() => {
