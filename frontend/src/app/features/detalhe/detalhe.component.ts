@@ -2149,7 +2149,10 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       }
       .repos-modal {
         width: 100%;
-        max-width: 560px;
+        /* Cresce com a tela (até um teto) em vez de travar em 560px — numa
+           tela larga isso deixava cada item esticado feio, com bastante
+           espaço vazio sobrando na pill. */
+        max-width: min(92vw, 860px);
         max-height: 80vh;
         background: #181b21;
         border: 1px solid #2a3038;
@@ -2187,14 +2190,19 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       .repos-modal-list {
         overflow-y: auto;
         padding: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
+        display: grid;
+        /* Colunas que se ajustam à largura: numa tela larga cabem 2-3 repos
+           lado a lado (usa o espaço) — numa tela estreita cai pra 1 coluna
+           sozinho (mesmo comportamento de antes). */
+        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+        gap: 14px 16px;
+        align-content: start;
       }
       .repos-modal-item {
         display: flex;
         flex-direction: column;
         gap: 5px;
+        min-width: 0;
       }
       .repos-modal-item-name {
         display: flex;
@@ -2210,6 +2218,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       }
       .repos-modal-list .branch-wrap {
         flex: none;
+        max-width: 100%;
       }
       .repos-modal-list .branch-pill {
         width: 100%;
