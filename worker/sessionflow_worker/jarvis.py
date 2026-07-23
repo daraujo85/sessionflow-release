@@ -115,36 +115,34 @@ APP_SETTINGS_ID = "app"
 APP_SETTINGS_COLLECTION = os.environ.get("SESSIONFLOW_APP_SETTINGS_COLLECTION", "app_settings")
 
 def _summary_sys(owner: str) -> str:
-    """Prompt de sistema do resumo falado — papeis (agente vs dono) parametrizados
-    pelo NOME de quem instalou/roda esta sessão (ver ``_owner_display_name``).
+    """Prompt de sistema do resumo falado — papeis (agente vs dono) SEM citar o
+    nome do dono (ver histórico abaixo do porquê).
 
-    Motivo (feedback direto do usuário): sem isso, o resumo às vezes fica
-    ambíguo sobre QUEM fez o quê — "a pessoa"/"você" podia se referir tanto ao
-    AGENTE (que executou o trabalho) quanto ao DONO da sessão (quem precisa
-    decidir algo). Definir os dois papéis explicitamente, e chamar o dono pelo
-    nome em vez de um "você" solto, resolve a ambiguidade.
+    Motivo original (agora revertido por novo feedback do usuário): definir os
+    dois papéis explicitamente e chamar o dono PELO NOME resolvia a ambiguidade
+    de quem "voce" era. Só que na pratica ficou estranho ouvir o proprio nome
+    toda hora — o usuario pediu pra tirar isso: o AGENTE fala em PRIMEIRA
+    PESSOA ("eu terminei X"), e quando sobra algo pro dono da sessao fazer,
+    usa um "voce" generico, sem nomear ninguem.
     """
-    who = owner or "você"
     return (
         "Voce gera um texto curto que sera LIDO EM VOZ ALTA por um sintetizador de "
         "voz (TTS) em portugues do Brasil. Escreva como fala humana natural, do "
         "jeito que uma pessoa contaria rapidinho o que aconteceu. Seja BEM curto: "
         "uma ou no maximo duas frases curtas e diretas. "
-        "PAPEIS (nao confunda os dois, isso e importante): quem EXECUTOU o "
-        "trabalho e o AGENTE (a IA rodando na sessao) — refira-se a ele em "
-        "TERCEIRA PESSOA ('o agente fez X', 'ele terminou Y', 'ele esta "
-        f"esperando Z'), NUNCA em primeira pessoa ('eu fiz'). Quem PRECISA ler o "
-        f"resultado ou tomar uma decisao e o dono da sessao, chamado {who} — "
-        f"quando for falar com ele, chame PELO NOME ('{who}, falta decidir se...') "
-        "em vez de um 'voce' solto e ambiguo (fica dificil saber se 'voce' e a "
-        "pessoa ou o agente). NAO use nenhum simbolo nem marcacao: nada de "
-        "asteriscos, crases, hashtags, colchetes, parenteses, barras, setas, "
-        "marcadores, emojis, URLs, caminhos de arquivo, nomes de variaveis ou "
-        "trechos de codigo. NAO leia nem soletre simbolos ou pontuacao (nunca "
-        "diga a palavra 'ponto'). Use no maximo virgulas e um ponto final por "
-        "frase, como na escrita normal. Diga o que o agente fez e, se estiver "
-        f"esperando, qual decisao {who} precisa tomar. Responda APENAS com a "
-        "frase falada, sem aspas."
+        "Voce E o agente (a IA rodando na sessao) contando o que VOCE MESMO fez, "
+        "entao fale em PRIMEIRA PESSOA ('eu terminei X', 'eu fiz Y', 'estou "
+        "esperando Z'), NUNCA em terceira pessoa ('o agente fez'). Se sobrar "
+        "algo pro dono da sessao decidir ou fazer, chame-o de 'voce', SEM DIZER "
+        "O NOME dele em nenhuma hipotese (nunca cite nome de pessoa). NAO use "
+        "nenhum simbolo nem marcacao: nada de asteriscos, crases, hashtags, "
+        "colchetes, parenteses, barras, setas, marcadores, emojis, URLs, "
+        "caminhos de arquivo, nomes de variaveis ou trechos de codigo. NAO "
+        "leia nem soletre simbolos ou pontuacao (nunca diga a palavra "
+        "'ponto'). Use no maximo virgulas e um ponto final por frase, como na "
+        "escrita normal. Diga o que voce (o agente) fez e, se estiver "
+        "esperando, o que voce precisa que o dono da sessao faca. Responda "
+        "APENAS com a frase falada, sem aspas."
     )
 
 
