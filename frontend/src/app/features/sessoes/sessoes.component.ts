@@ -46,6 +46,21 @@ const FILTERS: readonly FilterChip[] = [
         <button
           type="button"
           class="sf-select-toggle"
+          (click)="toggleRemoteAdd()"
+          [class.is-active]="remoteAddOpen()"
+          [attr.aria-pressed]="remoteAddOpen()"
+          title="Adicionar sessão de outra conta (cola o link de convidado que alguém te compartilhou)"
+          aria-label="Adicionar sessão de outra conta"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+            <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="sf-select-toggle"
           [class.is-active]="selectionMode()"
           (click)="toggleSelectionMode()"
           [attr.aria-pressed]="selectionMode()"
@@ -67,6 +82,40 @@ const FILTERS: readonly FilterChip[] = [
           }
         </button>
       </header>
+
+      @if (remoteAddOpen()) {
+        <div class="sf-remote-form">
+          <input
+            type="text"
+            class="sf-remote-input"
+            placeholder="Nome de quem compartilhou (ex: Lucas)"
+            [value]="remoteLabelDraft()"
+            (input)="remoteLabelDraft.set($any($event.target).value)"
+            autocomplete="off"
+          />
+          <input
+            type="text"
+            class="sf-remote-input"
+            placeholder="Cole o link de convidado (https://.../s/...)"
+            [value]="remoteUrlDraft()"
+            (input)="remoteUrlDraft.set($any($event.target).value)"
+            autocomplete="off"
+          />
+          <div class="sf-remote-form-acts">
+            <button type="button" class="sf-remote-cancel" (click)="toggleRemoteAdd()">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="sf-remote-save"
+              [disabled]="!remoteLabelDraft().trim() || !remoteUrlDraft().trim() || remoteSaving()"
+              (click)="saveRemoteSession()"
+            >
+              {{ remoteSaving() ? 'Salvando…' : 'Salvar' }}
+            </button>
+          </div>
+        </div>
+      }
 
       <div class="sf-search">
         <svg
@@ -149,97 +198,70 @@ const FILTERS: readonly FilterChip[] = [
         </nav>
       }
 
-      <!-- Sessões de OUTRAS contas: bookmark do link de convidado que alguém
-           te compartilhou (ver painel "Compartilhar" na sessão dela) — some
-           destacada (cor + rótulo do dono), separada da SUA lista abaixo. -->
-      <section class="sf-remote" aria-label="Sessões de outras contas">
-        <div class="sf-remote-hdr">
-          <span class="sf-remote-title">De outras contas</span>
-          <button
-            type="button"
-            class="sf-remote-add-btn"
-            (click)="toggleRemoteAdd()"
-            [attr.aria-pressed]="remoteAddOpen()"
-            title="Colar o link de convidado que alguém compartilhou com você"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Adicionar
-          </button>
-        </div>
-        @if (remoteAddOpen()) {
-          <div class="sf-remote-form">
-            <input
-              type="text"
-              class="sf-remote-input"
-              placeholder="Nome de quem compartilhou (ex: Lucas)"
-              [value]="remoteLabelDraft()"
-              (input)="remoteLabelDraft.set($any($event.target).value)"
-              autocomplete="off"
-            />
-            <input
-              type="text"
-              class="sf-remote-input"
-              placeholder="Cole o link de convidado (https://.../s/...)"
-              [value]="remoteUrlDraft()"
-              (input)="remoteUrlDraft.set($any($event.target).value)"
-              autocomplete="off"
-            />
-            <div class="sf-remote-form-acts">
-              <button type="button" class="sf-remote-cancel" (click)="toggleRemoteAdd()">
-                Cancelar
-              </button>
-              <button
-                type="button"
-                class="sf-remote-save"
-                [disabled]="!remoteLabelDraft().trim() || !remoteUrlDraft().trim() || remoteSaving()"
-                (click)="saveRemoteSession()"
-              >
-                {{ remoteSaving() ? 'Salvando…' : 'Salvar' }}
-              </button>
-            </div>
-          </div>
-        }
-        @if (remoteSessions().length > 0) {
-          <ul class="sf-remote-list">
-            @for (r of remoteSessions(); track r.id) {
-              <li class="sf-remote-card" [style.borderColor]="remoteColor(r)">
-                <button type="button" class="sf-remote-open" (click)="openRemoteSession(r)">
-                  <span class="sf-remote-dot" [style.background]="remoteColor(r)"></span>
-                  <span class="sf-remote-label">{{ r.label }}</span>
-                  <span class="sf-remote-tag">não é sua</span>
-                </button>
-                <button
-                  type="button"
-                  class="sf-remote-remove"
-                  (click)="removeRemoteSession(r)"
-                  aria-label="Remover bookmark"
-                  title="Remover daqui (não afeta a conta remota)"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </li>
-            }
-          </ul>
-        }
-      </section>
-
-      @if (loading() && sessions().length === 0) {
+      @if (loading() && sessions().length === 0 && remoteSessions().length === 0) {
         <p class="sf-msg">Carregando…</p>
-      } @else if (error() && sessions().length === 0) {
+      } @else if (error() && sessions().length === 0 && remoteSessions().length === 0) {
         <p class="sf-msg sf-msg--error">Não foi possível carregar as sessões.</p>
-      } @else if (visibleSessions().length === 0) {
+      } @else if (visibleSessions().length === 0 && remoteSessions().length === 0) {
         <div class="sf-empty">
           <p class="sf-empty__title">Nenhuma sessão</p>
           <p class="sf-empty__sub">Nada por aqui neste filtro.</p>
         </div>
       } @else {
         <ul class="sf-list">
+          <!-- Sessões de OUTRAS contas: bookmark do link de convidado que
+               alguém compartilhou (ver painel "Compartilhar" na sessão
+               dela). Mesmo card de sempre — só a borda/tag de cor entrega
+               que não é sua. Toque abre num iframe; ✕ só remove o bookmark
+               daqui, não afeta a conta remota. -->
+          @for (r of remoteSessions(); track r.id) {
+            <li class="sf-card-wrap sf-card-wrap--remote">
+              <button
+                type="button"
+                class="sf-remote-x"
+                (click)="removeRemoteSession(r)"
+                aria-label="Remover"
+                title="Remover daqui (não afeta a conta remota)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="sf-card sf-card--remote"
+                [style.borderColor]="remoteColor(r)"
+                (click)="openRemoteSession(r)"
+                [attr.aria-label]="'Abrir sessão de ' + r.label"
+              >
+                <span class="sf-press">
+                  <span class="sf-row">
+                    <span
+                      class="sf-avatar"
+                      [style.color]="remoteColor(r)"
+                      [style.background]="tint(remoteColor(r), 0.16)"
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                        <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+                      </svg>
+                    </span>
+                    <span class="sf-info">
+                      <span class="sf-name-row">
+                        <span class="sf-name">{{ r.label }}</span>
+                        <span class="sf-remote-tag" [style.color]="remoteColor(r)" [style.borderColor]="remoteColor(r)">
+                          compartilhada
+                        </span>
+                      </span>
+                      <span class="mono sf-dir">Sessão de outra conta · toque pra abrir</span>
+                    </span>
+                  </span>
+                </span>
+              </button>
+            </li>
+          }
           @for (s of visibleSessions(); track s.id; let i = $index) {
             <li class="sf-card-wrap sf-enter" [style.animation-delay]="enterDelay(i)">
               <button
@@ -1265,38 +1287,44 @@ const FILTERS: readonly FilterChip[] = [
       }
 
       /* ── Sessões de outras contas ─────────────────────────────────────── */
-      .sf-remote {
-        margin-bottom: 14px;
+      /* Card de sessão remota: MESMA estrutura/classes do card normal
+         (sf-card, sf-avatar, sf-info, sf-name-row, sf-dir) — só a borda
+         colorida + a tag "compartilhada" entregam que não é sua. */
+      .sf-card--remote {
+        border-color: inherit;
       }
-      .sf-remote-hdr {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 8px;
-      }
-      .sf-remote-title {
-        font-size: 12px;
+      .sf-remote-tag {
+        flex: none;
+        font-size: 9.5px;
         font-weight: 700;
         letter-spacing: 0.02em;
         text-transform: uppercase;
-        color: #7a8090;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid;
+        background: transparent;
       }
-      .sf-remote-add-btn {
+      .sf-card-wrap--remote {
+        position: relative;
+      }
+      .sf-remote-x {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 2;
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        background: none;
-        border: 1px solid #283230;
+        justify-content: center;
+        background: rgba(10, 12, 15, 0.7);
+        border: none;
         color: #9aa0ae;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 5px 10px;
-        border-radius: 8px;
+        padding: 5px;
+        border-radius: 999px;
         cursor: pointer;
       }
-      .sf-remote-add-btn[aria-pressed='true'] {
-        color: #2cecc4;
-        border-color: #2cecc4;
+      .sf-remote-x:hover {
+        color: #f87171;
+        background: rgba(248, 113, 113, 0.16);
       }
       .sf-remote-form {
         display: flex;
@@ -1345,62 +1373,6 @@ const FILTERS: readonly FilterChip[] = [
       .sf-remote-save:disabled {
         opacity: 0.5;
         cursor: default;
-      }
-      .sf-remote-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      .sf-remote-card {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        border: 1px solid;
-        border-radius: 999px;
-        background: #1c2027;
-        padding-right: 4px;
-      }
-      .sf-remote-open {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        background: none;
-        border: none;
-        color: #d6dbe0;
-        font-size: 12.5px;
-        font-weight: 600;
-        padding: 6px 4px 6px 10px;
-        cursor: pointer;
-      }
-      .sf-remote-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        flex: none;
-      }
-      .sf-remote-tag {
-        font-size: 10px;
-        font-weight: 600;
-        color: #7a8090;
-        text-transform: uppercase;
-      }
-      .sf-remote-remove {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        background: none;
-        border: none;
-        color: #7a8090;
-        padding: 5px;
-        border-radius: 999px;
-        cursor: pointer;
-      }
-      .sf-remote-remove:hover {
-        color: #f87171;
-        background: rgba(248, 113, 113, 0.12);
       }
       .sf-remote-modal-backdrop {
         position: fixed;
