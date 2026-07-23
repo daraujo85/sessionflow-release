@@ -15,7 +15,7 @@ import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
@@ -43,7 +43,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
   selector: 'sf-detalhe',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, AudioRecorderComponent, SessionPanelComponent],
+  imports: [FormsModule, NgTemplateOutlet, AudioRecorderComponent, SessionPanelComponent],
   template: `
     <section class="overlay" [class.focus]="focusMode()" [class.split-active]="splitActive()">
       <!-- Header -->
@@ -119,52 +119,78 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             <div class="mono hdr-dir">
               <span class="hdr-dir-path">{{ session()?.work_dir || '—' }}</span>
             </div>
-            @if (session()?.git_repos?.length) {
-              <div class="branch-row">
-                @for (r of session()!.git_repos!; track r.name) {
-                  <span class="branch-wrap">
-                    <button
-                      type="button"
-                      class="branch-pill"
-                      [class.switching]="branchSwitching() === r.name"
-                      [disabled]="branchSwitching() === r.name"
-                      (click)="toggleBranchList(r.name)"
-                      [title]="(r.name === '.' ? 'Branch ativa' : r.name + ': branch ativa') + ' — ' + r.branch + ' — clique pra trocar'"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
-                        <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-                      </svg>
-                      <span class="branch-label">
-                        @if (r.name !== '.') {
-                          <span class="branch-repo-name">{{ r.name }}/</span>
-                        }
-                        {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
-                      </span>
-                    </button>
-                    @if (branchListOpenFor() === r.name) {
-                      <div class="branch-list">
-                        @if (branchList() === null) {
-                          <div class="branch-item branch-loading">carregando…</div>
-                        } @else if (branchList()!.length === 0) {
-                          <div class="branch-item branch-loading">nenhuma outra branch</div>
-                        } @else {
-                          @for (b of branchList()!; track b) {
-                            <button
-                              type="button"
-                              class="branch-item"
-                              [class.current]="b === r.branch"
-                              (click)="switchBranch(r.name, b)"
-                            >
-                              {{ b }}
-                            </button>
-                          }
-                        }
-                      </div>
+            <ng-template #repoPill let-r>
+              <span class="branch-wrap">
+                <button
+                  type="button"
+                  class="branch-pill"
+                  [class.switching]="branchSwitching() === r.name"
+                  [disabled]="branchSwitching() === r.name"
+                  (click)="toggleBranchList(r.name)"
+                  [title]="(r.name === '.' ? 'Branch ativa' : r.name + ': branch ativa') + ' — ' + r.branch + ' — clique pra trocar'"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  <span class="branch-label">
+                    @if (r.name !== '.') {
+                      <span class="branch-repo-name">{{ r.name }}/</span>
                     }
+                    {{ branchSwitching() === r.name ? 'trocando…' : r.branch }}
                   </span>
+                </button>
+                @if (branchListOpenFor() === r.name) {
+                  <div class="branch-list">
+                    @if (branchList() === null) {
+                      <div class="branch-item branch-loading">carregando…</div>
+                    } @else if (branchList()!.length === 0) {
+                      <div class="branch-item branch-loading">nenhuma outra branch</div>
+                    } @else {
+                      @for (b of branchList()!; track b) {
+                        <button
+                          type="button"
+                          class="branch-item"
+                          [class.current]="b === r.branch"
+                          (click)="switchBranch(r.name, b)"
+                        >
+                          {{ b }}
+                        </button>
+                      }
+                    }
+                  </div>
                 }
+              </span>
+            </ng-template>
+            @if (primaryRepo(); as pr) {
+              <div class="branch-row">
+                <ng-container *ngTemplateOutlet="repoPill; context: { $implicit: pr }" />
+                @if (extraReposCount() > 0) {
+                  <button
+                    type="button"
+                    class="branch-more-badge"
+                    (click)="reposModalOpen.set(true)"
+                    [title]="'Ver todos os ' + session()!.git_repos!.length + ' repositórios'"
+                  >
+                    +{{ extraReposCount() }}
+                  </button>
+                }
+              </div>
+            }
+            @if (reposModalOpen()) {
+              <div class="repos-modal-backdrop" (click)="reposModalOpen.set(false)">
+                <div class="repos-modal" (click)="$event.stopPropagation()">
+                  <div class="repos-modal-hdr">
+                    <span>Repositórios ({{ session()!.git_repos!.length }})</span>
+                    <button type="button" class="close-btn" (click)="reposModalOpen.set(false)">✕</button>
+                  </div>
+                  <div class="repos-modal-list">
+                    @for (r of session()!.git_repos!; track r.name) {
+                      <ng-container *ngTemplateOutlet="repoPill; context: { $implicit: r }" />
+                    }
+                  </div>
+                </div>
               </div>
             }
             @if (activeTask()) {
@@ -2077,6 +2103,70 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       .branch-item.branch-loading:hover {
         background: transparent;
       }
+      .branch-more-badge {
+        display: inline-flex;
+        align-items: center;
+        flex: 0 0 auto;
+        padding: 2px 9px;
+        border-radius: 999px;
+        border: 1px solid #2a3038;
+        background: #23272f;
+        color: #9fb0ad;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .branch-more-badge:hover {
+        border-color: #3a4048;
+        color: #d6dbe0;
+      }
+      .repos-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .repos-modal {
+        width: 100%;
+        max-width: 560px;
+        max-height: 80vh;
+        background: #181b21;
+        border: 1px solid #2a3038;
+        border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      }
+      .repos-modal-hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid #2a3038;
+        font-size: 14px;
+        font-weight: 600;
+        color: #d6dbe0;
+      }
+      .repos-modal-list {
+        overflow-y: auto;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .repos-modal-list .branch-wrap {
+        flex: none;
+      }
+      .repos-modal-list .branch-pill {
+        width: 100%;
+      }
       .hdr-task {
         display: inline-flex;
         align-items: center;
@@ -3869,6 +3959,21 @@ export class DetalheComponent implements AfterViewChecked {
   protected readonly branchListOpenFor = signal<string | null>(null);
   protected readonly branchList = signal<string[] | null>(null);
   protected readonly branchSwitching = signal<string | null>(null);
+  /** Repo mostrado direto no header: o da raiz (".") se existir, senão o primeiro. */
+  protected readonly primaryRepo = computed(() => {
+    const repos = this.session()?.git_repos;
+    if (!repos || repos.length === 0) {
+      return null;
+    }
+    return repos.find((r) => r.name === '.') ?? repos[0];
+  });
+  /** Quantos sub-repos além do primário — vira o badge "+N" (abre o modal). */
+  protected readonly extraReposCount = computed(() => {
+    const repos = this.session()?.git_repos;
+    return repos ? Math.max(0, repos.length - 1) : 0;
+  });
+  /** Modal "Repositórios": lista TODOS quando há mais de um (pasta guarda-chuva). */
+  protected readonly reposModalOpen = signal(false);
   /** Reage à resposta do worker (git_branches/git_checkout), filtrando pela
    * sessão aberta AGORA — outra sessão pode ter pedido isso simultaneamente. */
   private readonly gitBranchesEffect = effect(() => {
