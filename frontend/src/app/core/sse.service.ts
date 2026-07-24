@@ -35,6 +35,29 @@ export interface JarvisAudioFrame {
   audio_b64: string;
   mime?: string;
   at?: string;
+  /** 'choice': pergunta de picker (modo JARVIS completo) — pede resposta por
+   * voz depois de tocar; omitido/'summary' = resumo comum, só toca. */
+  kind?: 'summary' | 'choice';
+}
+
+/** Uma opção detectada de um picker de escolha numerada na tela do agente. */
+export interface JarvisChoiceOption {
+  key: string;
+  label: string;
+}
+
+/**
+ * Frame `jarvis_choice`: o worker detectou um picker de escolha numerada
+ * (modo JARVIS completo) e já sintetizou a pergunta em áudio — o frontend
+ * toca e, se a sessão estiver em foco, abre o microfone pra colher a resposta.
+ */
+export interface JarvisChoiceFrame {
+  session_id: string;
+  title?: string;
+  options: JarvisChoiceOption[];
+  audio_b64: string;
+  mime?: string;
+  at: string;
 }
 
 /** Resposta do worker a um pedido `git_branches` (badge de branch no card). */
@@ -95,6 +118,11 @@ export class SseService {
    * reage a este signal e toca no aparelho.
    */
   readonly jarvisAudio = signal<JarvisAudioFrame | null>(null);
+  /**
+   * Último frame `jarvis_choice` (pergunta de picker, modo JARVIS completo) —
+   * transiente, o {@link JarvisChoiceService} reage e coordena voz/mic.
+   */
+  readonly jarvisChoice = signal<JarvisChoiceFrame | null>(null);
   /**
    * Última resposta a um `git_branches`/`git_checkout` (badge de branch no
    * card da sessão) — transiente, o componente lê e reage via `effect()`
@@ -230,6 +258,13 @@ export class SseService {
     const jv = parsed as { type?: string; audio_b64?: string };
     if (jv.type === 'jarvis_audio' && jv.audio_b64) {
       this.jarvisAudio.set(parsed as JarvisAudioFrame);
+      return;
+    }
+
+    // JARVIS: pergunta de picker (modo completo) — idem, transiente.
+    const jc = parsed as { type?: string; audio_b64?: string; options?: unknown };
+    if (jc.type === 'jarvis_choice' && jc.audio_b64 && Array.isArray(jc.options)) {
+      this.jarvisChoice.set(parsed as JarvisChoiceFrame);
       return;
     }
 

@@ -20,6 +20,7 @@ import { Location, NgTemplateOutlet } from '@angular/common';
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { JarvisAudioService } from '../../core/jarvis-audio.service';
+import { JarvisChoiceService } from '../../core/jarvis-choice.service';
 import { ShareSessionService } from '../../core/share-session.service';
 import { DraftStore } from '../../core/draft-store';
 import { SessionPrefsStore } from '../../core/session-prefs-store';
@@ -235,24 +236,32 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
               <button
                 type="button"
                 class="act act--jarvis"
-                [class.on]="!!session()?.jarvis"
-                (click)="toggleJarvis()"
-                [attr.aria-pressed]="!!session()?.jarvis"
-                aria-label="JARVIS: resumo falado desta sessão"
-                title="JARVIS — fala um resumo no celular quando a sessão concluir/aguardar"
+                [class.on]="jarvisMode() === 'speaker'"
+                [class.on-full]="jarvisMode() === 'full'"
+                (click)="cycleJarvisMode()"
+                [attr.aria-pressed]="jarvisMode() !== 'off'"
+                aria-label="JARVIS: resumo falado / conversa por voz desta sessão"
+                [title]="jarvisModeTitle()"
               >
-                @if (session()?.jarvis) {
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
-                    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
-                  </svg>
-                } @else {
+                @if (jarvisMode() === 'off') {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M11 5 6 9H2v6h4l5 4V5z" />
                     <path d="M22 9l-6 6M16 9l6 6" />
                   </svg>
+                } @else {
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
+                  </svg>
+                  @if (jarvisMode() === 'full') {
+                    <!-- badge de mic: diferencia "completo" (conversa) de "só toca áudio" -->
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" class="jarvis-mic-badge" aria-hidden="true">
+                      <rect x="9" y="2" width="6" height="12" rx="3" />
+                      <path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" />
+                    </svg>
+                  }
                 }
               </button>
             }
@@ -1142,6 +1151,29 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
           <button type="button" class="key key-wide key-accent" (click)="pressKey('enter')">Enter</button>
           <button type="button" class="key" (click)="pressKey('escape')">Esc</button>
           <button type="button" class="key" (click)="pressKey('tab')" aria-label="Tab">Tab</button>
+        </div>
+      }
+
+      <!-- JARVIS completo: picker de escolha detectado nesta sessão — fala já
+           tocou, mic pode estar ouvindo. Botões numerados são o fallback
+           manual (voz falhou/preferiu tocar) — sempre visíveis junto. -->
+      @if (jarvisChoiceForThis(); as jc) {
+        <div class="jarvis-choice-banner" role="status">
+          <span class="jc-label">
+            @if (jarvisChoice.listening()) {
+              🎙️ Ouvindo sua resposta…
+            } @else {
+              Escolha uma opção:
+            }
+          </span>
+          <span class="jc-options">
+            @for (o of jc.options; track o.key) {
+              <button type="button" class="jc-opt" (click)="jarvisChoice.answerManually(o.key)">
+                {{ o.key }}. {{ o.label }}
+              </button>
+            }
+          </span>
+          <button type="button" class="jc-dismiss" (click)="jarvisChoice.dismiss()" aria-label="Dispensar">✕</button>
         </div>
       }
 
@@ -2492,6 +2524,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         background: #2a1c1c;
       }
       .act--jarvis {
+        position: relative;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -2502,6 +2535,21 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         color: #38bdf8;
         border-color: #1e3a44;
         background: #0e2730;
+      }
+      /* "Completo" (conversa por voz) — cor distinta do "só toca áudio" pra
+         ficar óbvio de relance qual dos dois modos está ligado. */
+      .act--jarvis.on-full {
+        color: #c084fc;
+        border-color: #3b2a52;
+        background: #211530;
+      }
+      .jarvis-mic-badge {
+        position: absolute;
+        bottom: 3px;
+        right: 3px;
+        color: #c084fc;
+        background: #211530;
+        border-radius: 50%;
       }
       /* Estado ATIVO dos botões ghost (foco ligado, painel de compartilhar
          aberto): destaca em verde-água p/ ficar claro que já foi acionado —
@@ -3232,6 +3280,54 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         background: #0e1113;
         transition: background 0.15s, box-shadow 0.15s;
       }
+      /* JARVIS completo: banner do picker detectado — opções tocáveis (voz
+         falhou ou o usuário preferiu tocar) + estado "ouvindo". */
+      .jarvis-choice-banner {
+        flex: none;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 14px;
+        background: #211530;
+        border-top: 1px solid #3b2a52;
+      }
+      .jc-label {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: #c084fc;
+        flex: none;
+      }
+      .jc-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex: 1;
+      }
+      .jc-opt {
+        appearance: none;
+        background: #2a1c40;
+        border: 1px solid #3b2a52;
+        color: #e6d9f7;
+        font: inherit;
+        font-size: 12.5px;
+        padding: 5px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .jc-opt:hover {
+        background: #3b2a52;
+      }
+      .jc-dismiss {
+        appearance: none;
+        background: transparent;
+        border: none;
+        color: #9a8bb0;
+        cursor: pointer;
+        font-size: 13px;
+        padding: 4px 6px;
+        flex: none;
+      }
       /* Linha do compositor: botões + input + enviar (a barra em si é coluna,
          pra acomodar o preview do anexo acima). */
       .composer {
@@ -3686,6 +3782,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
   private readonly jarvisAudio = inject(JarvisAudioService);
+  protected readonly jarvisChoice = inject(JarvisChoiceService);
   private readonly drafts = inject(DraftStore);
   private readonly prefs = inject(SessionPrefsStore);
   private readonly workers = inject(WorkersStore);
@@ -5279,23 +5376,57 @@ export class DetalheComponent implements AfterViewChecked {
       });
   }
 
-  /** Liga/desliga o JARVIS (resumo falado) desta sessão. Otimista + rollback. */
-  protected toggleJarvis(): void {
+  /** Frame `jarvis_choice` ativo AGORA, só se for desta sessão (o serviço é
+   * global — várias sessões podem estar na fila, mas só mostramos o banner
+   * na tela que corresponde ao tmux_name do frame ativo). */
+  protected readonly jarvisChoiceForThis = computed(() => {
+    const active = this.jarvisChoice.activeFrame();
+    const tn = this.session()?.tmux_name;
+    return active && tn && active.session_id === tn ? active : null;
+  });
+
+  /** Modo do JARVIS desta sessão — trata doc antigo (só `jarvis` bool, sem
+   * `jarvis_mode`) como "speaker" p/ compatibilidade. */
+  protected readonly jarvisMode = computed<'off' | 'speaker' | 'full'>(() => {
+    const s = this.session();
+    if (!s) {
+      return 'off';
+    }
+    return s.jarvis_mode ?? (s.jarvis ? 'speaker' : 'off');
+  });
+
+  protected jarvisModeTitle(): string {
+    switch (this.jarvisMode()) {
+      case 'full':
+        return 'JARVIS completo (clique: desliga) — fala e pede resposta por voz quando o agente perguntar algo';
+      case 'speaker':
+        return 'JARVIS autofalante (clique: modo completo) — só fala o resumo, sem pedir resposta';
+      default:
+        return 'JARVIS desligado (clique: liga autofalante) — fala um resumo no celular quando a sessão concluir/aguardar';
+    }
+  }
+
+  /** Cicla off → speaker → full → off. Otimista + rollback. */
+  protected cycleJarvisMode(): void {
     const s = this.session();
     const id = this.id();
     if (!s || !id) {
       return;
     }
-    const next = !s.jarvis;
-    this.session.set({ ...s, jarvis: next }); // otimista
+    const order: Array<'off' | 'speaker' | 'full'> = ['off', 'speaker', 'full'];
+    const cur = this.jarvisMode();
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    const prevJarvis = s.jarvis;
+    const prevMode = s.jarvis_mode;
+    this.session.set({ ...s, jarvis: next !== 'off', jarvis_mode: next }); // otimista
     this.api
-      .setJarvis(id, next)
+      .setJarvisMode(id, next)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         error: () => {
-          const cur = this.session();
-          if (cur) {
-            this.session.set({ ...cur, jarvis: !next }); // reverte
+          const cur2 = this.session();
+          if (cur2) {
+            this.session.set({ ...cur2, jarvis: prevJarvis, jarvis_mode: prevMode }); // reverte
           }
         },
       });

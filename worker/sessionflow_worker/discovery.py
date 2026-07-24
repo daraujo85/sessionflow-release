@@ -38,6 +38,7 @@ from sessionflow_worker.metrics import claude_metrics_for
 from sessionflow_worker.output_capture import (
     DEFAULT_SCREEN_COLLECTION,
     derive_activity,
+    parse_choice_prompt,
     screen_wants_attention,
 )
 from sessionflow_worker.push_sender import send_to_all
@@ -547,7 +548,18 @@ class Discovery:
             return
         if self._attn.get(name) == attention:
             return
+        prev_attn = self._attn.get(name)
         self._attn[name] = attention
+        # Saiu de "waiting" (respondeu por teclado, picker sumiu, etc.) — a
+        # escolha pendente (se houver) não vale mais; limpa pra não confundir
+        # um áudio avulso enviado depois com resposta de um picker antigo.
+        if prev_attn == "waiting" and attention != "waiting":
+            try:
+                await self._db[SESSIONS_COLLECTION].update_one(
+                    {"tmux_name": name}, {"$unset": {"pending_choice": ""}}
+                )
+            except Exception:  # noqa: BLE001 - best-effort
+                logger.debug("pending_choice: limpeza falhou para %r", name, exc_info=True)
         # Anti-flap: se a MESMA atenção foi notificada há pouco (a tela piscou
         # idle↔ocupado, ex.: reflow após resize), não re-notifica/re-fala.
         if attention is not None:
@@ -583,12 +595,32 @@ class Discovery:
             # bloquear o discovery com o round-trip de resumo+voz).
             try:
                 screen = await self._screen_text(name)
-                asyncio.create_task(
-                    jarvis.maybe_speak(
-                        self._db, self._channel, name, title, desc, screen,
-                        host_id=self._host_id,
-                    )
+                # Modo completo + picker de escolha detectado: pergunta as
+                # opções por voz (e guarda a escolha pendente) em vez do
+                # resumo genérico — mais útil e é o que ativa a resposta por
+                # voz. Fora desse caso (modo speaker, ou sem picker), segue o
+                # fluxo de sempre (maybe_speak).
+                options = (
+                    parse_choice_prompt(screen) if attention == "waiting" else None
                 )
+                if options and await jarvis.is_full_mode(self._db, name):
+                    await self._db[SESSIONS_COLLECTION].update_one(
+                        {"tmux_name": name},
+                        {"$set": {"pending_choice": {"options": options, "set_at": _now()}}},
+                    )
+                    asyncio.create_task(
+                        jarvis.maybe_ask_choice(
+                            self._db, self._channel, name, options,
+                            host_id=self._host_id,
+                        )
+                    )
+                else:
+                    asyncio.create_task(
+                        jarvis.maybe_speak(
+                            self._db, self._channel, name, title, desc, screen,
+                            host_id=self._host_id,
+                        )
+                    )
             except Exception:  # noqa: BLE001 - jarvis nunca derruba o ciclo
                 logger.debug("jarvis: agendamento falhou para %r", name, exc_info=True)
 

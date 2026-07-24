@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -82,6 +82,10 @@ class SessionOut(BaseModel):
     favorite: bool = False
     # JARVIS: resumo falado da sessão (voz no celular) quando conclui/aguarda.
     jarvis: bool = False
+    # Modo do JARVIS: "off"/"speaker" (só áudio, hoje = jarvis bool) / "full"
+    # (também detecta picker de escolha e pede resposta por voz). Ausente nos
+    # docs antigos (pré-migração) — front trata como "speaker" quando falta.
+    jarvis_mode: str | None = None
     # Sub-agents rodando agora (heurística sobre a tela) + nomes p/ tooltip.
     subagents: int = 0
     subagent_names: list[str] = Field(default_factory=list)
@@ -510,6 +514,34 @@ async def set_jarvis(
         {"tmux_name": tmux_name}, {"$set": {"jarvis": body.jarvis}}
     )
     return {"jarvis": body.jarvis}
+
+
+class SessionJarvisMode(BaseModel):
+    """Modo do JARVIS por sessão: desligado / só toca áudio / conversa completa."""
+
+    mode: Literal["off", "speaker", "full"]
+
+
+@router.put("/{session_id}/jarvis-mode", status_code=200)
+async def set_jarvis_mode(
+    request: Request, session_id: str, body: SessionJarvisMode
+) -> dict:
+    """Define o modo do JARVIS: ``off`` (nada), ``speaker`` (só toca áudio —
+    comportamento de hoje) ou ``full`` (também detecta picker de escolha
+    numerada e pede resposta por voz — ver ``jarvis.maybe_ask_choice``).
+
+    Mantém o campo legado ``jarvis`` (bool) em sincronia — código existente
+    que só olha esse bool (áudio básico) continua funcionando sem mudança.
+    """
+    tmux_name = await _require_tmux_name(request, session_id)
+    settings = request.app.state.settings
+    db = request.app.state.mongo_db
+    jarvis_bool = body.mode != "off"
+    await db[settings.sessions_collection].update_one(
+        {"tmux_name": tmux_name},
+        {"$set": {"jarvis": jarvis_bool, "jarvis_mode": body.mode}},
+    )
+    return {"jarvis": jarvis_bool, "jarvis_mode": body.mode}
 
 
 class SessionDisplayName(BaseModel):

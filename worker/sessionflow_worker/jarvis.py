@@ -87,6 +87,12 @@ OLLAMA_BASE = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA", "http://localhost:1143
 # (llama3.1:8b). Para resumos mais rápidos: `ollama pull llama3.2:3b` e setar
 # SESSIONFLOW_JARVIS_OLLAMA_MODEL=llama3.2:3b.
 OLLAMA_MODEL = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA_MODEL", "llama3.1:8b")
+# Modelo p/ CLASSIFICAR a resposta falada de um picker (modo JARVIS completo)
+# contra a lista de opções — tarefa bem mais restrita que o resumo, por isso um
+# modelo BEM menor basta (baixa latência) e o parser determinístico (ver
+# ``_classify_choice_sync``) já resolve a maioria dos casos sem nem chamar o
+# modelo. `ollama pull llama3.2:1b` se ainda não estiver instalado.
+CHOICE_MODEL = os.environ.get("SESSIONFLOW_JARVIS_CHOICE_MODEL", "llama3.2:1b")
 TTS_BASE_URL = os.environ.get("SESSIONFLOW_TTS_BASE", "https://audio.boletoazap.dev.br").rstrip("/")
 # Voz Azure quando TTS=api (a voz `say` não vale lá).
 API_VOICE = os.environ.get("SESSIONFLOW_JARVIS_API_VOICE", "pt-BR-AntonioNeural")
@@ -227,12 +233,16 @@ def _post_form(path: str, fields: dict[str, str], timeout: int = _HTTP_TIMEOUT) 
 
 
 def _ollama_sync(
-    system: str, prompt: str, num_predict: int = 70, temperature: float = 0.3
+    system: str,
+    prompt: str,
+    num_predict: int = 70,
+    temperature: float = 0.3,
+    model: str | None = None,
 ) -> str:
     out = _post_json(
         f"{OLLAMA_BASE}/api/generate",
         {
-            "model": OLLAMA_MODEL,
+            "model": model or OLLAMA_MODEL,
             "system": system,
             "prompt": prompt,
             "stream": False,
@@ -666,6 +676,23 @@ async def is_enabled(db: AsyncIOMotorDatabase, name: str) -> bool:
         return False
 
 
+async def is_full_mode(db: AsyncIOMotorDatabase, name: str) -> bool:
+    """True se esta sessão está no modo "completo" (conversa: picker + voz).
+
+    Diferente de :func:`is_enabled` (que também conta ``jarvis_all`` global),
+    o modo completo é sempre POR SESSÃO — não existe um "full" global, pra não
+    ligar escuta de microfone em todo lugar sem querer.
+    """
+    try:
+        doc = await db[SESSIONS_COLLECTION].find_one(
+            {"tmux_name": name}, projection={"jarvis_mode": 1}
+        )
+        return bool(doc and doc.get("jarvis_mode") == "full")
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: is_full_mode falhou para %r", name, exc_info=True)
+        return False
+
+
 # --- Pipeline + publicação ---------------------------------------------------
 
 
@@ -732,3 +759,189 @@ async def maybe_speak(
         logger.info("jarvis: falou em %r (%d chars)", name, len(summary))
     except Exception:  # noqa: BLE001 - best-effort
         logger.debug("jarvis: maybe_speak falhou para %r", name, exc_info=True)
+
+
+# --- Escolha por voz (modo completo) -----------------------------------------
+
+
+def _build_choice_question(options: list[dict[str, str]]) -> str:
+    parts = [f"{o['key']}, {o['label']}" for o in options]
+    return "Preciso que você escolha: " + "; ".join(parts) + "."
+
+
+async def maybe_ask_choice(
+    db: AsyncIOMotorDatabase,
+    channel: aio_pika.abc.AbstractChannel | None,
+    name: str,
+    options: list[dict[str, str]],
+    host_id: str | None = None,
+) -> None:
+    """Se a sessão está em modo completo, fala as opções e publica ``jarvis_choice``.
+
+    Best-effort de ponta a ponta — nunca levanta. O caller (``discovery.py``) já
+    filtrou por :func:`is_full_mode`, mas checamos de novo aqui (defesa em
+    profundidade, mesmo padrão de :func:`maybe_speak`).
+    """
+    if channel is None or not options:
+        return
+    try:
+        if not await is_full_mode(db, name):
+            return
+        question = _clean_for_speech(_build_choice_question(options))
+        audio = await _synth(question, db, host_id)
+        if audio is None:
+            return
+        b64, mime = audio
+        await _publish(
+            channel,
+            {
+                "type": "jarvis_choice",
+                "session_id": name,
+                "title": "Preciso que você escolha",
+                "options": options,
+                "audio_b64": b64,
+                "mime": mime,
+                "at": _now_iso(),
+            },
+        )
+        logger.info("jarvis: perguntou escolha em %r (%d opções)", name, len(options))
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: maybe_ask_choice falhou para %r", name, exc_info=True)
+
+
+# Ordinais/números por extenso em PT-BR → índice 0-based na lista de opções.
+# Cobre as formas mais comuns de resposta curta; qualquer coisa fora disso cai
+# no fallback do LLM (ver `_classify_choice_sync`).
+_ORDINAL_WORDS: dict[str, int] = {
+    "primeira": 0, "primeiro": 0, "um": 0, "uma": 0,
+    "segunda": 1, "segundo": 1, "dois": 1, "duas": 1,
+    "terceira": 2, "terceiro": 2, "tres": 2,
+    "quarta": 3, "quarto": 3, "quatro": 3,
+    "quinta": 4, "quinto": 4, "cinco": 4,
+    "sexta": 5, "sexto": 5, "seis": 5,
+    "setima": 6, "setimo": 6, "sete": 6,
+    "oitava": 7, "oitavo": 7, "oito": 7,
+    "nona": 8, "nono": 8, "nove": 8,
+    "decima": 9, "decimo": 9, "dez": 9,
+}
+_LAST_WORDS = frozenset({"ultima", "ultimo"})
+_PENULTIMATE_WORDS = frozenset({"penultima", "penultimo"})
+_YES_WORDS = frozenset({"sim", "isso", "confirmo", "confirma", "positivo"})
+_NO_WORDS = frozenset({"nao", "negativo", "cancela", "cancelar"})
+
+
+def _strip_accents(text: str) -> str:
+    import unicodedata
+
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn"
+    )
+
+
+def _normalize_spoken(text: str) -> list[str]:
+    norm = _strip_accents(text.lower())
+    norm = re.sub(r"[^a-z0-9\s]", " ", norm)
+    return norm.split()
+
+
+def _classify_choice_rule_based(
+    spoken_text: str, options: list[dict[str, str]]
+) -> str | None:
+    """Parser determinístico (sem LLM): ordinal, dígito, "opção N", sim/não.
+
+    Zero latência e zero risco de alucinação — cobre a grande maioria das
+    respostas curtas esperadas aqui. Retorna a KEY da opção escolhida, ou
+    ``None`` se a frase não casar com nenhum padrão conhecido (aí quem chamou
+    cai pro fallback do LLM).
+    """
+    words = _normalize_spoken(spoken_text)
+    if not words:
+        return None
+    n = len(options)
+    valid_keys = {o["key"] for o in options}
+
+    # "número 2" / "opção 2" / dígito solto que bate com uma key OU posição.
+    digits = [w for w in words if w.isdigit()]
+    if digits:
+        d = digits[0]
+        if d in valid_keys:
+            return d
+        idx = int(d) - 1
+        if 0 <= idx < n:
+            return options[idx]["key"]
+
+    # Ordinal por extenso.
+    for w in words:
+        if w in _LAST_WORDS:
+            return options[-1]["key"]
+        if w in _PENULTIMATE_WORDS and n >= 2:
+            return options[-2]["key"]
+        if w in _ORDINAL_WORDS:
+            idx = _ORDINAL_WORDS[w]
+            if 0 <= idx < n:
+                return options[idx]["key"]
+
+    # Sim/não — só quando alguma opção claramente rotula isso (evita casar
+    # "sim" contra um picker sem opção de confirmação óbvia).
+    has_yes_no = any(w in _YES_WORDS for w in words) or any(w in _NO_WORDS for w in words)
+    if has_yes_no:
+        for o in options:
+            label = _strip_accents(o["label"].lower())
+            if any(w in _YES_WORDS for w in words) and label.startswith(("sim", "yes")):
+                return o["key"]
+            if any(w in _NO_WORDS for w in words) and label.startswith(("nao", "no")):
+                return o["key"]
+
+    return None
+
+
+_CHOICE_CLASSIFY_SYS = (
+    "Voce recebe uma pergunta com opcoes numeradas e uma frase falada por uma "
+    "pessoa respondendo. Responda APENAS o numero da opcao escolhida, sem mais "
+    "nada (sem pontuacao, sem palavras). Se a frase nao deixar claro qual "
+    "opcao, responda exatamente 'nenhuma'."
+)
+
+
+def _classify_choice_llm_sync(spoken_text: str, options: list[dict[str, str]]) -> str | None:
+    options_txt = "\n".join(f"{o['key']}. {o['label']}" for o in options)
+    prompt = f"Opções:\n{options_txt}\n\nResposta falada: \"{spoken_text}\"\n\nNúmero:"
+    valid_keys = {o["key"] for o in options}
+    try:
+        raw = _ollama_sync(
+            _CHOICE_CLASSIFY_SYS, prompt, num_predict=6, temperature=0.0, model=CHOICE_MODEL
+        )
+    except Exception:  # noqa: BLE001 - fallback gracioso
+        logger.debug("jarvis: classify_choice (llm) falhou", exc_info=True)
+        return None
+    # Validação estrita: só aceita se a saída for EXATAMENTE uma key válida
+    # (às vezes o modelo devolve "2." ou "Opção 2" mesmo pedindo só o número —
+    # extrai o primeiro dígito da saída e valida contra as keys).
+    m = re.search(r"\d+", raw)
+    if not m:
+        return None
+    key = m.group(0)
+    return key if key in valid_keys else None
+
+
+async def classify_choice(spoken_text: str, options: list[dict[str, str]]) -> str | None:
+    """Traduz uma resposta falada livre pra KEY da opção certa (ou ``None``).
+
+    1ª tentativa: parser determinístico (rápido, zero alucinação). Só cai pro
+    LLM pequeno (:data:`CHOICE_MODEL`) se a frase não casar com nenhum padrão
+    conhecido — e mesmo assim valida a saída contra as keys válidas antes de
+    aceitar (nunca "confia cegamente" na saída do modelo).
+    """
+    if not spoken_text or not options:
+        return None
+    key = _classify_choice_rule_based(spoken_text, options)
+    if key is not None:
+        return key
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, _classify_choice_llm_sync, spoken_text, options
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: classify_choice falhou para %r", spoken_text, exc_info=True)
+        return None

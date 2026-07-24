@@ -113,6 +113,20 @@ export class ApiService {
   }
 
   /**
+   * Modo do JARVIS: "off" (nada), "speaker" (só toca áudio, comportamento de
+   * hoje) ou "full" (também detecta picker de escolha e pede resposta por voz).
+   */
+  setJarvisMode(
+    id: string,
+    mode: 'off' | 'speaker' | 'full',
+  ): Observable<{ jarvis: boolean; jarvis_mode: string }> {
+    return this.http.put<{ jarvis: boolean; jarvis_mode: string }>(
+      this.url(`/sessions/${id}/jarvis-mode`),
+      { mode },
+    );
+  }
+
+  /**
    * Renomeia o nome TÉCNICO (tmux/Claude Code). 202 aceito — o worker renomeia
    * a sessão em background; recarregue o doc depois. O nome é "slugificado" no
    * servidor (tmux não aceita espaços/pontos).

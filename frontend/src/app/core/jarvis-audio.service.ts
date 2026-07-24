@@ -29,6 +29,10 @@ export class JarvisAudioService {
   readonly volume = signal(readVolume());
   /** Áudio tocando agora (para um indicador visual, se quiser). */
   readonly speaking = signal(false);
+  /** Frame `kind:'choice'` que ACABOU de terminar de tocar (uma vez, sem
+   * repetição automática) — o {@link JarvisChoiceService} reage pra então
+   * abrir o microfone. Consumidor deve tratar como "evento", não estado. */
+  readonly choiceAudioDone = signal<JarvisAudioFrame | null>(null);
   /** tmux_name da sessão cujo áudio está tocando agora (ou null) — p/ marcar o
    * card que está "falando" nas listas. */
   readonly speakingSessionId = signal<string | null>(null);
@@ -234,7 +238,22 @@ export class JarvisAudioService {
     }
   }
 
+  /**
+   * Fala a pergunta de um picker (modo JARVIS completo) — mesma fila/elemento
+   * dos resumos comuns (não sobrepõe áudio), mas SEM a repetição automática
+   * após 5s: quando termina, {@link choiceAudioDone} dispara na hora pro
+   * {@link JarvisChoiceService} decidir abrir o mic ou notificar.
+   */
+  enqueueChoice(frame: JarvisAudioFrame): void {
+    this.enqueue({ ...frame, kind: 'choice' });
+  }
+
   private onClipDone(): void {
+    if (this.currentFrame?.kind === 'choice') {
+      this.choiceAudioDone.set(this.currentFrame);
+      this.playNext();
+      return;
+    }
     if (!this.repeating && this.currentFrame && !this.suppressed) {
       // 1ª vez que este clipe termina: repete uma vez após uma pausa (ajuda a
       // pegar quem não escutou/percebeu de primeira).

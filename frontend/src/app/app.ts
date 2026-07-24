@@ -8,6 +8,7 @@ import { AuthService } from './core/auth.service';
 import { SseService } from './core/sse.service';
 import { NotifyService } from './core/notify.service';
 import { JarvisAudioService } from './core/jarvis-audio.service';
+import { JarvisChoiceService } from './core/jarvis-choice.service';
 import { EventCuesService } from './core/event-cues.service';
 
 /** A bottom-nav entry: route + label + SVG path (icons from the mockup). */
@@ -64,11 +65,14 @@ export class App {
   private readonly sse = inject(SseService);
   private readonly notify = inject(NotifyService);
   private readonly jarvisAudio = inject(JarvisAudioService);
+  private readonly jarvisChoice = inject(JarvisChoiceService);
   private readonly eventCues = inject(EventCuesService);
 
   constructor() {
     // JARVIS: liga o pipeline de áudio (efeito SSE + desbloqueio de autoplay).
     this.jarvisAudio.init();
+    // JARVIS completo: pergunta de picker → mic automático/notificação.
+    this.jarvisChoice.init();
     // Avisos de evento (chime/voz discretos) — separado do JARVIS.
     this.eventCues.init();
     // SSE app-wide quando autenticado: garante que as notificações (sino +

@@ -112,6 +112,10 @@ export interface Session {
   favorite?: boolean;
   /** JARVIS: resumo falado da sessão (voz no celular) ligado p/ esta sessão. */
   jarvis?: boolean;
+  /** Modo do JARVIS nesta sessão: "speaker" só toca áudio (hoje = `jarvis`
+   * true); "full" também detecta picker de escolha e pede resposta por voz;
+   * "off" desliga tudo. Default "speaker" quando ausente (compat). */
+  jarvis_mode?: 'off' | 'speaker' | 'full';
   /** Sub-agents rodando agora (heurística do worker sobre a tela). */
   subagents?: number;
   /** Nomes dos sub-agents rodando (quando o provedor expõe) — p/ tooltip. */

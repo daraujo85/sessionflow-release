@@ -321,6 +321,50 @@ def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
     return any(detect_waiting(ln, agent_type) for ln in non_empty[-3:])
 
 
+# Linha de opção de picker: "1. Yes", "❯ 2. Yes, and don't ask again", etc.
+# O cursor "❯"/">" na frente é opcional (picker marca só a opção selecionada).
+_CHOICE_LINE_RE = re.compile(r"^\s*(?:[❯>]\s*)?(\d{1,2})\.\s+(.+?)\s*$")
+
+
+def parse_choice_prompt(text: str) -> list[dict[str, str]] | None:
+    """Extrai as opções de um picker de escolha numerada, se houver um na tela.
+
+    Só considera a tela um picker de verdade se algum dos marcadores de footer
+    já usados por :func:`screen_wants_attention` ("to select"/"to navigate"
+    etc.) aparecer nas últimas linhas — evita casar números soltos em prosa
+    normal (ex.: "encontrei 2 arquivos"). Dentro dessa janela, casa linhas no
+    formato ``N. texto`` (cursor "❯"/">" opcional na frente, como o picker do
+    Claude Code marca a opção selecionada). Exige pelo menos 2 opções pra
+    considerar válido (uma linha numerada isolada não é um picker).
+
+    Retorna ``None`` se não achar um picker; senão uma lista ordenada de
+    ``{"key": "1", "label": "Yes"}``.
+    """
+    if not text:
+        return None
+    non_empty = [strip_ansi(ln) for ln in text.splitlines() if strip_ansi(ln).strip()]
+    if not non_empty:
+        return None
+    tail = non_empty[-15:]
+    blob = "\n".join(tail).lower()
+    if not any(m in blob for m in _ATTENTION_SCREEN_MARKERS):
+        return None
+
+    seen: set[str] = set()
+    options: list[dict[str, str]] = []
+    for ln in tail:
+        m = _CHOICE_LINE_RE.match(ln)
+        if not m:
+            continue
+        key = m.group(1)
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append({"key": key, "label": m.group(2).strip()})
+
+    return options if len(options) >= 2 else None
+
+
 # Prefixos de spinner / "pensando" (primeiro char não-vazio de uma linha de
 # trabalho do agente, ex.: "✻ Mustering… (48s · ↓ 1.5k tokens)").
 _THINKING_PREFIXES = ("✻", "✶", "✽", "·", "◯", "◆", "*")

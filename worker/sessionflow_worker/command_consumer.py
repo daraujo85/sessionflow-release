@@ -1612,10 +1612,13 @@ class CommandConsumer:
 
         Payload: ``{name, path, upload_id?}``. Transcreve ``path`` via
         :func:`transcriber.transcribe` (await de executor — não trava o
-        consumer), injeta o texto no pane via :meth:`_send_keys` e retorna o
-        texto transcrito (vira evento ``input``/info). Falha de arquivo/modelo
-        é convertida em ``CommandError`` → evento de erro, sem derrubar o
-        consumer.
+        consumer). Se a sessão tem uma ESCOLHA PENDENTE (``pending_choice``,
+        gravada pelo discovery ao detectar um picker em modo JARVIS completo),
+        classifica a transcrição contra as opções e injeta só a TECLA
+        resolvida — não o texto cru. Sem escolha pendente: comportamento de
+        sempre (injeta a transcrição inteira via :meth:`_type_and_submit`).
+        Falha de arquivo/modelo é convertida em ``CommandError`` → evento de
+        erro, sem derrubar o consumer.
         """
         name = payload.get("name")
         if not name:
@@ -1638,16 +1641,60 @@ class CommandConsumer:
         if not text:
             raise CommandError("transcrição vazia: nada a injetar")
 
+        upload_id = payload.get("upload_id")
+        resolved_key = await self._maybe_resolve_pending_choice(name, text)
+        if resolved_key is not None:
+            await self._type_and_submit(name, resolved_key)
+            await self._mark_working(name)
+            result: dict[str, Any] = {"name": name, "text": text, "choice_key": resolved_key}
+            if upload_id is not None:
+                result["upload_id"] = upload_id
+            return result
+
         # Enter SEPARADO + verificação (bracketed-paste-safe): era o último
         # caminho ainda mandando texto+Enter grudados — transcrições ficavam
         # presas no input do agente sem submeter.
         await self._type_and_submit(name, text)
         await self._mark_working(name)  # áudio transcrito é resposta → trabalha
-        result: dict[str, Any] = {"name": name, "text": text}
-        upload_id = payload.get("upload_id")
+        result = {"name": name, "text": text}
         if upload_id is not None:
             result["upload_id"] = upload_id
         return result
+
+    async def _maybe_resolve_pending_choice(self, name: str, spoken_text: str) -> str | None:
+        """Se a sessão tem ``pending_choice``, classifica a fala e limpa o campo.
+
+        Retorna a KEY resolvida (ex. ``"2"``) pra injetar no pane, ou ``None``
+        se não havia escolha pendente OU a classificação não resolveu (nesse
+        caso o áudio segue o caminho normal — injeta o texto cru, e o usuário
+        pode repetir/digitar). Best-effort: qualquer falha aqui não derruba o
+        handler de áudio, só faz cair no comportamento padrão.
+        """
+        try:
+            doc = await self._sessions.find_one(
+                {"tmux_name": name}, projection={"pending_choice": 1}
+            )
+            pending = doc.get("pending_choice") if doc else None
+            options = pending.get("options") if pending else None
+            if not options:
+                return None
+            db = self._sessions.database
+            key = await jarvis.classify_choice(spoken_text, options)
+            if key is None:
+                # Não entendeu — fala pra repetir e mantém a escolha pendente.
+                asyncio.create_task(
+                    jarvis.maybe_ask_choice(
+                        db, self._channel, name, options, host_id=self._host_id
+                    )
+                )
+                return None
+            await self._sessions.update_one(
+                {"tmux_name": name}, {"$unset": {"pending_choice": ""}}
+            )
+            return key
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("pending_choice: resolução falhou para %r", name, exc_info=True)
+            return None
 
     # -- infra ------------------------------------------------------------
 
