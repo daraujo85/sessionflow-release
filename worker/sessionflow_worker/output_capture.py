@@ -326,19 +326,58 @@ def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
 _CHOICE_LINE_RE = re.compile(r"^\s*(?:[❯>]\s*)?(\d{1,2})\.\s+(.+?)\s*$")
 
 
+#: opção de picker não deveria ser um parágrafo — acima disso é mais provável
+#: ser um item de lista/plano em prosa (ex.: passo de um TODO) do que um rótulo
+#: de escolha real (ex.: "Yes", "No, go back", "Cancelar").
+_MAX_OPTION_LABEL_LEN = 140
+
+
+def _trailing_choice_block(tail: list[str]) -> list[dict[str, str]] | None:
+    """Bloco de linhas numeradas que é literalmente o ÚLTIMO conteúdo da tela.
+
+    Sinal usado quando NÃO há rodapé de navegação (ex.: o diálogo "Switch
+    model?" do próprio Claude Code, que só mostra "1. Yes... / 2. No...", sem
+    "to select/to navigate"). O que diferencia isso de uma lista de TODO no
+    meio de uma resposta é a POSIÇÃO: um picker de verdade não tem mais nada
+    depois dele (o processo trava ali esperando a tecla); uma lista de passos
+    em prosa é sempre seguida de mais texto/pergunta (ver caso real B2B-245:
+    "1. Formalizar... 2. Escrever o fix..." é seguido de várias linhas de
+    prosa e só DEPOIS vem a pergunta — o bloco numerado não é o fim da tela).
+    """
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for ln in reversed(tail):
+        m = _CHOICE_LINE_RE.match(ln)
+        if not m:
+            break  # quebrou a sequência final → não é mais o "último bloco"
+        label = m.group(2).strip()
+        if len(label) > _MAX_OPTION_LABEL_LEN:
+            break
+        key = m.group(1)
+        if key not in seen:
+            seen.add(key)
+            options.append({"key": key, "label": label})
+    options.reverse()
+    return options if len(options) >= 2 else None
+
+
 def parse_choice_prompt(text: str) -> list[dict[str, str]] | None:
     """Extrai as opções de um picker de escolha numerada, se houver um na tela.
 
-    Só considera a tela um picker de verdade se algum dos marcadores de footer
-    já usados por :func:`screen_wants_attention` ("to select"/"to navigate"
-    etc.) aparecer nas últimas linhas — evita casar números soltos em prosa
-    normal (ex.: "encontrei 2 arquivos"). Dentro dessa janela, casa linhas no
-    formato ``N. texto`` (cursor "❯"/">" opcional na frente, como o picker do
-    Claude Code marca a opção selecionada). Exige pelo menos 2 opções pra
-    considerar válido (uma linha numerada isolada não é um picker).
+    Dois sinais aceitos (qualquer um basta):
+    1. Algum marcador de footer já usado por :func:`screen_wants_attention`
+       ("to select"/"to navigate" etc.) nas últimas linhas — o caso mais comum
+       (picker de permissão do Claude Code). Dentro dessa janela, casa
+       QUALQUER linha no formato ``N. texto`` (cursor "❯"/">" opcional).
+    2. SEM footer: um bloco de linhas numeradas que é o ÚLTIMO conteúdo da
+       tela (nada de prosa depois) — cobre diálogos como "Switch model?" que
+       não têm rodapé de navegação. Mais restrito de propósito (só o bloco
+       final, rótulos curtos) pra não confundir com uma lista de TODO no meio
+       de uma resposta comum, que é sempre seguida de mais texto.
 
-    Retorna ``None`` se não achar um picker; senão uma lista ordenada de
-    ``{"key": "1", "label": "Yes"}``.
+    Em ambos os casos exige pelo menos 2 opções (uma linha numerada isolada
+    não é um picker). Retorna ``None`` se não achar; senão uma lista ordenada
+    de ``{"key": "1", "label": "Yes"}``.
     """
     if not text:
         return None
@@ -347,8 +386,9 @@ def parse_choice_prompt(text: str) -> list[dict[str, str]] | None:
         return None
     tail = non_empty[-15:]
     blob = "\n".join(tail).lower()
+
     if not any(m in blob for m in _ATTENTION_SCREEN_MARKERS):
-        return None
+        return _trailing_choice_block(tail)
 
     seen: set[str] = set()
     options: list[dict[str, str]] = []

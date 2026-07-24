@@ -326,7 +326,12 @@ class Discovery:
                 screen_text.encode("utf-8", "ignore")
             ).hexdigest()
             screen_changed = screen_sig != prev_sig
-            if screen_wants_attention(screen_text, info.agent_type):
+            # `parse_choice_prompt` também conta como "aguardando" — cobre
+            # diálogos do Claude Code sem o rodapé de navegação (ex.: "Switch
+            # model?"), que `screen_wants_attention` sozinho não reconhece.
+            if screen_wants_attention(screen_text, info.agent_type) or parse_choice_prompt(
+                screen_text
+            ):
                 status_value = SessionState.WAITING_INPUT.value
                 attention = "waiting"
             elif self._screen_idle(info.name, screen_text):
