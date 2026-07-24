@@ -613,6 +613,12 @@ class Discovery:
                     attention == "waiting"
                     and await jarvis.is_full_mode(self._db, name)
                 )
+                # Quick replies (chips clicáveis acima do input): pra QUALQUER
+                # sessão aguardando — puramente visual, sem áudio/mic.
+                if attention == "waiting":
+                    asyncio.create_task(
+                        jarvis.maybe_quick_replies(self._db, self._channel, name, screen)
+                    )
                 if options and full:
                     await self._db[SESSIONS_COLLECTION].update_one(
                         {"tmux_name": name},

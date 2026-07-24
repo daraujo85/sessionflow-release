@@ -907,6 +907,67 @@ async def reask_open(
         logger.debug("jarvis: reask_open falhou para %r", name, exc_info=True)
 
 
+# --- Quick replies (sugestões de resposta) -----------------------------------
+
+_QUICK_REPLIES_SYS = (
+    "Voce ve o final da tela de um agente de codigo que fez uma pergunta ou "
+    "espera uma decisao do usuario. Gere ate 3 RESPOSTAS CURTAS e uteis que o "
+    "usuario poderia dar, em portugues do Brasil, cada uma com no maximo 8 "
+    "palavras. Uma resposta por linha, sem numeracao, sem aspas, sem "
+    "explicacao. Se a tela mostra opcoes numeradas, as respostas devem ser os "
+    "numeros ou frases curtas equivalentes. Varie: inclua uma afirmativa, uma "
+    "negativa/alternativa quando fizer sentido."
+)
+
+
+def _quick_replies_sync(screen_tail: str) -> list[str]:
+    raw = _ollama_sync(_QUICK_REPLIES_SYS, screen_tail, num_predict=80, temperature=0.4)
+    out: list[str] = []
+    for ln in raw.splitlines():
+        ln = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", ln).strip().strip('"')
+        if ln and len(ln) <= 60 and ln not in out:
+            out.append(ln)
+        if len(out) >= 3:
+            break
+    return out
+
+
+async def maybe_quick_replies(
+    db: AsyncIOMotorDatabase,
+    channel: aio_pika.abc.AbstractChannel | None,
+    name: str,
+    screen_text: str,
+) -> None:
+    """Gera sugestões de resposta rápida e publica ``quick_replies`` (SSE).
+
+    Sem TTS — é puramente visual: chips clicáveis acima do input da sessão.
+    Roda pra QUALQUER sessão aguardando (não é gateado pelo modo JARVIS —
+    não abre mic nem toca áudio, então não incomoda). Best-effort.
+    """
+    if channel is None or SUMMARY_MODE == "none":
+        return
+    try:
+        tail = (screen_text or "").strip()[-_SCREEN_TAIL:]
+        if not tail:
+            return
+        loop = asyncio.get_running_loop()
+        suggestions = await loop.run_in_executor(None, _quick_replies_sync, tail)
+        if not suggestions:
+            return
+        await _publish(
+            channel,
+            {
+                "type": "quick_replies",
+                "session_id": name,
+                "suggestions": suggestions,
+                "at": _now_iso(),
+            },
+        )
+        logger.info("jarvis: quick replies em %r (%d)", name, len(suggestions))
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: quick_replies falhou para %r", name, exc_info=True)
+
+
 # Opções da pergunta de CONFIRMAÇÃO (sim/não) — mesmo formato de `options` do
 # picker original, então reaproveita o pipeline inteiro do frontend
 # (jarvis_choice: toca áudio, abre mic, botões de fallback) sem mudar nada lá.

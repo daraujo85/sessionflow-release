@@ -60,6 +60,13 @@ export interface JarvisChoiceFrame {
   at: string;
 }
 
+/** Sugestões de resposta rápida (LLM local) pra uma sessão aguardando input. */
+export interface QuickRepliesFrame {
+  session_id: string;
+  suggestions: string[];
+  at: string;
+}
+
 /** Resposta do worker a um pedido `git_branches` (badge de branch no card). */
 export interface GitBranchesFrame {
   session_id: string;
@@ -151,6 +158,8 @@ export class SseService {
    * transiente, o {@link JarvisChoiceService} reage e coordena voz/mic.
    */
   readonly jarvisChoice = signal<JarvisChoiceFrame | null>(null);
+  /** Últimas sugestões de resposta rápida por sessão (tmux_name). */
+  readonly quickReplies = signal<Record<string, QuickRepliesFrame>>({});
   /**
    * Última resposta a um `git_branches`/`git_checkout` (badge de branch no
    * card da sessão) — transiente, o componente lê e reage via `effect()`
@@ -293,6 +302,14 @@ export class SseService {
     const jc = parsed as { type?: string; audio_b64?: string; options?: unknown };
     if (jc.type === 'jarvis_choice' && jc.audio_b64 && Array.isArray(jc.options)) {
       this.jarvisChoice.set(parsed as JarvisChoiceFrame);
+      return;
+    }
+
+    // Sugestões de resposta rápida — transiente, guarda a última por sessão.
+    const qr = parsed as { type?: string; session_id?: string; suggestions?: unknown };
+    if (qr.type === 'quick_replies' && qr.session_id && Array.isArray(qr.suggestions)) {
+      const frame = parsed as QuickRepliesFrame;
+      this.quickReplies.update((m) => ({ ...m, [frame.session_id]: frame }));
       return;
     }
 

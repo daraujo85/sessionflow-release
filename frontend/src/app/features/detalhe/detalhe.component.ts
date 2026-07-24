@@ -1179,6 +1179,17 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         </div>
       }
 
+      <!-- Quick replies: sugestões de resposta (LLM local) quando a sessão
+           aguarda você — chips clicáveis; digitar/anexar segue livre. -->
+      @if (quickRepliesForThis(); as qr) {
+        <div class="quick-replies" role="group" aria-label="Sugestões de resposta">
+          @for (s of qr; track s) {
+            <button type="button" class="qr-chip" (click)="sendQuickReply(s)">{{ s }}</button>
+          }
+          <button type="button" class="qr-dismiss" (click)="dismissQuickReplies()" aria-label="Dispensar sugestões">✕</button>
+        </div>
+      }
+
       <!-- Input bar -->
       <footer
         class="inputbar"
@@ -3282,6 +3293,47 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         background: #0e1113;
         transition: background 0.15s, box-shadow 0.15s;
       }
+      /* Quick replies: chips de sugestão de resposta acima do input. */
+      .quick-replies {
+        flex: none;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px 14px;
+        background: #10141a;
+        border-top: 1px solid #20262a;
+      }
+      .qr-chip {
+        appearance: none;
+        background: #17202b;
+        border: 1px solid #2b3a4d;
+        color: #cfe3f8;
+        font: inherit;
+        font-size: 12.5px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        cursor: pointer;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .qr-chip:hover {
+        background: #1d2a3a;
+        border-color: #38bdf8;
+      }
+      .qr-dismiss {
+        appearance: none;
+        background: transparent;
+        border: none;
+        color: #7a8090;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 4px 6px;
+        margin-left: auto;
+        flex: none;
+      }
       /* JARVIS completo: banner do picker detectado — opções tocáveis (voz
          falhou ou o usuário preferiu tocar) + estado "ouvindo". */
       .jarvis-choice-banner {
@@ -5383,6 +5435,49 @@ export class DetalheComponent implements AfterViewChecked {
         },
         error: () => this.acting.set(false),
       });
+  }
+
+  /** Sugestão dispensada/usada — guarda o `at` do frame pra não reexibir. */
+  private readonly quickRepliesDismissedAt = signal<string | null>(null);
+
+  /** Sugestões de resposta rápida DESTA sessão, só enquanto ela aguarda. */
+  protected readonly quickRepliesForThis = computed<string[] | null>(() => {
+    const tn = this.session()?.tmux_name;
+    if (!tn || this.guest()) {
+      return null;
+    }
+    const frame = this.sse.quickReplies()[tn];
+    if (!frame || frame.suggestions.length === 0) {
+      return null;
+    }
+    if (frame.at === this.quickRepliesDismissedAt()) {
+      return null;
+    }
+    // Só faz sentido enquanto a sessão está esperando o usuário.
+    if (this.session()?.status !== 'waiting_input') {
+      return null;
+    }
+    return frame.suggestions;
+  });
+
+  /** Clicou numa sugestão → envia como resposta e esconde os chips. */
+  protected sendQuickReply(text: string): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    this.dismissQuickReplies();
+    this.markWorkingLocal();
+    this.api
+      .sendInput(id, text, true)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.refreshBurst(), error: () => {} });
+  }
+
+  protected dismissQuickReplies(): void {
+    const tn = this.session()?.tmux_name;
+    const frame = tn ? this.sse.quickReplies()[tn] : null;
+    this.quickRepliesDismissedAt.set(frame?.at ?? null);
   }
 
   /** Frame `jarvis_choice` ativo AGORA, só se for desta sessão (o serviço é
