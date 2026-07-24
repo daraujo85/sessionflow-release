@@ -269,7 +269,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               </span>
               <span class="sf-card-body">
                 <span class="sf-card-top">
-                  <span class="sf-card-name">{{ displayName(s) }}</span>
+                  <span class="sf-card-name" [title]="s.ai_description || displayName(s)">{{ displayName(s) }}</span>
                   <span
                     class="sf-agent"
                     [style.color]="agent(s).color"
@@ -1677,7 +1677,9 @@ export class InicioComponent implements OnInit {
       const text =
         `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${s.tmux_name}.json: ` +
         'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
-        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".';
+        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing". ' +
+        'Revise também o campo "description" (1 frase, o que se trata esta sessão ' +
+        'na SUA observação) — atualize se o foco mudou; crie se não existir.';
       this.api
         .sendInput(s.id, text, true)
         .pipe(takeUntilDestroyed(this.destroyRef))

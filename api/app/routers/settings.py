@@ -23,9 +23,13 @@ def milestones_instruction(session: str) -> str:
     return (
         "[SessionFlow] A partir de agora, trabalhe em tarefas/marcos: mantenha o "
         f"arquivo .sessionflow/milestones.{session}.json na raiz do projeto no "
-        'formato {"milestones":[{"id":"<kebab>","title":"<curto>",'
-        '"status":"todo|doing|blocked|done"}]}, criando e atualizando o status '
-        "conforme avança. O SessionFlow lê esse arquivo para mostrar suas tarefas. "
+        'formato {"description":"<1 frase>","milestones":[{"id":"<kebab>",'
+        '"title":"<curto>","status":"todo|doing|blocked|done"}]}, criando e '
+        "atualizando o status conforme avança. O SessionFlow lê esse arquivo para "
+        "mostrar suas tarefas. O campo \"description\" é uma descrição BREVE e "
+        "VIVA (1 frase, sua observação) do que se trata esta sessão — o app "
+        "mostra junto do nome; atualize-a sempre que o foco/assunto da sessão "
+        "mudar de verdade. "
         f"Use EXATAMENTE esse nome de arquivo (milestones.{session}.json). "
         "IMPORTANTE: assim que TERMINAR uma tarefa, marque-a como \"done\" na hora "
         "(não deixe em \"doing\"); tenha no máximo UMA tarefa em \"doing\" por vez. "
@@ -74,7 +78,9 @@ def milestones_refresh_instruction(session: str) -> str:
     return (
         f"[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.{session}.json: "
         "confira o estado REAL do trabalho, atualize status desatualizados, remova "
-        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".'
+        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing". '
+        'Revise também o campo "description" (1 frase, o que se trata esta sessão '
+        "na SUA observação) — atualize se o foco mudou; crie se não existir."
     )
 
 

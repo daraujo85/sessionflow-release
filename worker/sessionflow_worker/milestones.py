@@ -78,6 +78,42 @@ def _parse_file(path: Path) -> list[dict[str, str]] | None:
     return out
 
 
+def _parse_description(path: Path) -> str | None:
+    """Campo top-level ``description`` do arquivo de marcos (ou ``None``).
+
+    Descrição BREVE e "viva" do que se trata a sessão, escrita pela própria IA
+    da sessão e atualizada quando o foco muda — o app mostra junto do nome.
+    """
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    desc = data.get("description")
+    if not isinstance(desc, str):
+        return None
+    desc = desc.strip()
+    return desc[:280] if desc else None
+
+
+def read_description(
+    work_dir: str, session_name: str, allow_shared: bool = True
+) -> str | None:
+    """Lê a descrição da sessão do arquivo namespaced (mesma lógica de path)."""
+    if not work_dir:
+        return None
+    base = Path(work_dir).expanduser() / ".sessionflow"
+    desc = _parse_description(base / f"milestones.{session_name}.json")
+    if desc is not None:
+        return desc
+    if allow_shared:
+        return _parse_description(base / "milestones.json")
+    return None
+
+
 def read_milestones(
     work_dir: str, session_name: str, allow_shared: bool = True
 ) -> list[dict[str, str]] | None:
@@ -176,6 +212,20 @@ async def sync_session(
     # Arquivo ausente → trata como vazio p/ PODAR tasks órfãs desta sessão.
     if items is None:
         items = []
+
+    # Descrição "viva" da sessão (campo top-level do mesmo arquivo, escrito
+    # pela IA da sessão) → espelha no doc da sessão (ai_description) pro app
+    # mostrar junto do nome. Só grava quando muda; ausente não apaga (a IA
+    # pode ainda não ter criado o campo).
+    desc = read_description(work_dir, session_name or session_id, allow_shared)
+    if desc is not None:
+        try:
+            await db["sessions"].update_one(
+                {"tmux_name": session_name or session_id, "ai_description": {"$ne": desc}},
+                {"$set": {"ai_description": desc}},
+            )
+        except Exception:  # noqa: BLE001 - best-effort, nunca trava o sync
+            pass
 
     coll = db[collection]
     now = datetime.now(timezone.utc)

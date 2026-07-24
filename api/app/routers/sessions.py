@@ -86,6 +86,10 @@ class SessionOut(BaseModel):
     # (também detecta picker de escolha e pede resposta por voz). Ausente nos
     # docs antigos (pré-migração) — front trata como "speaker" quando falta.
     jarvis_mode: str | None = None
+    # Descrição BREVE e "viva" do que se trata a sessão, escrita pela própria
+    # IA da sessão (campo "description" do milestones.<sessão>.json, espelhado
+    # pelo worker). Mostrada junto do nome no app.
+    ai_description: str | None = None
     # Sub-agents rodando agora (heurística sobre a tela) + nomes p/ tooltip.
     subagents: int = 0
     subagent_names: list[str] = Field(default_factory=list)

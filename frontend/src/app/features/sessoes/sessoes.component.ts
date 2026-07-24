@@ -316,7 +316,7 @@ const FILTERS: readonly FilterChip[] = [
 
                   <span class="sf-info">
                     <span class="sf-name-row">
-                      <span class="sf-name">{{ displayName(s) }}</span>
+                      <span class="sf-name" [title]="s.ai_description || displayName(s)">{{ displayName(s) }}</span>
                       @if (isWorker(s)) {
                         <span class="sf-worker-chip" title="Worker / sub-agente">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none"

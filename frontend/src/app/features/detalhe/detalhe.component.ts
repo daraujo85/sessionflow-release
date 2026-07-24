@@ -119,6 +119,11 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
             <div class="mono hdr-dir">
               <span class="hdr-dir-path">{{ session()?.work_dir || '—' }}</span>
             </div>
+            <!-- Descrição "viva" da sessão, escrita pela própria IA (campo
+                 description do milestones) — atualiza conforme o foco muda. -->
+            @if (session()?.ai_description; as aid) {
+              <div class="hdr-ai-desc" [title]="aid">{{ aid }}</div>
+            }
             <ng-template #repoPill let-r let-hideName="hideName">
               <span class="branch-wrap">
                 <button
@@ -2076,6 +2081,16 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         text-overflow: ellipsis;
         min-width: 0;
       }
+      .hdr-ai-desc {
+        font-size: 12px;
+        font-style: italic;
+        color: #8b93a5;
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
       /* Badges de branch — linha PRÓPRIA (não disputa espaço com o path
          truncado do work_dir); quebra pra próxima linha sozinha quando tem
          mais de um repo (pasta "guarda-chuva"), sem sobrepor nada. */
@@ -3952,7 +3967,9 @@ export class DetalheComponent implements AfterViewChecked {
     const text =
       `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${name}.json: ` +
       'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
-      'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing".';
+      'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing". ' +
+      'Revise também o campo "description" (1 frase, o que se trata esta sessão ' +
+      'na SUA observação) — atualize se o foco mudou; crie se não existir.';
     this.api
       .sendInput(id, text, true)
       .pipe(takeUntilDestroyed(this.destroyRef))

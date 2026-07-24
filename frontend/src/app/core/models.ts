@@ -116,6 +116,9 @@ export interface Session {
    * true); "full" também detecta picker de escolha e pede resposta por voz;
    * "off" desliga tudo. Default "speaker" quando ausente (compat). */
   jarvis_mode?: 'off' | 'speaker' | 'full';
+  /** Descrição breve e "viva" do que se trata a sessão, escrita pela própria
+   * IA da sessão (campo "description" do milestones, espelhado pelo worker). */
+  ai_description?: string | null;
   /** Sub-agents rodando agora (heurística do worker sobre a tela). */
   subagents?: number;
   /** Nomes dos sub-agents rodando (quando o provedor expõe) — p/ tooltip. */
