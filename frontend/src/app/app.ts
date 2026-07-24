@@ -5,6 +5,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { SwUpdate } from '@angular/service-worker';
 import { filter, map, startWith } from 'rxjs/operators';
 import { AuthService } from './core/auth.service';
+import { ApiService } from './core/api.service';
 import { SseService } from './core/sse.service';
 import { NotifyService } from './core/notify.service';
 import { JarvisAudioService } from './core/jarvis-audio.service';
@@ -59,10 +60,24 @@ export class App {
       /* storage indisponível — silencioso */
     }
   }
+
+  /** Clicou no toast global de notificação → resolve tmux_name → id e navega. */
+  protected openToastSession(tmuxName: string): void {
+    this.sse.dismissGlobalToast();
+    this.api.listSessions().subscribe({
+      next: (list) => {
+        const s = list.find((it) => it.tmux_name === tmuxName);
+        if (s) {
+          void this.router.navigate(['/sessao', s.id]);
+        }
+      },
+    });
+  }
   private readonly router = inject(Router);
   private readonly swUpdate = inject(SwUpdate, { optional: true });
   private readonly auth = inject(AuthService);
-  private readonly sse = inject(SseService);
+  protected readonly sse = inject(SseService);
+  private readonly api = inject(ApiService);
   private readonly notify = inject(NotifyService);
   private readonly jarvisAudio = inject(JarvisAudioService);
   private readonly jarvisChoice = inject(JarvisChoiceService);

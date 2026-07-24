@@ -110,6 +110,34 @@ export class SseService {
   /** Toast de "tarefa concluída" (título + sessão) p/ a Home. Limpo por timer. */
   readonly taskDoneToast = signal<{ title: string; session: string } | null>(null);
   private taskFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  /** tmux_name da sessão sendo vista AGORA (Detalhe registra) — suprime o
+   * {@link globalToast} pra ela, o usuário já está olhando. */
+  readonly viewedTmuxName = signal<string | null>(null);
+  /**
+   * Toast in-app CLICÁVEL de notificação de OUTRA sessão, visível em
+   * QUALQUER tela do app (Home, outra sessão, Perfil…) — pra não precisar
+   * voltar na mão e caçar qual sessão notificou. Diferente do
+   * {@link taskDoneToast} (só concluído, só na Home): cobre qualquer
+   * atenção/sucesso, em qualquer lugar. Limpo por timer.
+   */
+  readonly globalToast = signal<{ title: string; desc: string; sessionTmux: string } | null>(
+    null,
+  );
+  private globalToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Detalhe chama ao montar/trocar de sessão (e com `null` ao sair). */
+  setViewedTmuxName(name: string | null): void {
+    this.viewedTmuxName.set(name);
+  }
+
+  /** Fecha o toast global antes da hora (ex.: usuário clicou/dispensou). */
+  dismissGlobalToast(): void {
+    if (this.globalToastTimer) {
+      clearTimeout(this.globalToastTimer);
+      this.globalToastTimer = null;
+    }
+    this.globalToast.set(null);
+  }
   /** Último espelho de tela por sessão (tmux_name) — empurrado pelo worker. */
   readonly screens = signal<Record<string, { text: string; at: string }>>({});
   /**
@@ -310,6 +338,19 @@ export class SseService {
     ) {
       this.notifications.update((list) => push(list, frame));
       this.fireSystemNotification(frame);
+      // Toast global clicável: só quando NÃO é a sessão que o usuário já está
+      // vendo (senão seria redundante — ele já sabe o que aconteceu).
+      if (frame.session_id && frame.session_id !== this.viewedTmuxName()) {
+        this.globalToast.set({
+          title: frame.title || 'SessionFlow',
+          desc: frame.desc || '',
+          sessionTmux: frame.session_id,
+        });
+        if (this.globalToastTimer) {
+          clearTimeout(this.globalToastTimer);
+        }
+        this.globalToastTimer = setTimeout(() => this.globalToast.set(null), 6000);
+      }
     }
   }
 

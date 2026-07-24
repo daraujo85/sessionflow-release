@@ -5,6 +5,17 @@
   </div>
 }
 
+<!-- Toast global de notificação de OUTRA sessão — clicável, leva direto pra
+     ela de qualquer tela do app (Home, dentro de outra sessão, Perfil…). -->
+@if (sse.globalToast(); as gt) {
+  <button type="button" class="sf-global-toast" (click)="openToastSession(gt.sessionTmux)">
+    <span class="sf-gt-title">{{ gt.title }}</span>
+    @if (gt.desc) {
+      <span class="sf-gt-desc">{{ gt.desc }}</span>
+    }
+  </button>
+}
+
 <div class="sf-shell" [class.sf-shell--overlay]="isOverlay()" [class.sf-shell--login]="isLogin()"
      [class.sf-shell--nav-collapsed]="navCollapsed()">
   <!-- Sem header global: cada tela renderiza o próprio topo (logo/título/sino),

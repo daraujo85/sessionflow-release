@@ -4730,6 +4730,13 @@ export class DetalheComponent implements AfterViewChecked {
     });
     this.destroyRef.onDestroy(() => this.jarvisAudio.setViewingSessions([]));
 
+    // Toast global de notificação (ver SseService.globalToast): não mostra
+    // pra sessão que o usuário já está vendo aqui.
+    effect(() => {
+      this.sse.setViewedTmuxName(this.session()?.tmux_name ?? null);
+    });
+    this.destroyRef.onDestroy(() => this.sse.setViewedTmuxName(null));
+
     // Ao trocar o filtro de tarefas, recomeça a paginação do topo (senão o
     // "Ver mais 3" de um filtro vaza pro outro, mostrando itens demais/de menos).
     effect(() => {
