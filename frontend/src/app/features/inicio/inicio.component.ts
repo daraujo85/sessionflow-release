@@ -330,6 +330,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 @if (latestTaskFor(s); as lt) {
                   <span
                     class="sf-card-sub sf-card-task"
+                    [class.shimmering]="cardTaskShimmer(s)"
                     [style.color]="statusColor(s)"
                     [title]="lt.title"
                   >{{ lt.title }}</span>
@@ -444,7 +445,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       }
 
       @if (recentTasks().length > 0) {
-        <div class="sf-task-list" [class.shimmering]="tasksShimmer()">
+        <div class="sf-task-list">
           @for (t of recentTasks(); track t.id; let first = $first; let i = $index) {
             <div
               class="sf-task-wrap sf-enter"
@@ -1313,11 +1314,15 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         transition: none;
       }
       /* Shimmer: revisão de tarefas pedida (botão da Home) → varredura de
-         brilho nos cards até o conteúdo mudar de fato (ou timeout). */
-      .sf-task-list.shimmering .sf-task {
+         brilho no texto da última tarefa de cada card, até ELE mudar (ou
+         timeout). Aplicado por card, some individualmente conforme cada
+         sessão atualiza a sua. */
+      .sf-card-task.shimmering {
+        position: relative;
         overflow: hidden;
+        border-radius: 4px;
       }
-      .sf-task-list.shimmering .sf-task::after {
+      .sf-card-task.shimmering::after {
         content: '';
         position: absolute;
         inset: 0;
@@ -1325,9 +1330,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         background: linear-gradient(
           105deg,
           transparent 30%,
-          rgba(255, 255, 255, 0.055) 45%,
-          rgba(44, 236, 196, 0.09) 50%,
-          rgba(255, 255, 255, 0.055) 55%,
+          rgba(255, 255, 255, 0.08) 45%,
+          rgba(44, 236, 196, 0.14) 50%,
+          rgba(255, 255, 255, 0.08) 55%,
           transparent 70%
         );
         background-size: 220% 100%;
@@ -1615,33 +1620,26 @@ export class InicioComponent implements OnInit {
   /** Recent tasks loaded from the API. */
   protected readonly tasks = signal<Task[]>([]);
   protected readonly refreshingAllMilestones = signal(false);
-  /** Shimmer nos cards de tarefa enquanto a revisão pedida não muda o conteúdo. */
-  protected readonly tasksShimmer = signal(false);
-  /** Snapshot do conteúdo das tarefas no momento do clique (compara pra saber
-   * quando os agentes efetivamente atualizaram algo). */
-  private tasksShimmerBaseline = '';
-  private tasksShimmerTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Shimmer no texto da última tarefa DE CADA CARD de sessão enquanto a
+   * revisão pedida não muda aquele texto. Baseline por sessão (id → título no
+   * momento do clique); ativo enquanto o flag global estiver ligado. */
+  private readonly cardShimmerBaseline = signal<Record<string, string> | null>(null);
+  private cardShimmerTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Assinatura estável do conteúdo visível das tarefas (título + estado). */
-  private tasksContentSig(): string {
-    return this.tasks()
-      .map((t) => `${t.id}|${t.title}|${t.state}`)
-      .join('\n');
+  /** O texto da última tarefa deste card ainda é o mesmo do clique? → brilha. */
+  protected cardTaskShimmer(s: Session): boolean {
+    const base = this.cardShimmerBaseline();
+    if (!base || !(s.id in base)) {
+      return false;
+    }
+    return (this.latestTaskFor(s)?.title ?? '') === base[s.id];
   }
 
-  /** Desliga o shimmer quando o conteúdo das tarefas muda (poll/SSE re-busca). */
-  private readonly tasksShimmerWatch = effect(() => {
-    const _ = this.tasks();
-    if (this.tasksShimmer() && this.tasksContentSig() !== this.tasksShimmerBaseline) {
-      this.clearTasksShimmer();
-    }
-  });
-
-  private clearTasksShimmer(): void {
-    this.tasksShimmer.set(false);
-    if (this.tasksShimmerTimer) {
-      clearTimeout(this.tasksShimmerTimer);
-      this.tasksShimmerTimer = null;
+  private clearCardShimmer(): void {
+    this.cardShimmerBaseline.set(null);
+    if (this.cardShimmerTimer) {
+      clearTimeout(this.cardShimmerTimer);
+      this.cardShimmerTimer = null;
     }
   }
 
@@ -1652,15 +1650,18 @@ export class InicioComponent implements OnInit {
       return;
     }
     this.refreshingAllMilestones.set(true);
-    // Shimmer até o texto dos cards mudar (agentes revisam em ritmos
-    // diferentes; o poll re-busca as tasks). Teto de 2min pra não brilhar
-    // pra sempre se nenhuma revisão alterar nada.
-    this.tasksShimmerBaseline = this.tasksContentSig();
-    this.tasksShimmer.set(true);
-    if (this.tasksShimmerTimer) {
-      clearTimeout(this.tasksShimmerTimer);
+    // Shimmer no texto da última tarefa de cada card até ELE mudar (cada
+    // agente revisa no seu ritmo; o poll re-busca as tasks). Teto de 2min
+    // pra não brilhar pra sempre quando uma revisão não altera nada.
+    const base: Record<string, string> = {};
+    for (const s of active) {
+      base[s.id] = this.latestTaskFor(s)?.title ?? '';
     }
-    this.tasksShimmerTimer = setTimeout(() => this.clearTasksShimmer(), 120_000);
+    this.cardShimmerBaseline.set(base);
+    if (this.cardShimmerTimer) {
+      clearTimeout(this.cardShimmerTimer);
+    }
+    this.cardShimmerTimer = setTimeout(() => this.clearCardShimmer(), 120_000);
     let pending = active.length;
     const done = () => {
       pending--;
