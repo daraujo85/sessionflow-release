@@ -627,6 +627,15 @@ class Discovery:
                         )
                     )
                 elif full:
+                    # Resposta LIVRE também passa por confirmação antes de
+                    # injetar (ver _maybe_resolve_pending_choice) — o estágio
+                    # "open" marca que o próximo áudio é a resposta.
+                    await self._db[SESSIONS_COLLECTION].update_one(
+                        {"tmux_name": name},
+                        {"$set": {"pending_choice": {
+                            "stage": "open", "options": [], "set_at": _now(),
+                        }}},
+                    )
                     asyncio.create_task(
                         jarvis.maybe_ask_open(
                             self._db, self._channel, name, title, desc, screen,

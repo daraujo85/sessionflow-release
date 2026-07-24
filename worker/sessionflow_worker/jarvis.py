@@ -870,6 +870,43 @@ async def maybe_ask_open(
         logger.debug("jarvis: maybe_ask_open falhou para %r", name, exc_info=True)
 
 
+async def reask_open(
+    db: AsyncIOMotorDatabase,
+    channel: aio_pika.abc.AbstractChannel | None,
+    name: str,
+    host_id: str | None = None,
+) -> None:
+    """Usuário negou a confirmação da resposta livre → reabre o mic.
+
+    Fala um convite curto e publica outro ``jarvis_choice`` com ``options``
+    vazio (mesmo frame da pergunta aberta) — o frontend toca e abre o mic de
+    novo pra ele repetir a resposta.
+    """
+    if channel is None:
+        return
+    try:
+        if not await is_full_mode(db, name):
+            return
+        audio = await _synth("Ok. Pode falar sua resposta de novo.", db, host_id)
+        if audio is None:
+            return
+        b64, mime = audio
+        await _publish(
+            channel,
+            {
+                "type": "jarvis_choice",
+                "session_id": name,
+                "title": "Pode repetir a resposta",
+                "options": [],
+                "audio_b64": b64,
+                "mime": mime,
+                "at": _now_iso(),
+            },
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: reask_open falhou para %r", name, exc_info=True)
+
+
 # Opções da pergunta de CONFIRMAÇÃO (sim/não) — mesmo formato de `options` do
 # picker original, então reaproveita o pipeline inteiro do frontend
 # (jarvis_choice: toca áudio, abre mic, botões de fallback) sem mudar nada lá.
@@ -885,19 +922,27 @@ async def maybe_confirm_choice(
     name: str,
     label: str,
     host_id: str | None = None,
+    open_text: bool = False,
 ) -> None:
     """Fala a opção RESOLVIDA e pede confirmação (sim/não) antes de injetar.
 
-    Evita que um erro do parser/LLM (ver `classify_choice`) vire uma tecla
-    errada digitada sem o usuário perceber — o caller só injeta depois do
-    "sim" (``_handle_audio`` no ``command_consumer.py`` guia esse fluxo).
+    Evita que um erro do parser/LLM (ver `classify_choice`) — ou uma
+    transcrição errada do Whisper, no caso de resposta LIVRE
+    (``open_text=True``) — vire input errado digitado sem o usuário
+    perceber. O caller só injeta depois do "sim" (``_handle_audio`` no
+    ``command_consumer.py`` guia esse fluxo).
     """
     if channel is None:
         return
     try:
         if not await is_full_mode(db, name):
             return
-        question = _clean_for_speech(f"Você escolheu: {label}. Confirma? Diga sim ou não.")
+        phrase = (
+            f"Entendi: {label}. Confirma? Diga sim ou não."
+            if open_text
+            else f"Você escolheu: {label}. Confirma? Diga sim ou não."
+        )
+        question = _clean_for_speech(phrase)
         audio = await _synth(question, db, host_id)
         if audio is None:
             return

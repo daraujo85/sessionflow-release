@@ -1642,11 +1642,19 @@ class CommandConsumer:
             raise CommandError("transcrição vazia: nada a injetar")
 
         upload_id = payload.get("upload_id")
-        resolved_key = await self._maybe_resolve_pending_choice(name, text)
-        if resolved_key is not None:
-            await self._type_and_submit(name, resolved_key)
+        outcome, resolved = await self._maybe_resolve_pending_choice(name, text)
+        if outcome == "inject":
+            await self._type_and_submit(name, resolved or "")
             await self._mark_working(name)
-            result: dict[str, Any] = {"name": name, "text": text, "choice_key": resolved_key}
+            result: dict[str, Any] = {"name": name, "text": text, "choice_key": resolved}
+            if upload_id is not None:
+                result["upload_id"] = upload_id
+            return result
+        if outcome == "handled":
+            # Diálogo de voz em andamento (pediu confirmação / repetir) — NADA
+            # é digitado no terminal neste turno. Antes deste estado existir,
+            # o texto cru era injetado junto com a fala de confirmação (bug).
+            result = {"name": name, "text": text, "choice_pending": True}
             if upload_id is not None:
                 result["upload_id"] = upload_id
             return result
@@ -1661,24 +1669,30 @@ class CommandConsumer:
             result["upload_id"] = upload_id
         return result
 
-    async def _maybe_resolve_pending_choice(self, name: str, spoken_text: str) -> str | None:
-        """Se a sessão tem ``pending_choice``, avança o fluxo de 2 estágios.
+    async def _maybe_resolve_pending_choice(
+        self, name: str, spoken_text: str
+    ) -> tuple[str, str | None]:
+        """Se a sessão tem ``pending_choice``, avança o fluxo de estágios.
 
-        Estágio ``choose`` (default, doc antigo sem ``stage`` cai aqui): classifica
-        a fala contra as opções do PICKER. Se resolver, NÃO injeta ainda — pede
-        confirmação em voz (:func:`jarvis.maybe_confirm_choice`) e avança pro
-        estágio ``confirm``. Evita que um erro do parser/LLM vire tecla errada
-        sem o usuário perceber.
+        Estágio ``choose`` (default): classifica a fala contra as opções do
+        PICKER. Se resolver, NÃO injeta ainda — pede confirmação em voz
+        (:func:`jarvis.maybe_confirm_choice`) e avança pro estágio ``confirm``.
 
-        Estágio ``confirm``: classifica a fala contra sim/não
-        (:data:`jarvis.CONFIRM_OPTIONS`). "Sim" → retorna a KEY original (só
-        aqui o caller injeta de verdade). "Não" → volta pro estágio ``choose``
-        e pergunta as opções de novo. Sem entender → repete a confirmação.
+        Estágio ``open`` (pergunta em prosa): a fala É a resposta livre —
+        também passa por confirmação antes de injetar (Whisper pode errar).
 
-        Em qualquer estágio, se a classificação não resolver, a pergunta atual
-        é repetida (fala de novo) e retorna ``None`` — quem chamou não injeta
-        nada, só aguarda o próximo áudio. Best-effort: qualquer falha aqui cai
-        pro comportamento padrão (injeta o texto cru), sem derrubar o handler.
+        Estágio ``confirm``: classifica a fala contra sim/não. "Sim" → injeta
+        (a KEY do picker ou o TEXTO livre). "Não" → volta pro estágio anterior
+        e pergunta de novo. Sem entender → repete a confirmação.
+
+        Retorna ``(outcome, payload)``:
+        - ``("inject", texto)``  → caller digita ``texto`` no terminal;
+        - ``("handled", None)``  → diálogo de voz em andamento; caller NÃO
+          digita NADA (antes deste estado existir, o texto cru era injetado
+          junto com a fala de confirmação — bug relatado pelo Diego);
+        - ``("passthrough", None)`` → sem escolha pendente; caller segue o
+          fluxo normal (injeta a transcrição inteira).
+        Best-effort: qualquer falha vira ``passthrough``.
         """
         try:
             doc = await self._sessions.find_one(
@@ -1686,19 +1700,32 @@ class CommandConsumer:
             )
             pending = doc.get("pending_choice") if doc else None
             if not pending:
-                return None
+                return ("passthrough", None)
             db = self._sessions.database
             stage = pending.get("stage", "choose")
 
             if stage == "confirm":
                 confirm_options = pending.get("confirm_options") or jarvis.CONFIRM_OPTIONS
+                is_open = not (pending.get("options") or [])
                 answer = await jarvis.classify_choice(spoken_text, confirm_options)
                 if answer == "sim":
                     await self._sessions.update_one(
                         {"tmux_name": name}, {"$unset": {"pending_choice": ""}}
                     )
-                    return pending.get("resolved_key")
+                    return ("inject", pending.get("resolved_key"))
                 if answer == "nao":
+                    if is_open:
+                        # Resposta livre negada → reabre o mic pra repetir.
+                        await self._sessions.update_one(
+                            {"tmux_name": name},
+                            {"$set": {"pending_choice": {
+                                "stage": "open", "options": [], "set_at": _now(),
+                            }}},
+                        )
+                        asyncio.create_task(
+                            jarvis.reask_open(db, self._channel, name, host_id=self._host_id)
+                        )
+                        return ("handled", None)
                     options = pending.get("options") or []
                     await self._sessions.update_one(
                         {"tmux_name": name},
@@ -1715,20 +1742,44 @@ class CommandConsumer:
                             db, self._channel, name, options, host_id=self._host_id
                         )
                     )
-                    return None
+                    return ("handled", None)
                 # Não entendeu sim/não — repete a pergunta de confirmação.
                 asyncio.create_task(
                     jarvis.maybe_confirm_choice(
                         db, self._channel, name, pending.get("resolved_label", ""),
-                        host_id=self._host_id,
+                        host_id=self._host_id, open_text=is_open,
                     )
                 )
-                return None
+                return ("handled", None)
+
+            if stage == "open":
+                # Resposta LIVRE falada: não injeta ainda — fala de volta o que
+                # entendeu e pede confirmação (transcrição do Whisper pode errar).
+                text = spoken_text.strip()
+                if not text:
+                    return ("handled", None)
+                await self._sessions.update_one(
+                    {"tmux_name": name},
+                    {"$set": {"pending_choice": {
+                        "stage": "confirm",
+                        "options": [],
+                        "confirm_options": jarvis.CONFIRM_OPTIONS,
+                        "resolved_key": text,
+                        "resolved_label": text,
+                        "set_at": _now(),
+                    }}},
+                )
+                asyncio.create_task(
+                    jarvis.maybe_confirm_choice(
+                        db, self._channel, name, text, host_id=self._host_id, open_text=True
+                    )
+                )
+                return ("handled", None)
 
             # stage == "choose"
             options = pending.get("options") or []
             if not options:
-                return None
+                return ("passthrough", None)
             key = await jarvis.classify_choice(spoken_text, options)
             if key is None:
                 # Não entendeu — repete a pergunta original (mantém pendente).
@@ -1737,7 +1788,7 @@ class CommandConsumer:
                         db, self._channel, name, options, host_id=self._host_id
                     )
                 )
-                return None
+                return ("handled", None)
             label = next((o["label"] for o in options if o["key"] == key), key)
             await self._sessions.update_one(
                 {"tmux_name": name},
@@ -1757,10 +1808,10 @@ class CommandConsumer:
             asyncio.create_task(
                 jarvis.maybe_confirm_choice(db, self._channel, name, label, host_id=self._host_id)
             )
-            return None
+            return ("handled", None)
         except Exception:  # noqa: BLE001 - best-effort
             logger.debug("pending_choice: resolução falhou para %r", name, exc_info=True)
-            return None
+            return ("passthrough", None)
 
     # -- infra ------------------------------------------------------------
 
