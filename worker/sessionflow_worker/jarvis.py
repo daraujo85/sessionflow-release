@@ -817,6 +817,59 @@ async def maybe_ask_choice(
         logger.debug("jarvis: maybe_ask_choice falhou para %r", name, exc_info=True)
 
 
+async def maybe_ask_open(
+    db: AsyncIOMotorDatabase,
+    channel: aio_pika.abc.AbstractChannel | None,
+    name: str,
+    title: str,
+    desc: str,
+    screen_text: str,
+    host_id: str | None = None,
+) -> None:
+    """Pergunta ABERTA (prosa, sem picker numerado) em modo completo.
+
+    Fala o resumo da pergunta e publica um ``jarvis_choice`` com ``options``
+    VAZIO — o frontend reusa o mesmo pipeline (toca, abre o mic), e como a
+    sessão NÃO tem ``pending_choice`` no doc, a transcrição do áudio segue o
+    caminho normal do ``_handle_audio``: injeta o texto livre + Enter. Ou
+    seja: você fala a resposta em linguagem natural e ela vira o texto
+    digitado no terminal — sem classificação de opção, porque não há opções.
+    """
+    if channel is None:
+        return
+    try:
+        if not await is_full_mode(db, name):
+            return
+        summary = _clean_for_speech(await _summary(screen_text, title, desc))
+        prev = _LAST_SPOKEN.get(name)
+        if prev and prev[0] == summary and (time.monotonic() - prev[1]) < _SPEAK_DEDUP_S:
+            return
+        _LAST_SPOKEN[name] = (summary, time.monotonic())
+        label = await _tts_label(db, name)
+        spoken = _clean_for_speech(
+            f"Sessão {label}. {summary} Pode responder." if label else f"{summary} Pode responder."
+        )
+        audio = await _synth(spoken, db, host_id)
+        if audio is None:
+            return
+        b64, mime = audio
+        await _publish(
+            channel,
+            {
+                "type": "jarvis_choice",
+                "session_id": name,
+                "title": title or "Preciso da sua resposta",
+                "options": [],
+                "audio_b64": b64,
+                "mime": mime,
+                "at": _now_iso(),
+            },
+        )
+        logger.info("jarvis: pergunta aberta em %r", name)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: maybe_ask_open falhou para %r", name, exc_info=True)
+
+
 # Opções da pergunta de CONFIRMAÇÃO (sim/não) — mesmo formato de `options` do
 # picker original, então reaproveita o pipeline inteiro do frontend
 # (jarvis_choice: toca áudio, abre mic, botões de fallback) sem mudar nada lá.

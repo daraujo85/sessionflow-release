@@ -600,15 +600,20 @@ class Discovery:
             # bloquear o discovery com o round-trip de resumo+voz).
             try:
                 screen = await self._screen_text(name)
-                # Modo completo + picker de escolha detectado: pergunta as
-                # opções por voz (e guarda a escolha pendente) em vez do
-                # resumo genérico — mais útil e é o que ativa a resposta por
-                # voz. Fora desse caso (modo speaker, ou sem picker), segue o
-                # fluxo de sempre (maybe_speak).
+                # Modo completo + "aguardando": vira interação por voz.
+                # Com picker numerado → pergunta as opções e guarda a escolha
+                # pendente (resposta vira TECLA, com confirmação). Sem picker
+                # (pergunta aberta em prosa) → fala a pergunta e abre o mic;
+                # a transcrição vai como TEXTO LIVRE pro terminal. Fora do
+                # modo completo (ou "concluiu"), segue o resumo de sempre.
                 options = (
                     parse_choice_prompt(screen) if attention == "waiting" else None
                 )
-                if options and await jarvis.is_full_mode(self._db, name):
+                full = (
+                    attention == "waiting"
+                    and await jarvis.is_full_mode(self._db, name)
+                )
+                if options and full:
                     await self._db[SESSIONS_COLLECTION].update_one(
                         {"tmux_name": name},
                         {"$set": {"pending_choice": {
@@ -618,6 +623,13 @@ class Discovery:
                     asyncio.create_task(
                         jarvis.maybe_ask_choice(
                             self._db, self._channel, name, options,
+                            host_id=self._host_id,
+                        )
+                    )
+                elif full:
+                    asyncio.create_task(
+                        jarvis.maybe_ask_open(
+                            self._db, self._channel, name, title, desc, screen,
                             host_id=self._host_id,
                         )
                     )

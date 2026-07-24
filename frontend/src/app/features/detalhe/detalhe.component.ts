@@ -1162,8 +1162,10 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
           <span class="jc-label">
             @if (jarvisChoice.listening()) {
               🎙️ Ouvindo sua resposta…
-            } @else {
+            } @else if (jc.options.length > 0) {
               Escolha uma opção:
+            } @else {
+              Aguardando sua resposta por voz…
             }
           </span>
           <span class="jc-options">

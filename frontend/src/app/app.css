@@ -220,7 +220,10 @@
   bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1000;
+  /* Acima do overlay de sessão (DetalheComponent :host é fixed z-index 1000
+     e vem depois no DOM — com 1000 aqui o toast ficava PINTADO POR BAIXO da
+     tela de sessão e nunca aparecia pra quem estava dentro de uma). */
+  z-index: 2000;
   display: flex;
   flex-direction: column;
   align-items: flex-start;

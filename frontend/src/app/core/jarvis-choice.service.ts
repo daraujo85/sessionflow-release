@@ -1,4 +1,5 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
+import { Router } from '@angular/router';
 import { JarvisChoiceFrame, SseService } from './sse.service';
 import { JarvisAudioService } from './jarvis-audio.service';
 import { ApiService } from './api.service';
@@ -36,6 +37,7 @@ export class JarvisChoiceService {
   private readonly api = inject(ApiService);
   private readonly notify = inject(NotifyService);
   private readonly recorder = inject(AudioRecorderService);
+  private readonly router = inject(Router);
 
   /** Frame ativo agora (UI usa pra mostrar as opções/estado de "ouvindo"). */
   readonly activeFrame = signal<JarvisChoiceFrame | null>(null);
@@ -146,11 +148,18 @@ export class JarvisChoiceService {
       return;
     }
     if (typeof document !== 'undefined' && document.hasFocus()) {
+      // Leva o usuário ATÉ a sessão que perguntou antes de abrir o mic —
+      // senão o mic abria "invisível" enquanto ele olhava outra tela (o
+      // banner de escolha só aparece na tela da sessão dona da pergunta).
+      // Navegar pra mesma rota em que já está é um no-op inofensivo.
+      void this.router.navigate(['/sessao', this.activeSessionId]);
       this.startListening();
       return;
     }
     const opts = this.activeFrame()?.options ?? [];
-    const body = opts.map((o) => `${o.key}. ${o.label}`).join('  ·  ');
+    const body =
+      opts.map((o) => `${o.key}. ${o.label}`).join('  ·  ') ||
+      'Toque para abrir a sessão e responder por voz';
     void this.notify.notify('Preciso que você responda', {
       body,
       url: `/sessao/${this.activeSessionId}`,
