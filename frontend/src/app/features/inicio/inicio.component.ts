@@ -331,7 +331,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                   <span
                     class="sf-card-sub sf-card-task"
                     [class.shimmering]="cardTaskShimmer(s)"
-                    [style.color]="statusColor(s)"
+                    [style.color]="cardTaskShimmer(s) ? 'transparent' : statusColor(s)"
                     [title]="lt.title"
                   >{{ lt.title }}</span>
                 } @else {
@@ -1313,14 +1313,18 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       .sf-task.is-dragging {
         transition: none;
       }
-      /* Shimmer: revisão de tarefas pedida (botão da Home) → varredura de
-         brilho no texto da última tarefa de cada card, até ELE mudar (ou
-         timeout). Aplicado por card, some individualmente conforme cada
-         sessão atualiza a sua. */
+      /* Shimmer "skeleton": revisão de tarefas pedida (botão da Home) → o
+         texto da última tarefa de cada card é SUBSTITUÍDO por uma barra
+         sólida com varredura de brilho (texto fica transparente via binding
+         inline), até ELE mudar (ou timeout). Por card, some individualmente
+         conforme cada sessão atualiza a sua. */
       .sf-card-task.shimmering {
         position: relative;
         overflow: hidden;
-        border-radius: 4px;
+        border-radius: 6px;
+        background: #242b35;
+        min-height: 1em;
+        min-width: 65%;
       }
       .sf-card-task.shimmering::after {
         content: '';
@@ -1329,14 +1333,14 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         pointer-events: none;
         background: linear-gradient(
           105deg,
-          transparent 30%,
-          rgba(255, 255, 255, 0.08) 45%,
-          rgba(44, 236, 196, 0.14) 50%,
-          rgba(255, 255, 255, 0.08) 55%,
-          transparent 70%
+          transparent 25%,
+          rgba(255, 255, 255, 0.18) 45%,
+          rgba(44, 236, 196, 0.26) 50%,
+          rgba(255, 255, 255, 0.18) 55%,
+          transparent 75%
         );
         background-size: 220% 100%;
-        animation: sf-task-shimmer 1.4s linear infinite;
+        animation: sf-task-shimmer 1.2s linear infinite;
       }
       @keyframes sf-task-shimmer {
         from {
