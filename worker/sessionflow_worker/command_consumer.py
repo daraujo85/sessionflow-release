@@ -1662,36 +1662,102 @@ class CommandConsumer:
         return result
 
     async def _maybe_resolve_pending_choice(self, name: str, spoken_text: str) -> str | None:
-        """Se a sessão tem ``pending_choice``, classifica a fala e limpa o campo.
+        """Se a sessão tem ``pending_choice``, avança o fluxo de 2 estágios.
 
-        Retorna a KEY resolvida (ex. ``"2"``) pra injetar no pane, ou ``None``
-        se não havia escolha pendente OU a classificação não resolveu (nesse
-        caso o áudio segue o caminho normal — injeta o texto cru, e o usuário
-        pode repetir/digitar). Best-effort: qualquer falha aqui não derruba o
-        handler de áudio, só faz cair no comportamento padrão.
+        Estágio ``choose`` (default, doc antigo sem ``stage`` cai aqui): classifica
+        a fala contra as opções do PICKER. Se resolver, NÃO injeta ainda — pede
+        confirmação em voz (:func:`jarvis.maybe_confirm_choice`) e avança pro
+        estágio ``confirm``. Evita que um erro do parser/LLM vire tecla errada
+        sem o usuário perceber.
+
+        Estágio ``confirm``: classifica a fala contra sim/não
+        (:data:`jarvis.CONFIRM_OPTIONS`). "Sim" → retorna a KEY original (só
+        aqui o caller injeta de verdade). "Não" → volta pro estágio ``choose``
+        e pergunta as opções de novo. Sem entender → repete a confirmação.
+
+        Em qualquer estágio, se a classificação não resolver, a pergunta atual
+        é repetida (fala de novo) e retorna ``None`` — quem chamou não injeta
+        nada, só aguarda o próximo áudio. Best-effort: qualquer falha aqui cai
+        pro comportamento padrão (injeta o texto cru), sem derrubar o handler.
         """
         try:
             doc = await self._sessions.find_one(
                 {"tmux_name": name}, projection={"pending_choice": 1}
             )
             pending = doc.get("pending_choice") if doc else None
-            options = pending.get("options") if pending else None
-            if not options:
+            if not pending:
                 return None
             db = self._sessions.database
+            stage = pending.get("stage", "choose")
+
+            if stage == "confirm":
+                confirm_options = pending.get("confirm_options") or jarvis.CONFIRM_OPTIONS
+                answer = await jarvis.classify_choice(spoken_text, confirm_options)
+                if answer == "sim":
+                    await self._sessions.update_one(
+                        {"tmux_name": name}, {"$unset": {"pending_choice": ""}}
+                    )
+                    return pending.get("resolved_key")
+                if answer == "nao":
+                    options = pending.get("options") or []
+                    await self._sessions.update_one(
+                        {"tmux_name": name},
+                        {
+                            "$set": {
+                                "pending_choice": {
+                                    "stage": "choose", "options": options, "set_at": _now(),
+                                }
+                            }
+                        },
+                    )
+                    asyncio.create_task(
+                        jarvis.maybe_ask_choice(
+                            db, self._channel, name, options, host_id=self._host_id
+                        )
+                    )
+                    return None
+                # Não entendeu sim/não — repete a pergunta de confirmação.
+                asyncio.create_task(
+                    jarvis.maybe_confirm_choice(
+                        db, self._channel, name, pending.get("resolved_label", ""),
+                        host_id=self._host_id,
+                    )
+                )
+                return None
+
+            # stage == "choose"
+            options = pending.get("options") or []
+            if not options:
+                return None
             key = await jarvis.classify_choice(spoken_text, options)
             if key is None:
-                # Não entendeu — fala pra repetir e mantém a escolha pendente.
+                # Não entendeu — repete a pergunta original (mantém pendente).
                 asyncio.create_task(
                     jarvis.maybe_ask_choice(
                         db, self._channel, name, options, host_id=self._host_id
                     )
                 )
                 return None
+            label = next((o["label"] for o in options if o["key"] == key), key)
             await self._sessions.update_one(
-                {"tmux_name": name}, {"$unset": {"pending_choice": ""}}
+                {"tmux_name": name},
+                {
+                    "$set": {
+                        "pending_choice": {
+                            "stage": "confirm",
+                            "options": options,
+                            "confirm_options": jarvis.CONFIRM_OPTIONS,
+                            "resolved_key": key,
+                            "resolved_label": label,
+                            "set_at": _now(),
+                        }
+                    }
+                },
             )
-            return key
+            asyncio.create_task(
+                jarvis.maybe_confirm_choice(db, self._channel, name, label, host_id=self._host_id)
+            )
+            return None
         except Exception:  # noqa: BLE001 - best-effort
             logger.debug("pending_choice: resolução falhou para %r", name, exc_info=True)
             return None

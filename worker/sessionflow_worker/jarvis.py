@@ -809,6 +809,55 @@ async def maybe_ask_choice(
         logger.debug("jarvis: maybe_ask_choice falhou para %r", name, exc_info=True)
 
 
+# Opções da pergunta de CONFIRMAÇÃO (sim/não) — mesmo formato de `options` do
+# picker original, então reaproveita o pipeline inteiro do frontend
+# (jarvis_choice: toca áudio, abre mic, botões de fallback) sem mudar nada lá.
+CONFIRM_OPTIONS: list[dict[str, str]] = [
+    {"key": "sim", "label": "Sim, confirma"},
+    {"key": "nao", "label": "Não, deixa eu falar de novo"},
+]
+
+
+async def maybe_confirm_choice(
+    db: AsyncIOMotorDatabase,
+    channel: aio_pika.abc.AbstractChannel | None,
+    name: str,
+    label: str,
+    host_id: str | None = None,
+) -> None:
+    """Fala a opção RESOLVIDA e pede confirmação (sim/não) antes de injetar.
+
+    Evita que um erro do parser/LLM (ver `classify_choice`) vire uma tecla
+    errada digitada sem o usuário perceber — o caller só injeta depois do
+    "sim" (``_handle_audio`` no ``command_consumer.py`` guia esse fluxo).
+    """
+    if channel is None:
+        return
+    try:
+        if not await is_full_mode(db, name):
+            return
+        question = _clean_for_speech(f"Você escolheu: {label}. Confirma? Diga sim ou não.")
+        audio = await _synth(question, db, host_id)
+        if audio is None:
+            return
+        b64, mime = audio
+        await _publish(
+            channel,
+            {
+                "type": "jarvis_choice",
+                "session_id": name,
+                "title": "Confirma a escolha?",
+                "options": CONFIRM_OPTIONS,
+                "audio_b64": b64,
+                "mime": mime,
+                "at": _now_iso(),
+            },
+        )
+        logger.info("jarvis: pediu confirmação em %r (%r)", name, label)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("jarvis: maybe_confirm_choice falhou para %r", name, exc_info=True)
+
+
 # Ordinais/números por extenso em PT-BR → índice 0-based na lista de opções.
 # Cobre as formas mais comuns de resposta curta; qualquer coisa fora disso cai
 # no fallback do LLM (ver `_classify_choice_sync`).

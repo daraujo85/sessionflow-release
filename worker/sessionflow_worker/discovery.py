@@ -606,7 +606,9 @@ class Discovery:
                 if options and await jarvis.is_full_mode(self._db, name):
                     await self._db[SESSIONS_COLLECTION].update_one(
                         {"tmux_name": name},
-                        {"$set": {"pending_choice": {"options": options, "set_at": _now()}}},
+                        {"$set": {"pending_choice": {
+                            "stage": "choose", "options": options, "set_at": _now(),
+                        }}},
                     )
                     asyncio.create_task(
                         jarvis.maybe_ask_choice(
