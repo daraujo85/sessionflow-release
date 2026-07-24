@@ -277,6 +277,21 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                 </svg>
               }
             </button>
+            @if (!guest()) {
+              <button
+                type="button"
+                class="act act--ghost"
+                (click)="openInNewWindow()"
+                aria-label="Abrir em janela própria"
+                title="Abrir esta sessão numa janela separada (dá pra jogar num outro monitor)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <path d="M15 3h6v6M10 14L21 3" />
+                </svg>
+              </button>
+            }
             @if (hostSupportsOpenTerminal()) {
               <button
                 type="button"
@@ -4230,6 +4245,26 @@ export class DetalheComponent implements AfterViewChecked {
     }
     // Mudou a altura do terminal → reajusta linhas/colunas do pane.
     this.scheduleTermResize();
+  }
+
+  /**
+   * Abre esta MESMA sessão numa janela própria do navegador (não uma aba) —
+   * "popup" faz o Chrome/Edge abrir sem as abas/barra de endereço, dá pra
+   * arrastar pra outro monitor e trabalhar em paralelo com a janela principal.
+   * O token de auth vive no localStorage (mesma origem), então a nova janela
+   * já nasce logada, sem precisar logar de novo.
+   */
+  protected openInNewWindow(): void {
+    const url = `${location.origin}/sessao/${this.id()}`;
+    const w = 760;
+    const h = 860;
+    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+    window.open(
+      url,
+      `sf-janela-${this.id()}`,
+      `popup=yes,width=${w},height=${h},left=${left},top=${top},noopener`,
+    );
   }
 
   /** Abre o picker de "dividir tela" — carrega as outras sessões ativas. */
