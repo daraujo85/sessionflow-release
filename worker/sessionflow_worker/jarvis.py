@@ -679,11 +679,19 @@ async def is_enabled(db: AsyncIOMotorDatabase, name: str) -> bool:
 async def is_full_mode(db: AsyncIOMotorDatabase, name: str) -> bool:
     """True se esta sessão está no modo "completo" (conversa: picker + voz).
 
-    Diferente de :func:`is_enabled` (que também conta ``jarvis_all`` global),
-    o modo completo é sempre POR SESSÃO — não existe um "full" global, pra não
-    ligar escuta de microfone em todo lugar sem querer.
+    Checa o atalho global ``jarvis_full_all`` (Perfil) OU o campo por-sessão
+    ``jarvis_mode == "full"`` — mesmo padrão do OR em :func:`is_enabled`, só
+    que num toggle SEPARADO do ``jarvis_all`` de propósito: ligar áudio em
+    toda sessão é inofensivo, ligar ESCUTA DE MICROFONE em toda sessão é uma
+    decisão maior, então o usuário escolhe explicitamente esse global à parte
+    (não fica embutido/implícito no toggle de áudio comum).
     """
     try:
+        settings = await db[APP_SETTINGS_COLLECTION].find_one(
+            {"_id": APP_SETTINGS_ID}, projection={"jarvis_full_all": 1}
+        )
+        if settings and settings.get("jarvis_full_all"):
+            return True
         doc = await db[SESSIONS_COLLECTION].find_one(
             {"tmux_name": name}, projection={"jarvis_mode": 1}
         )

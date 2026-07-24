@@ -249,6 +249,10 @@ export interface AppSettings {
   milestones_auto: boolean;
   /** JARVIS (voz) ligado para TODAS as sessões (atalho global). */
   jarvis_all: boolean;
+  /** JARVIS COMPLETO (picker + resposta por voz) para TODAS as sessões —
+   * atalho global separado do `jarvis_all` (ligar escuta de mic em toda
+   * sessão é uma decisão maior, tem toggle próprio). */
+  jarvis_full_all: boolean;
 }
 
 /** O que este host consegue fazer — multi-host (AD-011). Decide quais botões/

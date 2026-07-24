@@ -85,6 +85,11 @@ class SettingsOut(BaseModel):
     # JARVIS (voz) ligado para TODAS as sessões (atalho global; o liga/desliga
     # por-sessão fica no doc da sessão). Default off — fala só onde pedido.
     jarvis_all: bool = False
+    # JARVIS COMPLETO (picker + resposta por voz) para TODAS as sessões —
+    # atalho global separado do `jarvis_all` de propósito: ligar áudio em toda
+    # sessão é inofensivo, ligar ESCUTA DE MICROFONE em toda sessão é uma
+    # decisão maior, então precisa de um toggle explícito próprio. Default off.
+    jarvis_full_all: bool = False
 
 
 class SettingsIn(BaseModel):
@@ -92,6 +97,7 @@ class SettingsIn(BaseModel):
 
     milestones_auto: bool
     jarvis_all: bool = False
+    jarvis_full_all: bool = False
 
 
 async def read_settings(request: Request) -> SettingsOut:
@@ -104,6 +110,7 @@ async def read_settings(request: Request) -> SettingsOut:
     return SettingsOut(
         milestones_auto=bool(doc.get("milestones_auto", True)),
         jarvis_all=bool(doc.get("jarvis_all", False)),
+        jarvis_full_all=bool(doc.get("jarvis_full_all", False)),
     )
 
 
@@ -121,6 +128,7 @@ async def put_settings(request: Request, body: SettingsIn) -> SettingsOut:
         {"$set": {
             "milestones_auto": body.milestones_auto,
             "jarvis_all": body.jarvis_all,
+            "jarvis_full_all": body.jarvis_full_all,
         }},
         upsert=True,
     )
@@ -131,6 +139,12 @@ async def put_settings(request: Request, body: SettingsIn) -> SettingsOut:
         await db[settings.sessions_collection].update_many(
             {"jarvis": True}, {"$set": {"jarvis": False}}
         )
+    if not body.jarvis_full_all:
+        await db[settings.sessions_collection].update_many(
+            {"jarvis_mode": "full"}, {"$set": {"jarvis_mode": "speaker"}}
+        )
     return SettingsOut(
-        milestones_auto=body.milestones_auto, jarvis_all=body.jarvis_all
+        milestones_auto=body.milestones_auto,
+        jarvis_all=body.jarvis_all,
+        jarvis_full_all=body.jarvis_full_all,
     )

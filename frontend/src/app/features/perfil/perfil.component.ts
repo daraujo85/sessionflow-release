@@ -1720,6 +1720,8 @@ export class PerfilComponent implements OnInit, OnDestroy {
   private readonly milestonesAuto = signal(true);
   /** JARVIS (voz) ligado para TODAS as sessões (atalho global). */
   private readonly jarvisAll = signal(false);
+  /** JARVIS COMPLETO (picker + resposta por voz) para TODAS as sessões. */
+  private readonly jarvisFullAll = signal(false);
 
   readonly settings = computed<SettingRow[]>(() => [
     {
@@ -1750,6 +1752,13 @@ export class PerfilComponent implements OnInit, OnDestroy {
       title: 'JARVIS — resumo falado',
       sub: 'Lê um resumo do que a sessão fez. Liga p/ TODAS aqui; por sessão, no botão 🔊 dela.',
       value: this.jarvisAll(),
+    },
+    {
+      key: 'jarvis_full',
+      kind: 'toggle',
+      title: 'JARVIS — modo completo (voz)',
+      sub: 'Detecta picker de escolha e pede resposta por voz. Liga p/ TODAS aqui; por sessão, cicla o botão 🔊 até o modo roxo.',
+      value: this.jarvisFullAll(),
     },
     {
       key: 'dark',
@@ -1799,6 +1808,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
       next: (s) => {
         this.milestonesAuto.set(s.milestones_auto);
         this.jarvisAll.set(!!s.jarvis_all);
+        this.jarvisFullAll.set(!!s.jarvis_full_all);
       },
       error: () => {
         /* mantém default (on) */
@@ -1919,7 +1929,11 @@ export class PerfilComponent implements OnInit, OnDestroy {
         const next = !this.milestonesAuto();
         this.milestonesAuto.set(next); // otimista
         this.api
-          .setSettings({ milestones_auto: next, jarvis_all: this.jarvisAll() })
+          .setSettings({
+            milestones_auto: next,
+            jarvis_all: this.jarvisAll(),
+            jarvis_full_all: this.jarvisFullAll(),
+          })
           .subscribe({
             next: (s) => this.milestonesAuto.set(s.milestones_auto),
             error: () => this.milestonesAuto.set(!next), // reverte em erro
@@ -1930,10 +1944,29 @@ export class PerfilComponent implements OnInit, OnDestroy {
         const next = !this.jarvisAll();
         this.jarvisAll.set(next); // otimista
         this.api
-          .setSettings({ milestones_auto: this.milestonesAuto(), jarvis_all: next })
+          .setSettings({
+            milestones_auto: this.milestonesAuto(),
+            jarvis_all: next,
+            jarvis_full_all: this.jarvisFullAll(),
+          })
           .subscribe({
             next: (s) => this.jarvisAll.set(!!s.jarvis_all),
             error: () => this.jarvisAll.set(!next), // reverte em erro
+          });
+        break;
+      }
+      case 'jarvis_full': {
+        const next = !this.jarvisFullAll();
+        this.jarvisFullAll.set(next); // otimista
+        this.api
+          .setSettings({
+            milestones_auto: this.milestonesAuto(),
+            jarvis_all: this.jarvisAll(),
+            jarvis_full_all: next,
+          })
+          .subscribe({
+            next: (s) => this.jarvisFullAll.set(!!s.jarvis_full_all),
+            error: () => this.jarvisFullAll.set(!next), // reverte em erro
           });
         break;
       }
@@ -2148,7 +2181,7 @@ function formatUptime(seconds: number | null | undefined): string {
 
 /** A single row in the settings list (toggle or read-only value). */
 interface SettingRow {
-  key: 'push' | 'realtime' | 'dark' | 'lang' | 'milestones' | 'jarvis' | 'cues';
+  key: 'push' | 'realtime' | 'dark' | 'lang' | 'milestones' | 'jarvis' | 'jarvis_full' | 'cues';
   kind: 'toggle' | 'value';
   title: string;
   /** Linha de apoio (explica o que o item faz). */
