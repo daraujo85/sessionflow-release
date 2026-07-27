@@ -13,6 +13,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NgIf } from '@angular/common';
+import { Router } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 
@@ -46,6 +47,22 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           session()?.display_name || session()?.tmux_name || sessionId()
         }}</span>
         <span class="agent" *ngIf="session() as s">{{ agentLabel(s.agent_type) }}</span>
+        <!-- Ações DESTA sessão num hambúrguer (o painel é 1 de N, sem espaço
+             pra fileira de botões da tela cheia). -->
+        <button
+          type="button"
+          class="menu-btn"
+          [class.on]="menuOpen()"
+          (click)="menuOpen.set(!menuOpen())"
+          [attr.aria-expanded]="menuOpen()"
+          aria-label="Ações desta sessão"
+          title="Ações desta sessão"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18M3 12h18M3 18h18" />
+          </svg>
+        </button>
         <button
           type="button"
           class="close-btn"
@@ -54,6 +71,47 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         >
           ✕
         </button>
+        @if (menuOpen()) {
+          <div class="menu-backdrop" (click)="menuOpen.set(false)"></div>
+          <div class="panel-menu" role="menu">
+            <button type="button" class="pm-item" role="menuitem" (click)="openFull()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4" />
+              </svg>
+              Abrir em tela cheia
+            </button>
+            <button type="button" class="pm-item" role="menuitem" (click)="openInNewWindow()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <path d="M15 3h6v6M10 14L21 3" />
+              </svg>
+              Abrir em janela própria
+            </button>
+            <button type="button" class="pm-item" role="menuitem" (click)="cycleJarvis()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              </svg>
+              JARVIS: {{ jarvisModeLabel() }}
+            </button>
+            <button type="button" class="pm-item pm-danger" role="menuitem" (click)="stopSession()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+              Encerrar sessão
+            </button>
+            <button type="button" class="pm-item pm-danger" role="menuitem" (click)="eliminateSession()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+              </svg>
+              Eliminar
+            </button>
+          </div>
+        }
       </header>
 
       <!-- Tarefas (compacto pro split): 1 linha com a tarefa ATIVA (doing) ou
@@ -312,6 +370,7 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         background: #0b0d10;
       }
       .panel-header {
+        position: relative; /* âncora do dropdown de ações */
         display: flex;
         align-items: center;
         gap: 8px;
@@ -319,6 +378,76 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         font-size: 13px;
         color: #d4d4d4;
+      }
+      .menu-btn {
+        margin-left: auto;
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border: none;
+        border-radius: 7px;
+        background: transparent;
+        color: #9aa0a6;
+        cursor: pointer;
+        flex: none;
+      }
+      .menu-btn:hover,
+      .menu-btn.on {
+        background: #20242b;
+        color: #e6e8ec;
+      }
+      .menu-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        background: transparent;
+      }
+      .panel-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 8px;
+        z-index: 41;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 200px;
+        padding: 6px;
+        background: #14181d;
+        border: 1px solid #283230;
+        border-radius: 12px;
+        box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+      }
+      .pm-item {
+        appearance: none;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 10px;
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        color: #c9cdd6;
+        font: inherit;
+        font-size: 12.5px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .pm-item:hover {
+        background: #1d2229;
+      }
+      .pm-item svg {
+        flex: none;
+        color: #8b93a5;
+      }
+      .pm-danger {
+        color: #f0a3a3;
+      }
+      .pm-danger svg {
+        color: #f0a3a3;
+      }
+      .pm-danger:hover {
+        background: #2a1c1c;
       }
       .dot {
         width: 8px;
@@ -337,7 +466,6 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         opacity: 0.6;
       }
       .close-btn {
-        margin-left: auto;
         background: none;
         border: none;
         color: #9aa0a6;
@@ -756,6 +884,7 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
 })
 export class SessionPanelComponent {
   private readonly api = inject(ApiService);
+  private readonly router = inject(Router);
   private readonly sse = inject(SseService);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly destroyRef = inject(DestroyRef);
@@ -779,6 +908,9 @@ export class SessionPanelComponent {
   protected readonly attaching = signal<boolean>(false);
   protected readonly copied = signal<boolean>(false);
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Menu hambúrguer de ações desta sessão (o painel é estreito). */
+  protected readonly menuOpen = signal<boolean>(false);
 
   /** Tarefas/marcos da sessão (faixa compacta acima do terminal no split). */
   protected readonly tasks = signal<Task[]>([]);
@@ -969,6 +1101,84 @@ export class SessionPanelComponent {
 
   protected agentLabel(agent: Session['agent_type']): string {
     return agentMeta(agent)?.label ?? agent;
+  }
+
+  // --- Menu de ações do painel -------------------------------------------
+
+  /** Abre ESTA sessão em tela cheia (sai do split). */
+  protected openFull(): void {
+    this.menuOpen.set(false);
+    void this.router.navigate(['/sessao', this.sessionId()]);
+  }
+
+  /** Abre ESTA sessão numa janela própria do navegador (2º monitor etc.). */
+  protected openInNewWindow(): void {
+    this.menuOpen.set(false);
+    const url = `${location.origin}/sessao/${this.sessionId()}`;
+    const w = 760;
+    const h = 860;
+    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+    window.open(
+      url,
+      `sf-janela-${this.sessionId()}`,
+      `popup=yes,width=${w},height=${h},left=${left},top=${top},noopener`,
+    );
+  }
+
+  protected jarvisModeLabel(): string {
+    const s = this.session();
+    const mode = s?.jarvis_mode ?? (s?.jarvis ? 'speaker' : 'off');
+    return mode === 'full' ? 'completo' : mode === 'speaker' ? 'autofalante' : 'desligado';
+  }
+
+  /** Cicla off → autofalante → completo (mesma ordem da tela cheia). */
+  protected cycleJarvis(): void {
+    const s = this.session();
+    if (!s) {
+      return;
+    }
+    const order: Array<'off' | 'speaker' | 'full'> = ['off', 'speaker', 'full'];
+    const cur = s.jarvis_mode ?? (s.jarvis ? 'speaker' : 'off');
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    this.session.set({ ...s, jarvis: next !== 'off', jarvis_mode: next }); // otimista
+    this.api
+      .setJarvisMode(this.sessionId(), next)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        error: () => {
+          const cur2 = this.session();
+          if (cur2) {
+            this.session.set({ ...cur2, jarvis: s.jarvis, jarvis_mode: s.jarvis_mode });
+          }
+        },
+      });
+  }
+
+  /** Encerra a sessão (mata o tmux; o registro continua listado). */
+  protected stopSession(): void {
+    this.menuOpen.set(false);
+    const nm = this.session()?.display_name || this.session()?.tmux_name || 'esta sessão';
+    if (!confirm(`Encerrar "${nm}"? O agente/tmux é finalizado.`)) {
+      return;
+    }
+    this.api
+      .deleteSession(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.loadSession(this.sessionId()), error: () => {} });
+  }
+
+  /** Elimina de vez (tmux + registro) e fecha este painel. */
+  protected eliminateSession(): void {
+    this.menuOpen.set(false);
+    const nm = this.session()?.display_name || this.session()?.tmux_name || 'esta sessão';
+    if (!confirm(`Eliminar "${nm}"? Encerra e remove do app — não dá pra desfazer.`)) {
+      return;
+    }
+    this.api
+      .purgeSession(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: () => this.closeRequested.emit(), error: () => {} });
   }
 
   protected onScroll(): void {
