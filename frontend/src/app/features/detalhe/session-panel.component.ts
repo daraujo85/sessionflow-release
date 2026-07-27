@@ -20,7 +20,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { WorkersStore } from '../../core/workers-store';
-import { Session, Task, TerminalKey } from '../../core/models';
+import { Schedule, Session, SharedFile, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
@@ -97,6 +97,24 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
               </svg>
               JARVIS: {{ jarvisModeLabel() }}
             </button>
+            <button type="button" class="pm-item" role="menuitem" (click)="openSchedules()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 3" />
+              </svg>
+              Comandos programados
+            </button>
+            <button type="button" class="pm-item" role="menuitem" (click)="openFiles()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95L10.13 17.9a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              Arquivos compartilhados
+              @if (sharedFiles().length > 0) {
+                <span class="pm-badge">{{ sharedFiles().length }}</span>
+              }
+            </button>
             <button type="button" class="pm-item pm-danger" role="menuitem" (click)="stopSession()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <rect x="6" y="6" width="12" height="12" rx="2" />
@@ -113,6 +131,58 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           </div>
         }
       </header>
+
+      <!-- Comandos programados (compacto pro split) -->
+      @if (panelView() === 'schedules') {
+        <div class="pv-panel">
+          <div class="pv-head">
+            <span>Comandos programados</span>
+            <button type="button" class="pv-close" (click)="panelView.set('none')" aria-label="Fechar">✕</button>
+          </div>
+          @for (sc of schedules(); track sc.id) {
+            <div class="pv-row">
+              <span class="t-dot" [class.t-done]="sc.enabled" [class.t-todo]="!sc.enabled" aria-hidden="true"></span>
+              <span class="pv-text" [title]="sc.text">{{ sc.text }}</span>
+              <span class="pv-meta">{{ fmtInterval(sc.interval_seconds) }}</span>
+              <button type="button" class="pv-act" (click)="toggleSchedule(sc)"
+                      [title]="sc.enabled ? 'Pausar' : 'Retomar'">
+                {{ sc.enabled ? '⏸' : '▶' }}
+              </button>
+              <button type="button" class="pv-act pv-act-danger" (click)="deleteSchedule(sc)" title="Apagar">✕</button>
+            </div>
+          } @empty {
+            <div class="pv-empty">Nenhum comando programado.</div>
+          }
+          <div class="pv-new">
+            <input class="pv-input" type="text" placeholder="Instrução recorrente…"
+                   [(ngModel)]="newScheduleText" name="pv-sched-text" />
+            <input class="pv-input pv-input-min" type="number" min="1" placeholder="min"
+                   [(ngModel)]="newScheduleMinutes" name="pv-sched-min" title="Intervalo em minutos" />
+            <button type="button" class="pv-act pv-act-primary"
+                    [disabled]="!newScheduleText.trim() || scheduleCreating()"
+                    (click)="createSchedule()">＋</button>
+          </div>
+        </div>
+      }
+
+      <!-- Arquivos compartilhados (compacto pro split) -->
+      @if (panelView() === 'files') {
+        <div class="pv-panel">
+          <div class="pv-head">
+            <span>Arquivos compartilhados</span>
+            <button type="button" class="pv-close" (click)="panelView.set('none')" aria-label="Fechar">✕</button>
+          </div>
+          @for (f of sharedFiles(); track f.id) {
+            <div class="pv-row">
+              <a class="pv-text pv-link" [href]="fileUrl(f)" target="_blank" rel="noopener"
+                 [title]="f.filename + ' — abrir/baixar'">{{ f.filename }}</a>
+              <span class="pv-meta">{{ fmtSize(f.size) }}</span>
+            </div>
+          } @empty {
+            <div class="pv-empty">Nenhum arquivo compartilhado ainda.</div>
+          }
+        </div>
+      }
 
       <!-- Tarefas (compacto pro split): 1 linha com a tarefa ATIVA (doing) ou
            contagem; toque expande a lista enxuta. Não rouba espaço do
@@ -448,6 +518,119 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
       }
       .pm-danger:hover {
         background: #2a1c1c;
+      }
+      .pm-badge {
+        margin-left: auto;
+        font-size: 10.5px;
+        font-weight: 700;
+        color: #0b0d10;
+        background: #2cecc4;
+        border-radius: 999px;
+        padding: 1px 6px;
+      }
+      /* Overlays compactos do painel (comandos programados / arquivos). */
+      .pv-panel {
+        flex: none;
+        border-bottom: 1px solid #20262a;
+        background: #10141a;
+        padding: 6px 10px 8px;
+        max-height: 180px;
+        overflow-y: auto;
+      }
+      .pv-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: #aeb4c0;
+        padding-bottom: 4px;
+      }
+      .pv-close {
+        appearance: none;
+        background: none;
+        border: none;
+        color: #7a8090;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 4px;
+      }
+      .pv-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 0;
+        font-size: 11.5px;
+        color: #c9cdd6;
+        min-width: 0;
+      }
+      .pv-text {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pv-link {
+        color: #7cc7ff;
+        text-decoration: none;
+      }
+      .pv-link:hover {
+        text-decoration: underline;
+      }
+      .pv-meta {
+        flex: none;
+        font-size: 10.5px;
+        color: #7a8090;
+      }
+      .pv-act {
+        appearance: none;
+        flex: none;
+        background: #1d2229;
+        border: 1px solid #283230;
+        border-radius: 6px;
+        color: #c9cdd6;
+        cursor: pointer;
+        font-size: 11px;
+        padding: 2px 7px;
+      }
+      .pv-act-danger {
+        color: #f0a3a3;
+      }
+      .pv-act-primary {
+        background: #103b32;
+        border-color: #1d5c4d;
+        color: #2cecc4;
+        font-weight: 700;
+      }
+      .pv-act:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .pv-empty {
+        font-size: 11.5px;
+        color: #7a8090;
+        padding: 4px 0;
+      }
+      .pv-new {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding-top: 6px;
+      }
+      .pv-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        background: #0e1113;
+        border: 1px solid #283230;
+        border-radius: 7px;
+        color: #e6e8ec;
+        font: inherit;
+        font-size: 11.5px;
+        padding: 5px 8px;
+      }
+      .pv-input-min {
+        flex: 0 0 52px;
       }
       .dot {
         width: 8px;
@@ -911,6 +1094,13 @@ export class SessionPanelComponent {
 
   /** Menu hambúrguer de ações desta sessão (o painel é estreito). */
   protected readonly menuOpen = signal<boolean>(false);
+  /** Overlay compacto aberto no painel: comandos programados ou arquivos. */
+  protected readonly panelView = signal<'none' | 'schedules' | 'files'>('none');
+  protected readonly schedules = signal<Schedule[]>([]);
+  protected readonly sharedFiles = signal<SharedFile[]>([]);
+  protected readonly scheduleCreating = signal<boolean>(false);
+  protected newScheduleText = '';
+  protected newScheduleMinutes: number | null = null;
 
   /** Tarefas/marcos da sessão (faixa compacta acima do terminal no split). */
   protected readonly tasks = signal<Task[]>([]);
@@ -1022,6 +1212,7 @@ export class SessionPanelComponent {
         next: (s) => {
           this.session.set(s);
           this.loadTasks();
+          this.loadSharedFiles(); // contagem do badge no menu ☰
         },
         error: () => {},
       });
@@ -1166,6 +1357,97 @@ export class SessionPanelComponent {
       .deleteSession(this.sessionId())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({ next: () => this.loadSession(this.sessionId()), error: () => {} });
+  }
+
+  /** Abre o overlay de comandos programados (carrega a lista na hora). */
+  protected openSchedules(): void {
+    this.menuOpen.set(false);
+    this.panelView.set('schedules');
+    this.api
+      .listSchedules(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: (list) => this.schedules.set(list ?? []), error: () => {} });
+  }
+
+  /** Abre o overlay de arquivos compartilhados (carrega a lista na hora). */
+  protected openFiles(): void {
+    this.menuOpen.set(false);
+    this.panelView.set('files');
+    this.loadSharedFiles();
+  }
+
+  private loadSharedFiles(): void {
+    this.api
+      .listSharedFiles(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: (list) => this.sharedFiles.set(list ?? []), error: () => {} });
+  }
+
+  protected toggleSchedule(sc: Schedule): void {
+    this.api
+      .patchSchedule(sc.id, { enabled: !sc.enabled })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (updated) =>
+          this.schedules.update((list) => list.map((s) => (s.id === sc.id ? updated : s))),
+        error: () => {},
+      });
+  }
+
+  protected deleteSchedule(sc: Schedule): void {
+    if (!confirm(`Apagar o comando programado "${sc.text.slice(0, 60)}"?`)) {
+      return;
+    }
+    this.api
+      .deleteSchedule(sc.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => this.schedules.update((list) => list.filter((s) => s.id !== sc.id)),
+        error: () => {},
+      });
+  }
+
+  protected createSchedule(): void {
+    const text = this.newScheduleText.trim();
+    const minutes = Math.max(1, Math.round(this.newScheduleMinutes ?? 60));
+    if (!text || this.scheduleCreating()) {
+      return;
+    }
+    this.scheduleCreating.set(true);
+    this.api
+      .createSchedule(this.sessionId(), text, minutes * 60)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (sc) => {
+          this.schedules.update((list) => [...list, sc]);
+          this.newScheduleText = '';
+          this.newScheduleMinutes = null;
+          this.scheduleCreating.set(false);
+        },
+        error: () => this.scheduleCreating.set(false),
+      });
+  }
+
+  protected fileUrl(f: SharedFile): string {
+    return this.api.sharedFileUrl(f.id);
+  }
+
+  protected fmtSize(bytes: number): string {
+    if (!bytes) {
+      return '—';
+    }
+    if (bytes < 1024) {
+      return `${bytes}B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${Math.round(bytes / 1024)}KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  }
+
+  protected fmtInterval(seconds: number): string {
+    const m = Math.round(seconds / 60);
+    return m < 60 ? `${m}min` : `${(m / 60).toFixed(m % 60 === 0 ? 0 : 1)}h`;
   }
 
   /** Elimina de vez (tmux + registro) e fecha este painel. */
