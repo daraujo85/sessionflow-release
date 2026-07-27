@@ -20,7 +20,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { WorkersStore } from '../../core/workers-store';
-import { Schedule, Session, SharedFile, Task, TerminalKey } from '../../core/models';
+import { Schedule, Session, ShareLink, SharedFile, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
@@ -97,6 +97,14 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
               </svg>
               JARVIS: {{ jarvisModeLabel() }}
             </button>
+            <button type="button" class="pm-item" role="menuitem" (click)="openShare()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+              </svg>
+              Compartilhar
+            </button>
             <button type="button" class="pm-item" role="menuitem" (click)="openSchedules()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -131,6 +139,38 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           </div>
         }
       </header>
+
+      <!-- Compartilhar (compacto pro split) — mesmo fluxo da tela cheia:
+           link temporário (24h, morre com a sessão) com gerar/copiar/revogar. -->
+      @if (panelView() === 'share') {
+        <div class="pv-panel">
+          <div class="pv-head">
+            <span>Compartilhar</span>
+            <button type="button" class="pv-close" (click)="panelView.set('none')" aria-label="Fechar">✕</button>
+          </div>
+          @if (shareLink()?.active) {
+            <div class="pv-row">
+              <input class="pv-input" type="text" readonly [value]="shareLink()?.url || ''"
+                     (focus)="$any($event.target).select()" />
+              <button type="button" class="pv-act pv-act-primary" (click)="copyShareLink()">
+                {{ shareCopied() ? 'Copiado!' : 'Copiar' }}
+              </button>
+            </div>
+            <div class="pv-row">
+              <span class="pv-meta">Vale 24h · morre se a sessão parar · controle total</span>
+              <button type="button" class="pv-act" [disabled]="shareBusy()" (click)="generateShareLink()">Gerar novo</button>
+              <button type="button" class="pv-act pv-act-danger" [disabled]="shareBusy()" (click)="revokeShareLink()">Revogar</button>
+            </div>
+          } @else {
+            <div class="pv-row">
+              <span class="pv-text pv-wrap">Nenhum link ativo. Crie um link temporário pra alguém ver e controlar só esta sessão (expira em 24h).</span>
+              <button type="button" class="pv-act pv-act-primary" [disabled]="shareBusy()" (click)="generateShareLink()">
+                {{ shareBusy() ? 'Gerando…' : 'Gerar link' }}
+              </button>
+            </div>
+          }
+        </div>
+      }
 
       <!-- Comandos programados (compacto pro split) -->
       @if (panelView() === 'schedules') {
@@ -582,6 +622,9 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
         flex: none;
         font-size: 10.5px;
         color: #7a8090;
+      }
+      .pv-wrap {
+        white-space: normal;
       }
       .pv-act {
         appearance: none;
@@ -1094,8 +1137,11 @@ export class SessionPanelComponent {
 
   /** Menu hambúrguer de ações desta sessão (o painel é estreito). */
   protected readonly menuOpen = signal<boolean>(false);
-  /** Overlay compacto aberto no painel: comandos programados ou arquivos. */
-  protected readonly panelView = signal<'none' | 'schedules' | 'files'>('none');
+  /** Overlay compacto aberto no painel: compartilhar/agendados/arquivos. */
+  protected readonly panelView = signal<'none' | 'share' | 'schedules' | 'files'>('none');
+  protected readonly shareLink = signal<ShareLink | null>(null);
+  protected readonly shareBusy = signal<boolean>(false);
+  protected readonly shareCopied = signal<boolean>(false);
   protected readonly schedules = signal<Schedule[]>([]);
   protected readonly sharedFiles = signal<SharedFile[]>([]);
   protected readonly scheduleCreating = signal<boolean>(false);
@@ -1357,6 +1403,61 @@ export class SessionPanelComponent {
       .deleteSession(this.sessionId())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({ next: () => this.loadSession(this.sessionId()), error: () => {} });
+  }
+
+  /** Abre o overlay de compartilhar (carrega o estado do link na hora). */
+  protected openShare(): void {
+    this.menuOpen.set(false);
+    this.panelView.set('share');
+    this.api
+      .getShareLink(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: (s) => this.shareLink.set(s), error: () => {} });
+  }
+
+  protected generateShareLink(): void {
+    if (this.shareBusy()) {
+      return;
+    }
+    this.shareBusy.set(true);
+    this.api
+      .createShareLink(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (s) => {
+          this.shareLink.set(s);
+          this.shareBusy.set(false);
+        },
+        error: () => this.shareBusy.set(false),
+      });
+  }
+
+  protected revokeShareLink(): void {
+    if (this.shareBusy()) {
+      return;
+    }
+    this.shareBusy.set(true);
+    this.api
+      .revokeShareLink(this.sessionId())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (s) => {
+          this.shareLink.set(s);
+          this.shareBusy.set(false);
+        },
+        error: () => this.shareBusy.set(false),
+      });
+  }
+
+  protected copyShareLink(): void {
+    const url = this.shareLink()?.url;
+    if (!url) {
+      return;
+    }
+    void navigator.clipboard?.writeText(url).then(() => {
+      this.shareCopied.set(true);
+      setTimeout(() => this.shareCopied.set(false), 1500);
+    });
   }
 
   /** Abre o overlay de comandos programados (carrega a lista na hora). */
