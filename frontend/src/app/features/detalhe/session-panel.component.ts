@@ -19,7 +19,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
 import { SseService } from '../../core/sse.service';
 import { WorkersStore } from '../../core/workers-store';
-import { Session, TerminalKey } from '../../core/models';
+import { Session, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
 import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-recorder.component';
@@ -55,6 +55,48 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           ✕
         </button>
       </header>
+
+      <!-- Tarefas (compacto pro split): 1 linha com a tarefa ATIVA (doing) ou
+           contagem; toque expande a lista enxuta. Não rouba espaço do
+           terminal quando recolhido. -->
+      @if (tasks().length > 0) {
+        <div class="tasks-strip">
+          <button
+            type="button"
+            class="tasks-toggle"
+            (click)="tasksOpen.set(!tasksOpen())"
+            [attr.aria-expanded]="tasksOpen()"
+            [title]="tasksOpen() ? 'Recolher tarefas' : 'Ver todas as tarefas'"
+          >
+            @if (activeTask(); as at) {
+              <span class="t-dot t-doing" aria-hidden="true"></span>
+              <span class="t-title">{{ at.title }}</span>
+            } @else {
+              <span class="t-dot t-idle" aria-hidden="true"></span>
+              <span class="t-title t-muted">Sem tarefa ativa</span>
+            }
+            <span class="t-count">{{ doneCount() }}/{{ tasks().length }}</span>
+            <svg class="t-chev" [class.open]="tasksOpen()" width="12" height="12"
+                 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          @if (tasksOpen()) {
+            <ul class="tasks-list">
+              @for (t of tasks(); track t.id) {
+                <li class="t-item" [class.t-item-doing]="t.state === 'doing'">
+                  <span class="t-dot" [class.t-doing]="t.state === 'doing'"
+                        [class.t-done]="t.state === 'done'"
+                        [class.t-blocked]="t.state === 'blocked'"
+                        [class.t-todo]="t.state === 'todo'" aria-hidden="true"></span>
+                  <span class="t-title" [class.t-strike]="t.state === 'done'" [title]="t.title">{{ t.title }}</span>
+                </li>
+              }
+            </ul>
+          }
+        </div>
+      }
 
       <div class="term" #termEl (scroll)="onScroll()" (mouseup)="onTermSelect()">
         <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
@@ -305,6 +347,101 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
       }
       .close-btn:hover {
         color: #fff;
+      }
+      /* Tarefas compactas (split): faixa de 1 linha + lista expansível. */
+      .tasks-strip {
+        flex: none;
+        border-bottom: 1px solid #20262a;
+        background: #10141a;
+      }
+      .tasks-toggle {
+        appearance: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        background: transparent;
+        border: none;
+        color: #c9cdd6;
+        font: inherit;
+        font-size: 11.5px;
+        padding: 5px 10px;
+        cursor: pointer;
+        min-width: 0;
+      }
+      .tasks-toggle:hover {
+        background: #151a21;
+      }
+      .t-dot {
+        flex: none;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #5a6072;
+      }
+      .t-doing {
+        background: #38bdf8;
+        box-shadow: 0 0 6px rgba(56, 189, 248, 0.7);
+      }
+      .t-done {
+        background: #2cecc4;
+      }
+      .t-blocked {
+        background: #f59e0b;
+      }
+      .t-todo {
+        background: #5a6072;
+      }
+      .t-idle {
+        background: #5a6072;
+      }
+      .t-title {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .t-muted {
+        color: #7a8090;
+      }
+      .t-strike {
+        text-decoration: line-through;
+        color: #7a8090;
+      }
+      .t-count {
+        flex: none;
+        margin-left: auto;
+        font-size: 10.5px;
+        color: #7a8090;
+      }
+      .t-chev {
+        flex: none;
+        color: #7a8090;
+        transition: transform 0.15s;
+      }
+      .t-chev.open {
+        transform: rotate(180deg);
+      }
+      .tasks-list {
+        list-style: none;
+        margin: 0;
+        padding: 2px 10px 7px;
+        max-height: 132px;
+        overflow-y: auto;
+      }
+      .t-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 0;
+        font-size: 11.5px;
+        color: #aeb4c0;
+        min-width: 0;
+      }
+      .t-item-doing .t-title {
+        color: #dbe9f8;
+        font-weight: 600;
       }
       .term {
         flex: 1;
@@ -643,6 +780,17 @@ export class SessionPanelComponent {
   protected readonly copied = signal<boolean>(false);
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Tarefas/marcos da sessão (faixa compacta acima do terminal no split). */
+  protected readonly tasks = signal<Task[]>([]);
+  protected readonly tasksOpen = signal<boolean>(false);
+  /** A tarefa ativa agora (state "doing"), se houver. */
+  protected readonly activeTask = computed<Task | null>(
+    () => this.tasks().find((t) => t.state === 'doing') ?? null,
+  );
+  protected readonly doneCount = computed(
+    () => this.tasks().filter((t) => t.state === 'done').length,
+  );
+
   /** Captura de tela (só onde o navegador suporta — desktop/Mac), igual ao Detalhe cheio. */
   protected readonly canScreenshot =
     typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
@@ -738,7 +886,25 @@ export class SessionPanelComponent {
     this.api
       .getSession(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: (s) => this.session.set(s), error: () => {} });
+      .subscribe({
+        next: (s) => {
+          this.session.set(s);
+          this.loadTasks();
+        },
+        error: () => {},
+      });
+  }
+
+  /** Tarefas/marcos desta sessão (por tmux_name) — faixa compacta do split. */
+  private loadTasks(): void {
+    const tn = this.session()?.tmux_name;
+    if (!tn) {
+      return;
+    }
+    this.api
+      .getTasks(tn)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: (list) => this.tasks.set(list ?? []), error: () => {} });
   }
 
   private refreshScreen(id: string): void {
@@ -756,7 +922,14 @@ export class SessionPanelComponent {
       clearInterval(this.pollTimer);
     }
     this.refreshScreen(id);
-    this.pollTimer = setInterval(() => this.refreshScreen(id), 4000);
+    let tick = 0;
+    this.pollTimer = setInterval(() => {
+      this.refreshScreen(id);
+      // Tarefas mudam devagar — re-busca a cada ~3 ciclos (12s), não a cada 4s.
+      if (++tick % 3 === 0) {
+        this.loadTasks();
+      }
+    }, 4000);
   }
 
   /** Mede a área do painel e ajusta cols/rows do pane do tmux (best-effort). */
