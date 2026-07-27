@@ -219,7 +219,33 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
                linha de status separada → mais espaço). Em tela estreita quebra
                pra baixo (flex-wrap). -->
           <div class="hdr-controls">
-          <span class="status-actions">
+          <!-- No split, os botões de ação viram um menu hambúrguer (o header
+               fica apertado com N painéis); fora do split, linha normal. -->
+          @if (splitActive()) {
+            <button
+              type="button"
+              class="act act--ghost actions-burger"
+              [class.on]="actionsMenuOpen()"
+              (click)="actionsMenuOpen.set(!actionsMenuOpen())"
+              [attr.aria-expanded]="actionsMenuOpen()"
+              aria-label="Ações da sessão"
+              title="Ações da sessão"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18M3 12h18M3 18h18" />
+              </svg>
+            </button>
+            @if (actionsMenuOpen()) {
+              <div class="actions-backdrop" (click)="actionsMenuOpen.set(false)"></div>
+            }
+          }
+          <span
+            class="status-actions"
+            [class.as-menu]="splitActive()"
+            [class.open]="actionsMenuOpen()"
+            (click)="splitActive() && actionsMenuOpen.set(false)"
+          >
             @if (!guest()) {
               <button
                 type="button"
@@ -1685,6 +1711,7 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
       /* Grupo status + botões + badge: à direita na mesma linha (tela larga);
          quebra pra baixo como bloco em tela estreita. */
       .hdr-controls {
+        position: relative; /* âncora do dropdown de ações no split */
         display: flex;
         align-items: center;
         gap: 8px;
@@ -2400,6 +2427,40 @@ import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
         margin-left: auto;
         display: flex;
         gap: 8px;
+      }
+      /* No split: os botões viram um dropdown atrás do hambúrguer. */
+      .actions-burger {
+        margin-left: auto;
+      }
+      .actions-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        background: transparent;
+      }
+      .status-actions.as-menu {
+        display: none;
+      }
+      .status-actions.as-menu.open {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        z-index: 31;
+        margin-left: 0;
+        padding: 8px;
+        background: #14181d;
+        border: 1px solid #283230;
+        border-radius: 12px;
+        box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+        min-width: 52px;
+      }
+      .status-actions.as-menu.open .act {
+        display: inline-flex;
+        justify-content: center;
       }
       /* Badge "Compartilhado" no lugar do voltar (modo convidado). */
       /* Chip discreto na linha do título (mesma escala do status/host-pill) —
@@ -3913,6 +3974,8 @@ export class DetalheComponent implements AfterViewChecked {
     return [mine, ...this.panelIds().filter((pid) => pid !== mine)];
   });
   protected readonly splitActive = computed(() => this.panelIds().length > 0);
+  /** Menu hambúrguer das ações do header (só no split, onde falta espaço). */
+  protected readonly actionsMenuOpen = signal<boolean>(false);
   protected readonly splitPickerOpen = signal<boolean>(false);
   protected readonly splitCandidates = signal<Session[]>([]);
   protected readonly splitSearch = signal<string>('');
