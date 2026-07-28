@@ -31,7 +31,10 @@ class SchedulesRepository:
             "text": text,
             "interval_seconds": interval_seconds,
             "enabled": True,
-            "next_run_at": now + timedelta(seconds=interval_seconds),
+            # Dispara JÁ no próximo tick do scheduler (feedback imediato de que
+            # o comando funciona); os seguintes obedecem o intervalo normal
+            # (mark_ran reagenda now+interval a cada disparo).
+            "next_run_at": now,
             "last_run_at": None,
             "last_error": None,
             "created_at": now,
@@ -61,10 +64,12 @@ class SchedulesRepository:
     ) -> dict[str, Any] | None:
         """Edita campos informados; ``None`` = "não mexe nesse campo".
 
-        Reagenda ``next_run_at`` a partir de AGORA quando o intervalo muda ou
-        quando o comando é RETOMADO (``enabled`` False→True) — senão um
-        comando pausado há dias disparia na hora ao ser reativado, e mudar o
-        intervalo de 1h pra 5min não deveria herdar o "vencimento" antigo.
+        RETOMAR (``enabled`` False→True) dispara JÁ (next_run_at = agora) —
+        mesmo comportamento da criação: quem liga quer ver funcionando na
+        hora, e os próximos seguem o intervalo (pedido do Diego, 2026-07-27).
+        Mudar só o INTERVALO reagenda pra agora+intervalo (trocar 1h por 5min
+        não deve herdar o "vencimento" antigo, nem disparar na hora — o
+        comando já estava rodando no ritmo).
         """
         try:
             oid = ObjectId(schedule_id)
@@ -84,10 +89,11 @@ class SchedulesRepository:
             fields["enabled"] = enabled
 
         resuming = enabled is True and not current.get("enabled", True)
-        if interval_seconds is not None or resuming:
-            effective_interval = interval_seconds or current["interval_seconds"]
+        if resuming:
+            fields["next_run_at"] = datetime.now(UTC)
+        elif interval_seconds is not None:
             fields["next_run_at"] = datetime.now(UTC) + timedelta(
-                seconds=effective_interval
+                seconds=interval_seconds
             )
 
         if not fields:
