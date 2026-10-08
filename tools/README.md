@@ -35,7 +35,10 @@ tmux new-session -d -s sessionflow-autoupdate './tools/self-update-loop.sh'
 Cortar uma versão nova pros amigos = espelhar o `main` privado pro público:
 
 ```bash
-git push public main:main   # remote "public" = https://github.com/daraujo85/sessionflow-release.git
+tools/publish-release.sh ["mensagem"]   # remote "public" = https://github.com/daraujo85/sessionflow-release.git
+# NUNCA `git push public main:main`: levaria o histórico privado (com segredos antigos).
+# O script publica só a árvore de origin/main num commit em cima de public/main
+# (fast-forward pros amigos) e aborta se achar valor secreto do .env nos arquivos.
 ```
 
 ## `sf` — delega tarefa / fala com sessão irmã / compartilha arquivo (Fatia 1-3)
