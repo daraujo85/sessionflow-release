@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sessionflow.api-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/diegoaraujo/.local/bin/sessionflow-watchdog.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/diegoaraujo/Library/Logs/sessionflow-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/diegoaraujo/Library/Logs/sessionflow-watchdog.log</string>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="sf-g" x1="40" y1="32" x2="472" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2CECC4"/>
+      <stop offset="1" stop-color="#00A482"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed: o launcher (Android) aplica a máscara/forma. SEM cantos
+       transparentes — senão o ícone instalado sai branco. -->
+  <rect x="0" y="0" width="512" height="512" fill="url(#sf-g)"/>
+  <!-- "S" centralizado dentro da zona segura (~37% do canvas). -->
+  <g transform="translate(256,256) scale(16) translate(-11.5,-13)" fill="none"
+     stroke="#06231d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17 7H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6"/>
+  </g>
+</svg>

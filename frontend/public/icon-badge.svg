@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- Badge monocromático p/ a barra de status do Android: SÓ silhueta branca
+       em fundo TRANSPARENTE (o SO usa apenas o canal alfa). -->
+  <g transform="translate(48,48) scale(3) translate(-11.5,-13)" fill="none"
+     stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17 7H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6"/>
+  </g>
+</svg>

@@ -1,0 +1,239 @@
+"""Launcher de agente (TMUX-04, TMUX-06).
+
+Inferência de tipo de agente a partir do comando do pane e montagem da linha
+de comando (com flags de modelo e esforço) a ser enviada via ``tmux send-keys``.
+
+Flags confirmadas via ``--help`` em 2026-06:
+    - claude:   ``--model <model>``         / ``--effort <level>``
+    - codex:    ``-m <model>``              / ``-c model_reasoning_effort=<level>``
+      (codex não tem flag dedicada de esforço; usa override de config ``-c``;
+      chave confirmada em ``~/.codex/config.toml``: ``model_reasoning_effort``)
+    - gemini:   ``-m <model>``              / SEM flag de esforço (ignorado)
+    - opencode: ``-m <provider/model>``     / ``--variant <level>``
+    - agy (Antigravity), confirmada via ``--help`` em 2026-09:
+                ``--model <model>``         / ``--effort <level>`` (só low|medium|high, sem "max")
+
+Flag de permissão máxima / auto-aprovação (yolo) confirmada via ``--help``:
+    - claude:   ``--permission-mode bypassPermissions``
+    - codex:    ``--dangerously-bypass-approvals-and-sandbox``
+    - gemini:   ``--yolo``
+    - opencode: ``--dangerously-skip-permissions``
+    - agy:      ``--dangerously-skip-permissions``
+
+Ordem do comando montado: ``<bin> <model flags> <effort flags> <permission flag>``.
+"""
+
+from __future__ import annotations
+
+import shlex
+from enum import Enum
+
+
+class AgentType(str, Enum):
+    """Tipos de agente suportados."""
+
+    CLAUDE = "claude"
+    CODEX = "codex"
+    GEMINI = "gemini"
+    OPENCODE = "opencode"
+    ANTIGRAVITY = "agy"
+    UNKNOWN = "unknown"
+
+
+# Mapeamento dos rótulos PT do mockup -> valor canônico aceito pelas CLIs.
+# Observação: nem toda CLI aceita "max" (ex: codex aceita low/medium/high).
+# A conversão fina por agente é feita em ``_effort_for_agent``.
+EFFORT_PT_TO_CLI: dict[str, str] = {
+    "Baixo": "low",
+    "Médio": "medium",
+    "Alto": "high",
+    "Máximo": "max",
+}
+
+# Esforços válidos por agente (após normalização para o valor canônico).
+# codex e agy não suportam "max"; rebaixamos para "high" para não quebrar a config.
+_CODEX_EFFORT_FALLBACK: dict[str, str] = {"max": "high"}
+_ANTIGRAVITY_EFFORT_FALLBACK: dict[str, str] = {"max": "high"}
+
+# Flag(s) de permissão máxima / auto-aprovação por agente (modo "yolo").
+# Confirmadas via ``--help`` em 2026-06. ``unknown`` não tem entrada (sem flag).
+MAX_PERMISSION_FLAGS: dict[AgentType, list[str]] = {
+    AgentType.CLAUDE: ["--permission-mode", "bypassPermissions"],
+    AgentType.CODEX: ["--dangerously-bypass-approvals-and-sandbox"],
+    AgentType.GEMINI: ["--yolo"],
+    # opencode: ``--auto`` = auto-aprova permissões não explicitamente negadas
+    # (o "yolo" dele). ``--dangerously-skip-permissions`` era INVÁLIDO nesta versão
+    # → a CLI saía com erro e caía pro shell. O ``--auto`` é escopado à sessão
+    # lançada (não mexe no opencode.json global do usuário).
+    AgentType.OPENCODE: ["--auto"],
+    AgentType.ANTIGRAVITY: ["--dangerously-skip-permissions"],
+}
+
+
+def _normalize_effort(effort: str | None) -> str | None:
+    """Converte rótulo PT para valor canônico; passa-through se já canônico."""
+    if effort is None:
+        return None
+    return EFFORT_PT_TO_CLI.get(effort, effort)
+
+
+def _effort_for_agent(agent_type: AgentType, effort: str | None) -> str | None:
+    """Ajusta o esforço canônico ao que o agente realmente aceita."""
+    canonical = _normalize_effort(effort)
+    if canonical is None:
+        return None
+    if agent_type is AgentType.CODEX:
+        return _CODEX_EFFORT_FALLBACK.get(canonical, canonical)
+    if agent_type is AgentType.ANTIGRAVITY:
+        return _ANTIGRAVITY_EFFORT_FALLBACK.get(canonical, canonical)
+    return canonical
+
+
+# Tipos de agente reconhecíveis (ordem de prioridade na varredura).
+_KNOWN_AGENTS: tuple[AgentType, ...] = (
+    AgentType.CLAUDE,
+    AgentType.CODEX,
+    AgentType.GEMINI,
+    AgentType.OPENCODE,
+    AgentType.ANTIGRAVITY,
+)
+
+
+def infer_agent_type(pane_command: str) -> AgentType:
+    """Infere o tipo de agente a partir de uma linha de comando.
+
+    A string pode ser tanto o ``pane_current_command`` do tmux quanto a
+    *cmdline completa* do processo do pane (e seus filhos) obtida via ``ps``.
+    O matching é robusto: procura ``claude``/``codex``/``gemini``/``opencode``/``agy``
+    como **token** em qualquer posição da linha (não só no primeiro token),
+    descartando o path do executável (``node .../claude`` -> ``claude``,
+    ``/opt/homebrew/bin/codex`` -> ``codex``).
+
+    Cuidado deliberado: o casamento é por token *exato* (basename), então
+    ``opencode`` nunca é confundido com ``codex`` ou ``code``, e vice-versa.
+    """
+    if not pane_command:
+        return AgentType.UNKNOWN
+
+    try:
+        tokens = shlex.split(pane_command)
+    except ValueError:
+        # cmdline malformada para shlex (aspas desbalanceadas etc.): cai no
+        # split simples por espaço para ainda tentar reconhecer o agente.
+        tokens = pane_command.split()
+    if not tokens:
+        return AgentType.UNKNOWN
+
+    # Basename de cada token (descarta path do executável e de argumentos
+    # tipo ``--resume claude`` não interferem pois comparamos token a token).
+    binaries = {token.rsplit("/", 1)[-1] for token in tokens}
+    # Wrappers (ex.: Colab, ``claude`` → ``runuser`` → ``claude.real``):
+    # o binário real ganha sufixo ``.real``; casa pelo nome sem ele.
+    binaries |= {b.removesuffix(".real") for b in binaries}
+
+    for agent in _KNOWN_AGENTS:
+        if agent.value in binaries:
+            return agent
+
+    return AgentType.UNKNOWN
+
+
+def build_launch_cmd(
+    agent_type: AgentType,
+    model: str | None,
+    effort: str | None,
+    yolo: bool = True,
+    resume: bool = False,
+    lang_instruction: str | None = None,
+    session_id: str | None = None,
+    name: str | None = None,
+) -> str:
+    """Monta a linha de comando a ser enviada via ``tmux send-keys``.
+
+    Ordem das partes: ``<bin> <model flags> <effort flags> <permission flag>``.
+
+    - ``model None`` omite a flag de modelo (usa default da CLI).
+    - gemini ignora ``effort`` (não há flag).
+    - codex rebaixa ``max`` -> ``high`` (não suportado).
+    - ``yolo True`` (default) acrescenta a flag de permissão máxima /
+      auto-aprovação do agente (ver ``MAX_PERMISSION_FLAGS``); ``False`` omite.
+    """
+    if agent_type is AgentType.UNKNOWN:
+        raise ValueError("não é possível montar comando para agente unknown")
+
+    # "Default"/vazio = usar o modelo padrão do agente → OMITE a flag --model.
+    # (No picker, "Default" é uma opção-rótulo, não um id válido; sem isso o
+    # launch virava `--model Default` e a CLI errava no boot.)
+    if model is not None and model.strip().lower() in ("", "default", "padrão", "padrao"):
+        model = None
+
+    parts: list[str] = [agent_type.value]
+    # ``resume`` (usado pelo "Retomar"): continua a conversa anterior em vez de
+    # começar do zero.
+    #
+    # IMPORTANTE: ``--continue`` retoma a conversa MAIS RECENTE do DIRETÓRIO, não
+    # a conversa daquela sessão tmux. Se duas sessões rodam Claude na mesma pasta,
+    # o Retomar agarra a errada. Por isso, quando temos o ``session_id`` (claude
+    # foi criado com ``--session-id <uuid>``), retomamos a conversa EXATA via
+    # ``--resume <uuid>``. Sem id salvo (sessões antigas) cai no ``--continue``.
+    if resume:
+        if agent_type is AgentType.CLAUDE and session_id:
+            parts += ["--resume", session_id]
+        elif agent_type in (AgentType.CLAUDE, AgentType.OPENCODE, AgentType.ANTIGRAVITY):
+            # agy tem ``--conversation <id>`` (equivalente ao --resume do claude),
+            # mas SEM flag de fixar ID na criação (sem ``--session-id``) → não dá
+            # pra garantir qual conversa é "a certa" entre sessões concorrentes no
+            # mesmo dir. Cai em --continue (mesma limitação do opencode).
+            parts += ["--continue"]
+    elif agent_type is AgentType.CLAUDE and session_id:
+        # Criação: fixa o ID da conversa p/ poder retomar exatamente ela depois.
+        parts += ["--session-id", session_id]
+    resolved_effort = _effort_for_agent(agent_type, effort)
+
+    if agent_type is AgentType.CLAUDE:
+        claude_model = model or "claude-tudao"
+        parts += ["--model", claude_model]
+        if resolved_effort is not None:
+            parts += ["--effort", resolved_effort]
+
+    elif agent_type is AgentType.CODEX:
+        if model is not None:
+            parts += ["-m", model]
+        if resolved_effort is not None:
+            parts += ["-c", f"model_reasoning_effort={resolved_effort}"]
+
+    elif agent_type is AgentType.GEMINI:
+        if model is not None:
+            parts += ["-m", model]
+        # effort ignorado intencionalmente: gemini não tem flag de esforço.
+
+    elif agent_type is AgentType.OPENCODE:
+        if model is not None:
+            parts += ["-m", model]
+        if resolved_effort is not None:
+            parts += ["--variant", resolved_effort]
+
+    elif agent_type is AgentType.ANTIGRAVITY:
+        if model is not None:
+            parts += ["--model", model]
+        if resolved_effort is not None:
+            parts += ["--effort", resolved_effort]
+
+    # Idioma: força o agente a responder no idioma escolhido SEM gastar um turno
+    # nem poluir a tela (vai no system prompt). claude tem --append-system-prompt;
+    # outros CLIs variam, então aplicamos só onde há suporte conhecido.
+    if lang_instruction:
+        if agent_type is AgentType.CLAUDE:
+            parts += ["--append-system-prompt", lang_instruction]
+
+    # Nome de exibição DA SESSÃO do claude (-n/--name): aparece no prompt box, no
+    # picker /resume e no título do terminal. Faz a sessão do Claude Code ter o
+    # MESMO nome amigável da sessão tmux (ex.: "multiambiente"), em vez de ficar
+    # sem nome. Só claude tem essa flag.
+    if name and agent_type is AgentType.CLAUDE:
+        parts += ["--name", name]
+
+    if yolo:
+        parts += MAX_PERMISSION_FLAGS.get(agent_type, [])
+
+    return shlex.join(parts)

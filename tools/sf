@@ -1,0 +1,1813 @@
+#!/usr/bin/env python3
+"""sf — delega tarefas pesadas a workers filhos do SessionFlow em OUTROS
+provedores (gemini/codex/opencode/claude) e colhe só o RESULTADO, sem poluir a
+janela de contexto do chefe. Também permite mandar uma mensagem/instrução para
+uma sessão JÁ EXISTENTE (irmã, não filha) sem precisar descobrir a API na mão.
+
+Modelo "delega-e-revisa": o filho roda autônomo (yolo) e, ao terminar, escreve
+um resumo objetivo num arquivo de HANDOFF. O chefe lê só esse arquivo.
+
+Comandos:
+  sf delegate --provider gemini|codex|opencode|claude [--model M] [--effort E] \
+              [--dir DIR] --task "TEXTO" [--name NOME]
+  sf check <name-ou-id> [--dir DIR]
+  sf list
+  sf send <nome-ou-id> "TEXTO" [--no-enter]
+  sf move <nome-ou-id> --host <alias|auto>
+
+Sem dependências externas (usa só a stdlib: urllib). Lê email/senha/porta do
+.env do SessionFlow.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from typing import Any
+import random
+import re
+import mimetypes
+import string
+import subprocess
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+# .env do projeto SessionFlow (fonte das credenciais/porta) — relativo à
+# localização deste script (tools/sf -> raiz do repo), NÃO um caminho fixo:
+# `sf` roda em qualquer host (Alvarenga, Lucas, Duck Server, ...), cada um
+# com o repo num lugar diferente. SESSIONFLOW_ENV_PATH sobrescreve (útil se
+# `sf` for instalado fora do repo, ex. /usr/local/bin/sf).
+ENV_PATH = os.environ.get(
+    "SESSIONFLOW_ENV_PATH",
+    str(Path(__file__).resolve().parent.parent / ".env"),
+)
+
+PROVIDERS = ("gemini", "codex", "opencode", "claude")
+MANIFEST_VERSION = 1
+MAX_CONTEXT_FILE_BYTES = 32 * 1024
+TASK_BUDGET_BYTES = 6 * 1024
+CONTEXT_BUDGET_BYTES = 32 * 1024
+HANDOFF_BUDGET_BYTES = 2 * 1024
+CREATE_TIMEOUT_SECONDS = 40
+_CONTEXT_FIELDS = frozenset({"scope", "paths", "facts", "decisions", "done_criteria", "allowed_skills"})
+_HANDOFF_FIELDS = frozenset({"schema_version", "status", "summary", "diff", "tests", "blockers", "questions"})
+_HANDOFF_STATUSES = frozenset({"done", "blocked", "failed"})
+_ROLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+# Referências somente: nunca copiar persona, overlay, transcript ou artefato no prompt.
+ROLE_PERSONAS_DIR = Path.home() / ".claude" / "agents" / "sf"
+
+# host_id deste host (gravado pelo worker local) — distingue delegação local de remota.
+HOST_ID_PATH = Path(os.environ.get(
+    "SESSIONFLOW_HOST_ID_PATH",
+    str(Path.home() / ".claude" / ".sessionflow-host-id"),
+))
+
+
+# UA de navegador comum — ver uso em _request()/_upload_file().
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+# --------------------------------------------------------------------------- #
+# .env / config
+# --------------------------------------------------------------------------- #
+def load_env(path=ENV_PATH):
+    """Lê chaves simples KEY=VALUE de um .env (ignora comentários/linhas vazias)."""
+    env = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                env[key.strip()] = val.strip()
+    except FileNotFoundError:
+        die(f"não encontrei o .env do SessionFlow em {path}")
+    return env
+
+
+def api_base(env):
+    # Instância REMOTA (ver --remote / load_remote): já vem com a URL completa,
+    # não com porta local — usa direto, sem montar 127.0.0.1.
+    if env.get("API_BASE_URL"):
+        return env["API_BASE_URL"].rstrip("/")
+    port = env.get("API_HOST_PORT", "8000")
+    return f"http://127.0.0.1:{port}"
+
+
+REMOTES_ENV_PATH = os.path.expanduser("~/.claude/secrets/sf-remotes.env")
+
+
+def load_remote(alias):
+    """Credenciais de uma instância SessionFlow REMOTA (outro amigo/deploy),
+    fora do git (``~/.claude/secrets/sf-remotes.env``).
+
+    Formato: ``<ALIAS>_BASE_URL``/``<ALIAS>_EMAIL``/``<ALIAS>_PASSWORD``
+    (alias em maiúsculas), ex.::
+
+        HEVERTON_BASE_URL=https://api-sessionflow.anthonygabriel.com.br
+        HEVERTON_EMAIL=heverton@...
+        HEVERTON_PASSWORD=...
+
+    Devolve um dict no mesmo formato de :func:`load_env` (compatível com
+    :func:`login`/:func:`api_base`) — assim o resto do script nem sabe que é
+    remoto.
+    """
+    remotes = load_env(REMOTES_ENV_PATH)
+    prefix = alias.strip().upper()
+    base_url = remotes.get(f"{prefix}_BASE_URL")
+    email = remotes.get(f"{prefix}_EMAIL")
+    password = remotes.get(f"{prefix}_PASSWORD")
+    if not (base_url and email and password):
+        die(
+            f"remote '{alias}' incompleto/ausente em {REMOTES_ENV_PATH} "
+            f"(esperado {prefix}_BASE_URL / {prefix}_EMAIL / {prefix}_PASSWORD)"
+        )
+    return {
+        "API_BASE_URL": base_url,
+        "SESSIONFLOW_EMAIL": email,
+        "SESSIONFLOW_PASSWORD": password,
+    }
+
+
+def resolve_env(args):
+    """``load_remote(args.remote)`` se ``--remote`` foi passado, senão o
+    ``.env`` local de sempre — ponto único usado por todo comando."""
+    remote = getattr(args, "remote", None)
+    return load_remote(remote) if remote else load_env()
+
+
+def detect_parent():
+    """tmux_name da PRÓPRIA sessão chefe (quem está delegando), ou None.
+
+    Só resolve quando rodando DENTRO de um tmux (``$TMUX`` setado): usa
+    ``tmux display-message -p '#S'`` p/ pegar o nome da sessão atual. Fora do
+    tmux (ou se o comando falhar) devolve None — o filho fica sem pai.
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "#S"],
+            capture_output=True, text=True, timeout=5,
+        )
+        name = (out.stdout or "").strip()
+        return name or None
+    except Exception:  # noqa: BLE001 - best-effort; sem pai não é erro
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# HTTP helpers (urllib)
+# --------------------------------------------------------------------------- #
+def _request(method, url, token=None, body=None, timeout=30):
+    data = None
+    # UA de navegador de verdade: instâncias remotas atrás de Cloudflare
+    # (ex.: a do Heverton) bloqueiam o UA padrão do urllib
+    # ("Python-urllib/3.x") como bot — "Error 1010: browser_signature_banned".
+    # A local (127.0.0.1) nunca passa por Cloudflare, então isso é inofensivo.
+    headers = {"Accept": "application/json", "User-Agent": _BROWSER_UA}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        die(f"falha de conexão com a API ({url}): {exc.reason}. "
+            "A stack do SessionFlow está de pé?")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {"_raw": raw}
+    return status, parsed
+
+
+def _upload_file(url, token, filepath):
+    """POST multipart/form-data com 1 arquivo (campo ``file``), stdlib pura.
+
+    Monta o corpo manualmente (boundary + headers) — evita depender de
+    `requests`/`urllib3`, mantendo o script sem dependências externas.
+    """
+    boundary = uuid.uuid4().hex
+    filename = os.path.basename(filepath)
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    with open(filepath, "rb") as fh:
+        file_bytes = fh.read()
+
+    parts = []
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+    )
+    parts.append(file_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": _BROWSER_UA,
+    }
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        die(f"falha de conexão com a API ({url}): {exc.reason}. "
+            "A stack do SessionFlow está de pé?")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {"_raw": raw}
+    return status, parsed
+
+
+def _download(url, token, dest):
+    """GET binário autenticado → grava em `dest` (stdlib pura)."""
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": _BROWSER_UA}
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        die(f"download falhou (HTTP {exc.code}): {url}")
+    except urllib.error.URLError as exc:
+        die(f"falha de conexão com a API ({url}): {exc.reason}")
+    Path(dest).write_bytes(data)
+
+
+def login(env):
+    base = api_base(env)
+    email = env.get("SESSIONFLOW_EMAIL")
+    password = env.get("SESSIONFLOW_PASSWORD")
+    if not email or not password:
+        die("SESSIONFLOW_EMAIL/SESSIONFLOW_PASSWORD ausentes no .env")
+    status, body = _request(
+        "POST", f"{base}/auth/login", body={"email": email, "password": password}
+    )
+    if status != 200 or "token" not in body:
+        die(f"login falhou (HTTP {status}): {body}")
+    return body["token"]
+
+
+def list_sessions(env, token):
+    base = api_base(env)
+    status, body = _request("GET", f"{base}/sessions", token=token)
+    if status != 200:
+        die(f"GET /sessions falhou (HTTP {status}): {body}")
+    return body.get("items", [])
+
+
+def resolve_session(sessions, target):
+    """Resolve `target` (id, tmux_name ou display_name) numa lista de sessões.
+
+    Tenta match exato primeiro (id > tmux_name > display_name); se não achar,
+    cai para substring case-insensitive em tmux_name/display_name — mas só
+    aceita se o resultado for ÚNICO (ambíguo é erro, não chute).
+    """
+    for s in sessions:
+        if s.get("id") == target:
+            return s
+    for s in sessions:
+        if s.get("tmux_name") == target or s.get("display_name") == target:
+            return s
+    needle = target.lower()
+    matches = [
+        s for s in sessions
+        if needle in (s.get("tmux_name") or "").lower()
+        or needle in (s.get("display_name") or "").lower()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(s.get("tmux_name") or s.get("id") for s in matches)
+        die(f"'{target}' é ambíguo, casa com várias sessões: {names}")
+    return None
+
+
+def local_host_id(path=None):
+    """host_id do worker DESTE host, ou None (arquivo ausente/vazio)."""
+    try:
+        return Path(path or HOST_ID_PATH).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _host_label(w):
+    state = "online" if w.get("online") else "offline"
+    shown = w.get("display_name") or w.get("hostname") or "?"
+    return f"{w.get('emoji') or ''} {shown} ({w.get('hostname') or '-'}) {w.get('host_id')} {state}".strip()
+
+
+def resolve_host(workers, alias, allow_offline=False):
+    """Resolve `--host`: host_id exato > nome/hostname/emoji exato > substring única.
+
+    Ambíguo, desconhecido ou offline → ValueError (o chamador faz `die`).
+    """
+    alias_map = {
+        "colab1-cpu": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
+        "colab1-pro": "c775ad00-58bb-44ae-9781-7e7e23b5404e",
+        "colab2-cpu": "02151543-4ff8-44c2-b607-b1dfc8625066",
+        "colab2-pro": "02151543-4ff8-44c2-b607-b1dfc8625067",
+        "colab-worker": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
+        "colab-pro": "02151543-4ff8-44c2-b607-b1dfc8625067",
+    }
+    resolved_alias = alias_map.get(alias.lower(), alias)
+    known = [w for w in workers if w.get("host_id")]
+    match = next((w for w in known if w["host_id"] == resolved_alias), None)
+    if match is None:
+        needle = alias.casefold()
+        fields = ("display_name", "hostname", "emoji")
+        exact = [w for w in known if any((w.get(f) or "").casefold() == needle for f in fields)]
+        candidates = exact or [
+            w for w in known if any(needle in (w.get(f) or "").casefold() for f in fields)
+        ]
+        if len(candidates) > 1:
+            raise ValueError(
+                f"host '{alias}' ambíguo: " + "; ".join(_host_label(w) for w in candidates)
+            )
+        if not candidates:
+            listing = "; ".join(_host_label(w) for w in known) or "(nenhum host)"
+            raise ValueError(f"host '{alias}' não encontrado. Hosts: {listing}")
+        match = candidates[0]
+    if not allow_offline and not match.get("online"):
+        raise ValueError(f"host {_host_label(match)} está offline; suba o worker dele antes")
+    return match
+
+
+# --------------------------------------------------------------------------- #
+# --host auto: escolhe o host mais livre
+# --------------------------------------------------------------------------- #
+AUTO_MAX_CPU = float(os.environ.get("SF_AUTO_MAX_CPU", 85.0))      # acima disso o host é considerado ocupado
+AUTO_MIN_MEM_GB = float(os.environ.get("SF_AUTO_MIN_MEM_GB", 2.0)) # RAM disponível mínima p/ subir um agent
+AUTO_TIE_PCT = 0.05      # scores a ≤5% do maior empatam → prefere o local
+
+
+AUTO_DEFAULT_CORES = 4   # worker antigo sem hardware.cpu_cores
+AUTO_GPU_BONUS = 1.2     # GPU dedicada pesa como +20% de poder
+
+# Hosts PRIORITÁRIOS (tentados primeiro, em ordem, antes do ranking por score).
+# Se o host estiver online, passar nos filtros (CPU/RAM/agent/dir) e não estar
+# ocupado → é escolhido independente do score. Só cai no ranking padrão se
+# TODOS os hosts prioritários falharem (offline, ocupado, sem o provider, etc).
+# Google Colab: crédito Google → usar enquanto online e livre, antes dos outros.
+# Colab Pro (Tesla T4 + claude) acima da free: GPU disponível pra Whisper/tremio.
+AUTO_PRIORITY_HOSTS = [
+    "02151543-4ff8-44c2-b607-b1dfc8625067",  # ⚡ Colab 2 Pro (GPU T4, 19db473d4190)
+    "c775ad00-58bb-44ae-9781-7e7e23b5404e",  # ⚡ Colab 1 Pro (GPU T4, colab1-pro)
+    "02151543-4ff8-44c2-b607-b1dfc8625066",  # 🐴 Colab 2 (CPU, colab2-cpu)
+    "c775ad00-58bb-44ae-9781-7e7e23b5404d",  # 🐴 Colab 1 (CPU, 4f5458b8bf9c)
+]
+
+
+def host_score(w):
+    """Poder de processamento LIVRE: núcleos ociosos × RAM disponível (√ p/
+    a RAM não dominar), com bônus de GPU. Máquina mais forte E mais livre
+    vence — 16 núcleos a 40% ganham de 2 núcleos ociosos."""
+    m = w["metrics"]
+    hw = w.get("hardware") or {}
+    cores = hw.get("cpu_cores") or AUTO_DEFAULT_CORES
+    free_cores = cores * (1 - m["cpu_pct"] / 100)
+    score = free_cores * m["mem_avail_gb"] ** 0.5
+    if hw.get("gpu"):
+        score *= AUTO_GPU_BONUS
+    return score
+
+
+def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
+    """Escolhe o host p/ `--host auto`. Pura: rede só via `dir_ok` (injetado).
+
+    Filtros baratos primeiro (online, métricas, agent, piso); `dir_ok(w)` —
+    que pode consultar a API — só roda nos sobreviventes, em ordem de score.
+    Hosts em AUTO_PRIORITY_HOSTS são tentados PRIMEIRO (em ordem), antes do
+    ranking por score. Se todos os prioritários falharem (offline/ocupado/sem
+    provider), o ranking normal por CPU+RAM toma conta.
+    Retorna (escolhido|None, aprovados ordenados, [(host, motivo)], local_serve).
+    """
+    def _passes_filters(w):
+        """None = passou; str = motivo de rejeição."""
+        m = w.get("metrics") or {}
+        cpu, mem = m.get("cpu_pct"), m.get("mem_avail_gb")
+        if not w.get("online"):
+            return "offline"
+        if need_remote and w.get("host_id") == local_id:
+            return "--worktree/--push exigem host remoto"
+        if cpu is None or mem is None:
+            return "sem métricas (worker desatualizado?)"
+        if not (w.get("agents") or {}).get(provider):
+            return f"{provider} não instalado"
+        if cpu > AUTO_MAX_CPU:
+            return f"cpu {cpu:.0f}% > {AUTO_MAX_CPU:.0f}%"
+        if mem < AUTO_MIN_MEM_GB:
+            return f"ram livre {mem:.1f}G < {AUTO_MIN_MEM_GB:.0f}G"
+        return None
+
+    rejected, pool = [], []
+    by_id = {w["host_id"]: w for w in workers}
+
+    # --- Fase 1: hosts prioritários (ex.: Google Colab) --------------------- #
+    priority_tried = set()
+    for pid in AUTO_PRIORITY_HOSTS:
+        w = by_id.get(pid)
+        if w is None:
+            continue
+        priority_tried.add(pid)
+        reason = _passes_filters(w)
+        if reason:
+            rejected.append((w, f"prioritário descartado: {reason}"))
+            continue
+        dir_reason = dir_ok(w)
+        if dir_reason:
+            rejected.append((w, f"prioritário descartado: {dir_reason}"))
+            continue
+        # Passou tudo → escolhido direto, sem precisar avaliar os outros
+        label = w.get("display_name") or w.get("hostname") or pid[:8]
+        print(f"host auto → {label} (prioritário, {pid[:8]}…) cpu {(w.get('metrics') or {}).get('cpu_pct', '?'):.0f}% ram {(w.get('metrics') or {}).get('mem_avail_gb', '?'):.1f}G livre")
+        return w, [w], rejected, True
+
+    # --- Fase 2: ranking por score (comportamento original) ----------------- #
+    for w in workers:
+        if w["host_id"] in priority_tried:
+            continue  # já avaliado acima, motivo já em rejected
+        reason = _passes_filters(w)
+        if reason:
+            rejected.append((w, reason))
+        else:
+            pool.append(w)
+
+    ranked = []
+    for w in sorted(pool, key=host_score, reverse=True):
+        reason = dir_ok(w)
+        if reason:
+            rejected.append((w, reason))
+        else:
+            ranked.append(w)
+    if not ranked:
+        # Nenhum remoto serve. Sinaliza se o LOCAL também não aguenta —
+        # quem chama decide entre fallback silencioso e abortar com erro.
+        local_worker = next((w for w in workers if w.get("host_id") == local_id), None)
+        return None, [], rejected, _local_serves(local_worker)
+    best = host_score(ranked[0])
+    local = next((w for w in ranked if w.get("host_id") == local_id), None)
+    if local and best - host_score(local) <= best * AUTO_TIE_PCT:
+        ranked.remove(local)
+        ranked.insert(0, local)
+    return ranked[0], ranked, rejected, True
+
+
+def _local_serves(local_worker):
+    """True se o host local tem métricas que sustentam um agent sem crashar.
+
+    O fallback de ``--host auto`` (quando nenhum remoto serve) usa o LOCAL,
+    mas só faz sentido se o local aguenta — caso contrário a sessão sobe e o
+    worker mata ela em segundos por OOM/cpu pegada. Quem chama decide:
+    recebe o bool no 4º elemento da tupla do ``pick_host``.
+    """
+    if not local_worker or not local_worker.get("online"):
+        return False
+    m = local_worker.get("metrics") or {}
+    cpu, mem = m.get("cpu_pct"), m.get("mem_avail_gb")
+    if cpu is None or mem is None:
+        return False
+    if cpu > AUTO_MAX_CPU:
+        return False
+    if mem < AUTO_MIN_MEM_GB:
+        return False
+    return True
+
+
+def auto_dir_checker(base, token, local_id, dir_arg):
+    """`dir_ok` p/ pick_host + mapa host_id→alvo resolvido (path/is_git).
+
+    Local: `--dir` (ou cwd) tem que existir aqui. Remoto: procura o NOME da
+    pasta (basename) no índice do host; exige 1 match exato por nome.
+    Falha de rede num host vira motivo de descarte, não aborta o auto.
+    """
+    local_path = os.path.abspath(dir_arg or os.getcwd())
+    name = os.path.basename(local_path.rstrip("/"))
+    targets = {}
+
+    def dir_ok(w):
+        hid = w["host_id"]
+        if hid == local_id:
+            if not os.path.isdir(local_path):
+                return f"pasta {local_path} não existe aqui"
+            targets[hid] = {"path": local_path, "is_git": None}
+            return None
+        try:
+            items = fetch_dirs(base, token, hid, name, 50)
+        except SystemExit:
+            return "erro ao listar pastas do host"
+        exact = [d for d in items if d.get("name") == name]
+        if not exact:
+            return f"pasta '{name}' não indexada"
+        if len(exact) > 1:
+            return f"pasta '{name}' ambígua ({len(exact)} matches)"
+        targets[hid] = {"path": exact[0]["path"], "is_git": exact[0].get("is_git")}
+        return None
+
+    return dir_ok, targets
+
+
+def _progress_bar(pct, width=10):
+    """Retorna uma string visual de barra de progresso, ex: [██████    ]."""
+    if pct is None:
+        return f"[{'?' * width}]"
+    pct = max(0.0, min(100.0, float(pct)))
+    filled = int(round((pct / 100.0) * width))
+    return f"[{'█' * filled}{' ' * (width - filled)}]"
+
+def _auto_summary(chosen, rejected):
+    """Linhas de saída do auto: escolhido (score/cpu/ram) + descartados."""
+    lines = []
+    if chosen:
+        m = chosen["metrics"]
+        shown = f"{chosen.get('emoji') or ''} {chosen.get('display_name') or chosen.get('hostname')}".strip()
+        lines.append(f"host auto → {shown} ({chosen['host_id'][:8]}…) score {host_score(chosen):.1f}"
+                     f" | cpu {m['cpu_pct']:.0f}% | ram livre {m['mem_avail_gb']:.1f}G")
+    if rejected:
+        lines.append("  descartados: " + "; ".join(
+            f"{w.get('emoji') or ''} {w.get('display_name') or w.get('hostname')} ({r})".strip()
+            for w, r in rejected))
+    return lines
+
+
+def fetch_workers(base, token):
+    status, body = _request("GET", f"{base}/workers", token=token)
+    if status != 200 or not isinstance(body, list):
+        die(f"GET /workers falhou (HTTP {status}): {body}")
+    return body
+
+
+def fetch_dirs(base, token, host_id, q, limit):
+    qs = urllib.parse.urlencode({"host_id": host_id, "q": q, "limit": min(limit, 50)})
+    status, body = _request("GET", f"{base}/directories?{qs}", token=token)
+    if status != 200:
+        die(f"GET /directories falhou (HTTP {status}): {body}")
+    return body.get("items", [])
+
+
+# --------------------------------------------------------------------------- #
+# util
+# --------------------------------------------------------------------------- #
+def die(msg, code=1):
+    print(f"sf: erro: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def slugify_name(task):
+    """Deriva um nome de tmux válido ([A-Za-z0-9_-]) a partir da tarefa."""
+    words = re.sub(r"[^A-Za-z0-9]+", "-", task.lower()).strip("-")
+    slug = "-".join(words.split("-")[:4])[:28].strip("-") or "task"
+    rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"w-{slug}-{rand}"
+
+
+def sanitize_name(name):
+    """Garante nome de tmux válido a partir de um nome fornecido pelo usuário."""
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-")[:60]
+    return clean or slugify_name(name)
+
+
+def slugify_remote(name):
+    """Slug do nome no modo remoto, igual ao worker._slugify: lowercase, sem
+    acentos, runs fora de [a-z0-9] → "-". Mantém branch/pasta/tmux alinhados."""
+    normalized = unicodedata.normalize("NFD", name)
+    ascii_only = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    ascii_only = ascii_only.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only).strip("-")
+    return slug or "task"
+
+
+def handoff_dir(work_dir):
+    return os.path.join(work_dir, ".sessionflow", "handoff")
+
+
+def handoff_md_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.md")
+
+
+def registry_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.registry.json")
+
+
+def legacy_registry_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.json")
+
+
+def manifest_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.manifest.json")
+
+
+def handoff_json_path(work_dir, name):
+    return os.path.join(handoff_dir(work_dir), f"{name}.handoff.json")
+
+
+def _relative_artifact(value: str, work_dir: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("referência de contexto deve ser texto não vazio")
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"referência fora do work_dir: {value}")
+    root = Path(work_dir).resolve()
+    resolved = (root / path).resolve()
+    if root not in (resolved, *resolved.parents) or not resolved.exists():
+        raise ValueError(f"artefato não encontrado no work_dir: {value}")
+    return str(resolved.relative_to(root))
+
+
+def load_context_file(path: str | None, work_dir: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    source = Path(path).expanduser().resolve()
+    if not source.is_file() or source.stat().st_size > MAX_CONTEXT_FILE_BYTES:
+        raise ValueError("--context-file ausente ou maior que 32KB")
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--context-file não é JSON válido: {exc.msg}") from exc
+    if not isinstance(raw, dict) or set(raw) - _CONTEXT_FIELDS:
+        raise ValueError("--context-file contém chaves não permitidas")
+    context: dict[str, Any] = {}
+    for key, value in raw.items():
+        values = [value] if key == "scope" and isinstance(value, str) else value
+        if not isinstance(values, list) or not values or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise ValueError(f"contexto inválido em '{key}'")
+        context[key] = [_relative_artifact(v, work_dir) for v in values] if key == "paths" else values
+    return context
+
+
+def resolve_role(role: str | None, work_dir: str) -> dict[str, str] | None:
+    if not role:
+        return None
+    if not _ROLE_RE.fullmatch(role):
+        raise ValueError("--role deve ser slug seguro (a-z, 0-9, -)")
+    persona = ROLE_PERSONAS_DIR / f"{role}.md"
+    if not persona.is_file():
+        raise ValueError(f"persona global não encontrada: {persona}")
+    overlay = Path(work_dir) / ".claude" / "sf" / f"{role}.md"
+    result = {"name": role, "persona": str(persona)}
+    if overlay.is_file():
+        result["overlay"] = str(overlay)
+    return result
+
+
+def validate_handoff(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) != _HANDOFF_FIELDS:
+        raise ValueError("handoff deve conter exatamente campos do contrato")
+    if data.get("schema_version") != MANIFEST_VERSION or data.get("status") not in _HANDOFF_STATUSES:
+        raise ValueError("versão ou status de handoff inválido")
+    if not isinstance(data.get("summary"), str) or not data["summary"].strip():
+        raise ValueError("summary de handoff obrigatório")
+    for key in _HANDOFF_FIELDS - {"schema_version", "status", "summary"}:
+        if not isinstance(data.get(key), list) or any(not isinstance(v, str) or not v.strip() for v in data[key]):
+            raise ValueError(f"{key} deve ser lista de textos não vazios")
+    return data
+
+
+def build_manifest(args, work_dir: str, name: str, role: dict[str, str] | None, context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": MANIFEST_VERSION,
+        "name": name,
+        "objective": args.task,
+        "role": role,
+        "context": context,
+        "execution": {"provider": args.provider, "model": args.model, "effort": args.effort},
+        "done_criteria": context.get("done_criteria", []),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def read_metrics(work_dir: str) -> list[dict[str, Any]]:
+    """Lê somente manifests/handoffs locais; nunca API, Markdown ou transcript."""
+    metrics = []
+    for manifest_file in sorted(Path(handoff_dir(work_dir)).glob("*.manifest.json")):
+        name = manifest_file.name.removesuffix(".manifest.json")
+        entry = {
+            "name": name, "task_bytes": 0, "context_bytes": 0,
+            "manifest_bytes": manifest_file.stat().st_size, "handoff_bytes": 0,
+            "role": "-", "status": "invalid", "violations": [],
+        }
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("objective"), str) or not isinstance(manifest.get("context"), dict):
+                raise ValueError("manifest inválido")
+            role = manifest.get("role")
+            if role is not None and (not isinstance(role, dict) or not isinstance(role.get("name"), str)):
+                raise ValueError("role inválido")
+            entry["task_bytes"] = len(manifest["objective"].encode("utf-8"))
+            entry["context_bytes"] = _json_bytes(manifest["context"])
+            entry["role"] = role["name"] if role else "-"
+            entry["status"] = "missing"
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            entry["error"] = str(exc)
+            metrics.append(entry)
+            continue
+
+        handoff_file = Path(handoff_json_path(work_dir, name))
+        if handoff_file.exists():
+            entry["handoff_bytes"] = handoff_file.stat().st_size
+            try:
+                entry["status"] = validate_handoff(json.loads(handoff_file.read_text(encoding="utf-8")))["status"]
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                entry["status"] = "invalid"
+                entry["error"] = str(exc)
+        for key, budget in (("task_bytes", TASK_BUDGET_BYTES), ("context_bytes", CONTEXT_BUDGET_BYTES), ("handoff_bytes", HANDOFF_BUDGET_BYTES)):
+            if entry[key] > budget:
+                entry["violations"].append(f"{key}>{budget}")
+        metrics.append(entry)
+    return metrics
+
+
+def build_handoff_task(task, work_dir, name, manifest=None, finish_steps=None):
+    """Monta o texto injetado no filho: a tarefa + bloco de HANDOFF (PT-BR)."""
+    md_path = handoff_md_path(work_dir, name)
+    handoff_path = handoff_json_path(work_dir, name)
+    manifest_note = f"\nManifest de contexto (leia referências seletivamente; nunca puxe transcript):\n  {manifest}\n" if manifest else ""
+    return (
+        f"{task}\n{manifest_note}\n"
+        "----- INSTRUÇÕES DE HANDOFF (worker delegado) -----\n"
+        "Você é um WORKER DELEGADO. Execute SOMENTE esta tarefa, de forma "
+        "AUTÔNOMA — não peça confirmação nem faça perguntas. Ao terminar, "
+        "escreva um resumo OBJETIVO do resultado (o que você fez; arquivos/"
+        "PRs/commits envolvidos; como validar; pendências ou bloqueios) no "
+        f"arquivo:\n  {md_path}\n"
+        "Além do Markdown, escreva JSON válido neste contrato exato:\n"
+        f"  {handoff_path}\n"
+        "{\"schema_version\":1,\"status\":\"done|blocked|failed\",\"summary\":\"...\","
+        "\"diff\":[\"...\"],\"tests\":[\"...\"],\"blockers\":[\"...\"],\"questions\":[\"...\"]}\n"
+        "Use listas vazias quando não houver itens. Crie o diretório se necessário. "
+        f"{finish_steps or 'Depois de escrever ambos, PARE — não faça mais nada.'}\n\n"
+        "----- FERRAMENTAS DE COORDENAÇÃO (sf) -----\n"
+        "Você tem acesso ao comando `sf` (já no PATH deste host — funciona "
+        "de qualquer diretório, com qualquer provedor de agente, não é "
+        "específico do Claude Code). Use quando fizer sentido:\n"
+        "- `sf list` — lista TODAS as sessões ativas (nome, agente, status, "
+        "host) — inclusive em OUTRAS estações/máquinas, não só a sua.\n"
+        "- `sf send <sessão> \"texto\"` — manda uma mensagem/instrução direto "
+        "pro terminal de outra sessão já rodando, mesmo em outro host — o "
+        "roteamento é sempre pela API central, então funciona entre "
+        "estações diferentes normalmente.\n"
+        "- `sf share <arquivo> --to <sessão>` — compartilha um arquivo do "
+        "seu disco com OUTRA sessão (mesmo em outro host) — fica disponível "
+        "pra ela via API (GET /sessions/{id}/shared-files + "
+        "/shared-files/{id}/download); sem --to, compartilha na sua própria "
+        "sessão (visível no app, inclusive celular).\n\n"
+        "Se OUTRA sessão te mandar uma mensagem (via `sf send`) enquanto "
+        "você trabalha, RESPONDA de volta pra ela (também via `sf send`) "
+        "pra manter o fluxo de conversa — continue trocando mensagens até "
+        "que a necessidade daquela conversa esteja de fato resolvida, em "
+        "vez de responder só uma vez e parar."
+    )
+
+
+def _is_literal_remote_path(s):
+    """Verifica se s é caminho literal (/ ou ~ ou ~/...), não um nome indexado."""
+    return s.startswith("/") or s == "~" or s.startswith("~/")
+
+
+def resolve_remote_dir(dir_arg, dirs, local_home):
+    """`--dir` p/ host remoto: caminho literal (/ ou ~) ou NOME indexado no host.
+
+    `dirs` = itens de GET /directories (só usado no modo nome). ValueError em
+    caminho expandido pelo shell local, nome ambíguo ou ausente.
+    """
+    home = local_home.rstrip("/")
+    if dir_arg == home or dir_arg.startswith(home + "/"):
+        raise ValueError(
+            f"'{dir_arg}' é caminho DESTE host (o shell expandiu `~` localmente); "
+            "use aspas: --dir '~/...'"
+        )
+    if _is_literal_remote_path(dir_arg):
+        return {"path": dir_arg, "is_git": None}
+    exact = [d for d in dirs if d.get("name") == dir_arg]
+    candidates = exact or dirs
+    if len(candidates) == 1:
+        return {"path": candidates[0]["path"], "is_git": candidates[0].get("is_git")}
+    if not candidates:
+        raise ValueError(
+            f"nenhuma pasta '{dir_arg}' indexada no host; veja `sf dirs --host <alias> {dir_arg}`"
+        )
+    raise ValueError(
+        f"'{dir_arg}' ambíguo no host: " + ", ".join(d["path"] for d in candidates)
+        + " — passe o caminho completo entre aspas"
+    )
+
+
+def build_remote_task(task, work_dir, name, manifest, parent, push, branch=None):
+    """Tarefa p/ filho em OUTRO host: manifest inline + entrega git + share/send.
+
+    `branch` = branch name (ex. "sf/w1") para push. Se None, usa HEAD (compatibilidade).
+    """
+    md_path = handoff_md_path(work_dir, name)
+    json_path = handoff_json_path(work_dir, name)
+    patch_path = os.path.join(handoff_dir(work_dir), f"{name}.patch")
+    manifest_json = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+    if push:
+        # push a branch explícita em vez de HEAD
+        push_branch = branch or "HEAD"
+        deliver = (f"2. `git push -u origin {push_branch}`; ponha a branch (`git branch --show-current`) "
+                   "e o SHA final no `diff` do JSON.\n")
+    else:
+        deliver = (f"2. `git format-patch <BASE>..HEAD --stdout > {patch_path}` "
+                   "(BASE = SHA do PASSO 0); cite o arquivo no `diff` do JSON.\n")
+    body = (
+        f"{task}\n\n"
+        "Manifest de contexto (JSON inline; leia referências seletivamente; nunca puxe transcript):\n"
+        f"{manifest_json}\n\n"
+        "----- ENTREGA GIT (ao concluir, ANTES do handoff) -----\n"
+        "1. Commit de todas as mudanças, sem `.sessionflow/`: "
+        "`git add -A -- . ':!.sessionflow' && git commit -m \"<mensagem descritiva>\"`.\n"
+        + deliver
+    )
+    files = [md_path, json_path] + ([] if push else [patch_path])
+    finish = (
+        "Depois de escrever ambos:\n"
+        + "".join(f"- `sf share {path}`\n" for path in files)
+        + "(pule arquivo que não existir)\n"
+        + (f"- `sf send {parent} \"✅ HANDOFF {name} status=<status do JSON>\"`\n" if parent else "")
+        + "Então PARE — não faça mais nada."
+    )
+    return (
+        "PASSO 0 (ANTES DE QUALQUER COISA): rode `git rev-parse HEAD` neste diretório e "
+        "anote o SHA como BASE. Se não for repositório git, ignore todos os passos de git.\n\n"
+        + build_handoff_task(body, work_dir, name, finish_steps=finish)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# comando: delegate
+# --------------------------------------------------------------------------- #
+def wait_running(env, token, name):
+    """Poll até a sessão `name` aparecer `running` (criação é assíncrona) ou timeout."""
+    deadline = time.time() + CREATE_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        for s in list_sessions(env, token):
+            if (s.get("tmux_name") == name or s.get("display_name") == name) \
+                    and (s.get("status") or "").lower() == "running":
+                return s
+        time.sleep(2)
+    return None
+
+
+def cmd_delegate(args):
+    provider = args.provider
+    if provider not in PROVIDERS:
+        die(f"--provider inválido: {provider}. Use um de {', '.join(PROVIDERS)}")
+
+    name = sanitize_name(args.name) if args.name else slugify_name(args.task)
+    if provider == "claude" and not args.model:
+        args.model = "claude-tudao"
+
+    # gemini não tem dimensão de esforço → força None.
+    effort = None if provider == "gemini" else args.effort
+    args.effort = effort
+
+    host_id = None
+    auto_info = None
+    auto_host = None
+    if args.host and args.host.lower() == "auto":
+        env = resolve_env(args)
+        token = login(env)
+        base = api_base(env)
+        local_id = local_host_id()
+        need_remote = bool(args.worktree or args.push)
+        dir_ok, targets = auto_dir_checker(base, token, local_id, args.dir)
+        chosen, ranked, rejected, local_serves = pick_host(fetch_workers(base, token), provider,
+                                                          local_id, dir_ok, need_remote)
+        summary = _auto_summary(chosen, rejected)
+        if chosen is None:
+            if need_remote:
+                die("--host auto: nenhum host remoto serve. " + " ".join(summary))
+            if not local_serves:
+                # Auto escolheu ninguém, e o local NÃO aguenta — cair silencioso
+                # aqui faria a sessão subir e o worker matar por OOM/cpu. Aborta
+                # com os motivos reais pra Diego ver por que Colab/remoto caiu.
+                die("--host auto: nenhum host remoto serve E o local não aguenta "
+                    "(ram<2G ou cpu>85%). " + " ".join(summary) +
+                    "\nDica: clone o projeto no host remoto (gh repo clone, dentro do "
+                    "SCAN_ROOTS) e confira com `sf dirs --host <host> <pasta>`.")
+            print("host auto → nenhum host atende; rodando local")
+            print("\n".join(summary))
+            host_id = local_id
+        else:
+            print("\n".join(summary))
+            auto_host = chosen
+            auto_info = {
+                "auto": True,
+                "auto_ranking": [{"host_id": w["host_id"], "score": round(host_score(w), 2)}
+                                 for w in ranked],
+            }
+            host_id = chosen["host_id"]
+            if host_id != local_id:
+                return delegate_remote(args, env, token, base, chosen, slugify_remote(name),
+                                       effort, target=targets[host_id], auto_info=auto_info)
+            args.dir = targets[host_id]["path"]
+    elif args.host:
+        env = resolve_env(args)
+        token = login(env)
+        base = api_base(env)
+        try:
+            host = resolve_host(fetch_workers(base, token), args.host)
+        except ValueError as exc:
+            die(str(exc))
+        host_id = host["host_id"]
+        if host_id != local_host_id():
+            # worker slugifica pasta/tmux; usa o mesmo slug p/ branch/registry/handoff
+            return delegate_remote(args, env, token, base, host, slugify_remote(name), effort)
+    else:
+        # Sem --host = ESTE host. Sem isso a API escolhe o worker com heartbeat
+        # mais recente, que pode ser outro (ex.: Duck) e a sessão nunca sobe aqui.
+        host_id = local_host_id()
+    if args.worktree or args.push:
+        die("--worktree/--push exigem --host apontando pra OUTRO host (ex.: --host duck)")
+
+    work_dir = os.path.abspath(args.dir or os.getcwd())
+    try:
+        role = resolve_role(args.role, work_dir)
+        context = load_context_file(args.context_file, work_dir)
+    except ValueError as exc:
+        die(str(exc))
+
+    manifest = build_manifest(args, work_dir, name, role, context)
+
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+
+    parent = detect_parent()
+
+    payload = {
+        "name": name,
+        "display_name": name,
+        "agent_type": provider,
+        "work_dir": work_dir,
+        "model": args.model,   # None => default do provedor
+        "effort": effort,
+    }
+    # Linka pai→filho: a sessão chefe (dentro do tmux) fica registrada como
+    # PAI do worker filho. Fora do tmux o campo é omitido (filho sem pai).
+    if parent:
+        payload["parent"] = parent
+    if host_id:
+        payload["host_id"] = host_id
+    status, body = _request("POST", f"{base}/sessions", token=token, body=payload)
+    if status == 409:
+        die(f"já existe uma sessão ativa chamada '{name}'. Use --name outro.")
+    if status != 202:
+        die(f"criação falhou (HTTP {status}): {body}")
+
+    # POLL até a sessão aparecer com status running (criação é assíncrona).
+    session = wait_running(env, token, name)
+    if session is None:
+        die(f"a sessão não subiu em {CREATE_TIMEOUT_SECONDS}s (não apareceu como running). "
+            f"Verifique 'sf check {name}' em instantes ou o worker do SessionFlow.")
+
+    session_id = session["id"]
+
+    # Persiste referências antes de injetar; worker lê só o necessário no worktree.
+    try:
+        os.makedirs(handoff_dir(work_dir), exist_ok=True)
+        with open(manifest_path(work_dir, name), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        die(f"não consegui gravar manifest: {exc}")
+
+    # Injeta a tarefa + referências + contrato de handoff.
+    # Com pai (delegou de dentro do tmux): o filho avisa o pai ao terminar. O
+    # worker também avisa (rede de segurança) se o agente esquecer.
+    finish = (f"Depois de escrever ambos:\n"
+              f"- `sf send {parent} \"✅ HANDOFF {name} status=<status do JSON>\"`\n"
+              "Então PARE — não faça mais nada.") if parent else None
+    task_text = build_handoff_task(args.task, work_dir, name, manifest_path(work_dir, name),
+                                   finish_steps=finish)
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": task_text, "enter": True},
+    )
+    if status != 202:
+        die(f"envio da tarefa falhou (HTTP {status}): {body}")
+
+    # Registro local p/ o 'check' resolver por nome. Com --remote, `work_dir`
+    # é um caminho na máquina REMOTA (ex.: /mnt/c/DEV do Alvarenga) — pode nem
+    # existir aqui (ou ser read-only, ex.: /mnt em macOS). Best-effort: sem
+    # registro local, ainda dá pra achar a sessão via 'sf list --remote'.
+    reg = {
+        "id": session_id,
+        "name": name,
+        "dir": work_dir,
+        "provider": provider,
+        "model": args.model,
+        "effort": effort,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **(auto_info or {}),
+    }
+    if auto_info:
+        reg["host_id"] = host_id
+    try:
+        os.makedirs(handoff_dir(work_dir), exist_ok=True)
+        with open(registry_path(work_dir, name), "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"aviso: não consegui gravar o registro local: {exc}", file=sys.stderr)
+
+    md_path = handoff_md_path(work_dir, name)
+    model_lbl = args.model or "(default)"
+    print("delegado ✅")
+    print(f"  handle:  {name}  (id={session_id})")
+    if auto_host:
+        print(f"  host:    {_host_label(auto_host)}")
+    print(f"  provedor: {provider} | modelo: {model_lbl}"
+          + (f" | effort: {effort}" if effort else ""))
+    print(f"  handoff: {md_path}")
+    print(f"  acompanhe: sf check {name}"
+          + (f" --dir {work_dir}" if work_dir != os.getcwd() else ""))
+
+
+def delegate_remote(args, env, token, base, host, name, effort, target=None, auto_info=None):
+    """Delegação p/ OUTRO host: pasta/worktree lá, manifest inline, registry aqui."""
+    # --push sem --worktree é erro
+    if args.push and not args.worktree:
+        die("--push exige --worktree (senão o push iria pra branch atual do repo remoto)")
+
+    host_id = host["host_id"]
+    label = host.get("display_name") or host.get("hostname") or host_id
+    local_dir = os.getcwd()
+    if not args.dir and target is None:
+        die(f"--dir é obrigatório com host remoto; veja `sf dirs --host {args.host}`")
+    try:
+        role = resolve_role(args.role, local_dir)
+        context = load_context_file(args.context_file, local_dir)
+        if target is None:
+            literal = _is_literal_remote_path(args.dir)
+            lookup = [] if literal else fetch_dirs(base, token, host_id, args.dir, 50)
+            target = resolve_remote_dir(args.dir, lookup, str(Path.home()))
+    except ValueError as exc:
+        die(str(exc))
+    if args.worktree and target["is_git"] is False:
+        die(f"{target['path']} não é repositório git no host {label}; --worktree exige repo")
+
+    manifest = build_manifest(args, target["path"], name, role, context)
+    parent = detect_parent()
+    payload = {
+        "name": name,
+        "display_name": name,
+        "agent_type": args.provider,
+        "work_dir": target["path"],
+        "model": args.model,
+        "effort": effort,
+        "host_id": host_id,
+    }
+    if parent:
+        payload["parent"] = parent
+    if args.worktree:
+        payload["worktree_branch"] = f"sf/{name}"
+    status, body = _request("POST", f"{base}/sessions", token=token, body=payload)
+    if status == 409:
+        die(f"já existe uma sessão ativa chamada '{name}'. Use --name outro.")
+    if status != 202:
+        die(f"criação falhou (HTTP {status}): {body}")
+
+    session = wait_running(env, token, name)
+    if session is None:
+        die(f"a sessão não subiu em {CREATE_TIMEOUT_SECONDS}s no host {label}. Confira: "
+            f"host online? --dir {target['path']} existe lá?"
+            + (f" é repo git e a branch sf/{name} ainda não existe?" if args.worktree else "")
+            + f" Depois: sf check {name}")
+
+    session_id = session["id"]
+    # Com --worktree o worker abre em <repo>-clones/<nome>: usa o caminho REAL.
+    work_dir = session.get("work_dir") or target["path"]
+    branch = f"sf/{name}" if args.worktree else None
+    task_text = build_remote_task(args.task, work_dir, name, manifest, parent, args.push, branch=branch)
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": task_text, "enter": True},
+    )
+    if status != 202:
+        die(f"envio da tarefa falhou (HTTP {status}): {body}")
+
+    reg = {
+        "id": session_id,
+        "name": name,
+        "host_id": host_id,
+        "remote": True,
+        "dir": local_dir,
+        "work_dir": work_dir,
+        "provider": args.provider,
+        "model": args.model,
+        "effort": effort,
+        "push": bool(args.push),
+        "worktree": bool(args.worktree),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **(auto_info or {}),
+    }
+    try:
+        os.makedirs(handoff_dir(local_dir), exist_ok=True)
+        with open(registry_path(local_dir, name), "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"aviso: não consegui gravar o registro local: {exc}", file=sys.stderr)
+
+    print("delegado ✅ (remoto)")
+    print(f"  handle:  {name}  (id={session_id})")
+    print(f"  host:    {label} ({host_id})")
+    print(f"  pasta:   {work_dir}" + (f"  [branch sf/{name}]" if args.worktree else ""))
+    print(f"  entrega: {'git push' if args.push else 'patch via shared-files'}")
+    print(f"  acompanhe: sf check {name}")
+
+
+# --------------------------------------------------------------------------- #
+# comando: check
+# --------------------------------------------------------------------------- #
+def pick_remote_files(items, name):
+    """Artefatos de handoff de `name`, 1 por arquivo, o mais recente (API: desc).
+
+    Só nomes exatos do contrato → o filename nunca vira path traversal local.
+    """
+    wanted = {f"{name}.md", f"{name}.handoff.json", f"{name}.patch"}
+    seen, picked = set(), []
+    for item in items:
+        filename = item.get("filename")
+        if filename in wanted and filename not in seen:
+            seen.add(filename)
+            picked.append(item)
+    return picked
+
+
+def pull_remote_handoff(env, token, reg):
+    """Baixa os artefatos do filho remoto p/ o handoff local; devolve paths salvos."""
+    base = api_base(env)
+    status, body = _request("GET", f"{base}/sessions/{reg['id']}/shared-files", token=token)
+    if status != 200:
+        print(f"aviso: não consegui listar shared-files (HTTP {status})", file=sys.stderr)
+        return []
+    dest_dir = handoff_dir(reg["dir"])
+    os.makedirs(dest_dir, exist_ok=True)
+    saved = []
+    for item in pick_remote_files(body.get("items", []), reg["name"]):
+        dest = os.path.join(dest_dir, item["filename"])
+        _download(f"{base}/shared-files/{item['id']}/download", token, dest)
+        saved.append(dest)
+    return saved
+
+
+def cmd_check(args):
+    target = args.target
+    work_dir = os.path.abspath(args.dir or os.getcwd())
+
+    # Tenta achar o registro local (por nome) pra saber dir/nome do handoff.
+    # --dir pode ser o path REMOTO do filho (não existe aqui); o registro vive
+    # no cwd de quem delegou → cai pro cwd se não achar em --dir.
+    reg = None
+    for base_dir in dict.fromkeys((work_dir, os.getcwd())):
+        for reg_file in (registry_path(base_dir, target),
+                         legacy_registry_path(base_dir, target)):
+            if not os.path.exists(reg_file):
+                continue
+            try:
+                with open(reg_file, "r", encoding="utf-8") as fh:
+                    reg = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                reg = None
+            break
+        if reg:
+            break
+
+    env = resolve_env(args)
+    token = login(env)
+    sessions = list_sessions(env, token)
+
+    session = None
+    for s in sessions:
+        if s.get("id") == target or s.get("tmux_name") == target \
+                or s.get("display_name") == target:
+            session = s
+            break
+
+    name = (reg or {}).get("name") or (session or {}).get("tmux_name") or target
+    hdir = (reg or {}).get("dir") or work_dir
+
+    # Sem registro (delegado de outro dir/sessão), mas a sessão roda em OUTRO
+    # host: o handoff só existe via shared-files → baixa pro cwd local.
+    if reg is None and session is not None:
+        sess_host = session.get("host_id")
+        if sess_host and sess_host != local_host_id():
+            hdir = os.getcwd()
+            reg = {"id": session["id"], "name": name, "remote": True, "dir": hdir}
+
+    patch_file = None
+    if reg and reg.get("remote"):
+        saved = pull_remote_handoff(env, token, reg)
+        patch_file = next((p for p in saved if p.endswith(".patch")), None)
+
+    if session is not None:
+        status = session.get("status") or "?"
+        activity = session.get("activity") or "-"
+        prov = session.get("agent_type") or (reg or {}).get("provider") or "?"
+        print(f"[{name}] {prov} | status={status} | activity={activity}")
+    else:
+        print(f"[{name}] sessão não encontrada na lista "
+              "(pode ter sido encerrada/purgada)")
+
+    # dica do patch ANTES da validação JSON
+    if patch_file:
+        patch_size = os.path.getsize(patch_file) if os.path.exists(patch_file) else 0
+        if patch_size == 0:
+            print("patch vazio (filho não commitou mudanças)")
+        else:
+            print(f"patch: {patch_file}  (aplique com: git am {patch_file})")
+
+    json_path = handoff_json_path(hdir, name)
+    if os.path.exists(json_path):
+        try:
+            handoff = validate_handoff(json.loads(Path(json_path).read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"handoff JSON inválido: {exc}")
+            return
+        if args.summary:
+            print(f"status={handoff['status']}")
+            print(f"summary={handoff['summary']}")
+            for key in ("diff", "tests", "blockers", "questions"):
+                print(f"{key}={'; '.join(handoff[key]) or '-'}")
+            return
+    elif args.summary:
+        print("ainda rodando (sem handoff JSON ainda)")
+        return
+
+    md_path = handoff_md_path(hdir, name)
+    if os.path.exists(md_path):
+        print(f"--- handoff ({md_path}) ---")
+        try:
+            sys.stdout.write(Path(md_path).read_text(encoding="utf-8"))
+            sys.stdout.write("\n")
+        except OSError as exc:
+            print(f"(não consegui ler o handoff: {exc})")
+    else:
+        print("ainda rodando (sem handoff ainda)")
+
+
+# --------------------------------------------------------------------------- #
+# comando: metrics
+# --------------------------------------------------------------------------- #
+def cmd_metrics(args):
+    entries = read_metrics(os.path.abspath(args.dir or os.getcwd()))
+    totals = {key: sum(item[key] for item in entries) for key in ("task_bytes", "context_bytes", "manifest_bytes", "handoff_bytes")}
+    failed = False
+    for item in entries:
+        flags = ",".join(item["violations"]) or "-"
+        print(
+            f"{item['name']} role={item['role']} status={item['status']} "
+            f"task_bytes={item['task_bytes']} context_bytes={item['context_bytes']} "
+            f"manifest_bytes={item['manifest_bytes']} handoff_bytes={item['handoff_bytes']} flags={flags}"
+        )
+        failed |= bool(item["violations"]) or item["status"] == "invalid"
+    print("total " + " ".join(f"{key}={value}" for key, value in totals.items()))
+    if args.strict and failed:
+        raise SystemExit(1)
+
+
+# --------------------------------------------------------------------------- #
+# comando: dirs
+# --------------------------------------------------------------------------- #
+def cmd_dirs(args):
+    """Lista pastas indexadas de um host (pra escolher o `--dir` remoto)."""
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    try:
+        host = resolve_host(fetch_workers(base, token), args.host)
+    except ValueError as exc:
+        die(str(exc))
+    items = fetch_dirs(base, token, host["host_id"], args.term or "", args.limit)
+    if not items:
+        print("(nenhuma pasta indexada casando)")
+        return
+    for item in items:
+        print(item["path"] + ("  [git]" if item.get("is_git") else ""))
+
+
+# --------------------------------------------------------------------------- #
+# comando: list
+# --------------------------------------------------------------------------- #
+def cmd_list(args):
+    env = resolve_env(args)
+    token = login(env)
+    sessions = list_sessions(env, token)
+    if not sessions:
+        print("(nenhuma sessão ativa)")
+        return
+    for s in sessions:
+        name = s.get("tmux_name") or s.get("display_name") or s.get("id")
+        status = s.get("status") or "?"
+        agent = s.get("agent_type") or "?"
+        host = s.get("host_id") or "-"
+        print(f"{name}\tagent={agent}\tstatus={status}\thost={host}\tid={s.get('id')}")
+
+
+# --------------------------------------------------------------------------- #
+# comando: hosts
+# --------------------------------------------------------------------------- #
+def cmd_hosts(args):
+    """Lista os workers/hosts do SessionFlow (multi-host, AD-011).
+
+    Mostra online/offline, hostname, display_name, emoji, host_id e
+    capabilities — é de onde se tira o `--host <host_id|nome|emoji>` do
+    `sf delegate`. O `--host` também aceita nome/hostname/emoji (resolve
+    via `resolve_host`); este comando só lista pra você saber o que existe.
+    """
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    workers = fetch_workers(base, token)
+    if not workers:
+        print("(nenhum worker registrado)")
+        return
+    for w in workers:
+        online = "🟢" if w.get("online") else "🔴"
+        label = _host_label(w)
+        host_id = w.get("host_id") or "-"
+        caps = (w.get("capabilities") or {})
+        cap_txt = ",".join(k for k, v in caps.items() if v) if isinstance(caps, dict) else ""
+        line = f"{online} {label}\thost_id={host_id}\tcaps={cap_txt or '-'}"
+        m = w.get("metrics") or {}
+        if m.get("cpu_pct") is not None and m.get("mem_avail_gb") is not None:
+            cpu = m["cpu_pct"]
+            total = m.get("mem_total_gb") or 0.1
+            used_ram = max(0, total - m["mem_avail_gb"])
+            ram_pct = (used_ram / total) * 100 if total > 1 else 0
+
+            line += f"\tcpu {_progress_bar(cpu)} {cpu:.0f}%"
+            total_txt = f"/{total:.1f}G" if m.get("mem_total_gb") else "G"
+            line += f"  ram {_progress_bar(ram_pct)} {used_ram:.1f}{total_txt} uso ({m['mem_avail_gb']:.1f}G livre)"
+
+        hw = w.get("hardware") or {}  # worker antigo publica hardware=null
+        disks = hw.get("disks") or []
+        if disks:
+            # Pega o disco raiz, ou o maior
+            main_disk = next((d for d in disks if d.get("mount") == "/"), sorted(disks, key=lambda d: d.get("total_gb", 0), reverse=True)[0])
+            disk_total = main_disk.get("total_gb", 0.1)
+            disk_used = main_disk.get("used_gb", 0)
+            disk_pct = (disk_used / disk_total) * 100 if disk_total > 1 else 0
+            line += f"  disk {_progress_bar(disk_pct)} {disk_used:.0f}/{disk_total:.0f}G"
+
+        gpu_name = hw.get("gpu")
+        if gpu_name:
+            line += f"  gpu [{gpu_name}]"
+            vram_total = m.get("vram_total_gb")
+            vram_used = m.get("vram_used_gb")
+            if vram_total is not None and vram_used is not None:
+                vram_pct = (vram_used / vram_total) * 100 if vram_total > 0 else 0
+                line += f" vram {_progress_bar(vram_pct)} {vram_used:.1f}/{vram_total:.1f}G"
+
+        agents = [k for k, v in (w.get("agents") or {}).items() if v]
+        if agents:
+            line += f"\tagents={','.join(agents)}"
+        print(line)
+
+
+# --------------------------------------------------------------------------- #
+# comando: start / stop (Controle de Máquinas Colab/Remotas)
+# --------------------------------------------------------------------------- #
+def _colab_info(w):
+    label = f"{w.get('display_name') or ''} {w.get('hostname') or ''} {w.get('host_id') or ''}".lower()
+    is_colab2 = "colab 2" in label or "colab2" in label or "02151543" in label
+    authuser = "1" if is_colab2 else "0"
+    is_gpu = "gpu" in label or "t4" in label or (w.get("hardware") or {}).get("gpu")
+    alias = "colab2-pro" if (is_colab2 and is_gpu) else ("colab2-cpu" if is_colab2 else ("colab1-pro" if is_gpu else "colab1-cpu"))
+    url = f"https://colab.research.google.com/drive/1MLzqvoeSg_JeMywj4HzvyRKTmssieZH5?authuser={authuser}"
+    return {
+        "is_colab": "colab" in label,
+        "authuser": authuser,
+        "is_gpu": bool(is_gpu),
+        "alias": alias,
+        "url": url,
+    }
+
+
+def cmd_start(args):
+    """Inicia / liga uma máquina Colab ou worker remoto."""
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    workers = fetch_workers(base, token)
+    host = resolve_host(workers, args.host, allow_offline=True)
+    if not host:
+        die(f"Host '{args.host}' não encontrado. Use 'sf hosts' para ver a lista.")
+
+    host_id = host.get("host_id")
+    label = _host_label(host)
+    info = _colab_info(host)
+    print(f"▶️  Iniciando {label}...")
+
+    # Notifica API para registrar intenção de start
+    _, body = _request("POST", f"{base}/workers/{host_id}/start", token=token)
+    colab_url = body.get("colab_url") if isinstance(body, dict) else info["url"]
+
+    # Abre a URL no navegador se estiver no macOS
+    if sys.platform == "darwin" and colab_url:
+        print(f"🔗 Abrindo notebook no Google Colab: {colab_url}")
+        subprocess.run(["open", colab_url], check=False)
+        print("💡 No Google Colab:")
+        print("   1. Verifique se o Tipo de Ambiente é " + ("GPU T4" if info["is_gpu"] else "CPU Padrão"))
+        print("   2. Clique em 'Conectar' e execute as células do Worker.")
+        print("   3. Assim que o túnel bore subir, a máquina ficará 🟢 online no 'sf hosts'.")
+    else:
+        print(f"🔗 URL do Colab: {colab_url}")
+
+
+def cmd_stop(args):
+    """Desliga / para uma máquina Colab ou worker remoto."""
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    workers = fetch_workers(base, token)
+    host = resolve_host(workers, args.host, allow_offline=True)
+    if not host:
+        die(f"Host '{args.host}' não encontrado. Use 'sf hosts' para ver a lista.")
+
+    host_id = host.get("host_id")
+    label = _host_label(host)
+    info = _colab_info(host)
+    alias = info["alias"]
+    print(f"⏹️  Desligando {label}...")
+
+    # Notifica a API para marcar offline imediatamente
+    _request("POST", f"{base}/workers/{host_id}/stop", token=token)
+
+    # Mata processos remotos e túneis locais se SSH estiver configurado
+    if alias:
+        subprocess.run(["ssh", "-o", "ConnectTimeout=3", alias, "pkill -9 -f bore; pkill -9 -f sessionflow_worker"], capture_output=True, check=False)
+        subprocess.run(["pkill", "-f", f"ssh.*{alias}"], capture_output=True, check=False)
+        subprocess.run(["pkill", "-f", "ssh.*colab-worker"], capture_output=True, check=False)
+
+    print(f"🛑 {label} desligado com sucesso.")
+
+
+# --------------------------------------------------------------------------- #
+# comando: send
+# --------------------------------------------------------------------------- #
+def cmd_send(args):
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    sessions = list_sessions(env, token)
+
+    session = resolve_session(sessions, args.target)
+    if session is None:
+        die(f"nenhuma sessão encontrada casando com '{args.target}'. "
+            "Use 'sf list' para ver os nomes/ids ativos.")
+
+    session_id = session["id"]
+    name = session.get("tmux_name") or session.get("display_name") or session_id
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": args.text, "enter": not args.no_enter},
+    )
+    if status != 202:
+        die(f"envio falhou (HTTP {status}): {body}")
+
+    print(f"enviado ✅ -> [{name}] (id={session_id})")
+
+
+# --------------------------------------------------------------------------- #
+# comando: move
+# --------------------------------------------------------------------------- #
+MOVE_TIMEOUT_SECONDS = 180
+MOVE_POLL_SECONDS = 3
+
+
+def _short_host(w):
+    return f"{w.get('emoji') or ''} {w.get('display_name') or w.get('hostname') or w.get('host_id')}".strip()
+
+
+def cmd_move(args):
+    """Move uma sessão claude JÁ iniciada pra outro host, retomando a conversa.
+
+    `POST /sessions/{id}/move` e polling do doc até `moving` sumir com o
+    `host_id` do destino (sucesso) ou `moving.phase == "failed"` (erro).
+    """
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+
+    session = resolve_session(list_sessions(env, token), args.target)
+    if session is None:
+        die(f"nenhuma sessão encontrada casando com '{args.target}'. "
+            "Use 'sf list' para ver os nomes/ids ativos.")
+    session_id = session["id"]
+    current = session.get("host_id")
+
+    workers = fetch_workers(base, token)
+    if args.host.lower() == "auto":
+        # Mesmo ranking do delegate, sem o host atual; a pasta (basename do
+        # work_dir) tem que estar indexada no destino — mesma regra da API.
+        dir_ok, _ = auto_dir_checker(base, token, None, session.get("work_dir") or "")
+        chosen, _, rejected, _ = pick_host([w for w in workers if w.get("host_id") != current],
+                                            "claude", local_host_id(), dir_ok)
+        summary = _auto_summary(chosen, rejected)
+        if chosen is None:
+            die("--host auto: nenhum host serve. " + " ".join(summary))
+        print("\n".join(summary))
+        host = chosen
+    else:
+        try:
+            host = resolve_host(workers, args.host)
+        except ValueError as exc:
+            die(str(exc))
+    target = host["host_id"]
+
+    status, body = _request("POST", f"{base}/sessions/{session_id}/move",
+                            token=token, body={"target_host_id": target})
+    if status != 202:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        die(detail if detail and 400 <= status < 500 else f"move falhou (HTTP {status}): {body}")
+    name = session.get("tmux_name") or session.get("display_name") or session_id
+    print(f"movendo [{name}] para {_short_host(host)}…")
+
+    for _ in range(MOVE_TIMEOUT_SECONDS // MOVE_POLL_SECONDS):
+        time.sleep(MOVE_POLL_SECONDS)
+        status, doc = _request("GET", f"{base}/sessions/{session_id}", token=token)
+        if status != 200:
+            die(f"GET /sessions/{session_id} falhou (HTTP {status}): {doc}")
+        moving = doc.get("moving")
+        if moving and moving.get("phase") == "failed":
+            die(moving.get("error") or "falha ao mover a sessão")
+        if not moving:
+            if doc.get("host_id") == target:
+                print(f"movida para {_short_host(host)} ✅")
+                return
+            # `moving` foi limpo sem trocar de host (ex.: Retomar no meio).
+            die("movimentação interrompida — a sessão continua no host de origem")
+    die(f"a sessão não terminou de mover em {MOVE_TIMEOUT_SECONDS}s; "
+        f"acompanhe com 'sf list' ou pelo app")
+
+
+# --------------------------------------------------------------------------- #
+# comando: request-context
+# --------------------------------------------------------------------------- #
+def cmd_request_context(args):
+    """Pede ao orquestrador somente fato/referência pontual via canal existente."""
+    args.text = (
+        "PEDIDO PONTUAL DE CONTEXTO — responda apenas com fatos, decisões ou "
+        "paths de artefatos; não envie transcript/janela inteira.\n"
+        f"Pergunta: {args.question.strip()}"
+    )
+    args.no_enter = False
+    cmd_send(args)
+
+
+# --------------------------------------------------------------------------- #
+# comando: share
+# --------------------------------------------------------------------------- #
+def cmd_share(args):
+    """Sobe um arquivo do disco pra ficar disponível no app (inclusive celular).
+
+    Resolve a sessão de destino em duas etapas: `--to <alvo>` explícito, ou
+    (default) a PRÓPRIA sessão de onde o comando roda (via `detect_parent()`,
+    que lê `$TMUX`) — o caso de uso comum é o agente compartilhar um arquivo
+    que ele mesmo acabou de gerar, na sessão em que já está.
+    """
+    path = os.path.abspath(os.path.expanduser(args.path))
+    if not os.path.isfile(path):
+        die(f"arquivo não encontrado: {path}")
+
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    sessions = list_sessions(env, token)
+
+    target_name = args.to or detect_parent()
+    if not target_name:
+        cwd = os.path.realpath(os.getcwd())
+        for s in sessions:
+            swd = os.path.realpath(s.get("work_dir") or "")
+            if swd and swd != "/" and (cwd == swd or cwd.startswith(swd + "/") or swd.startswith(cwd + "/")):
+                target_name = s.get("tmux_name") or s.get("id")
+                break
+    if not target_name:
+        die("não rodando dentro de um tmux do SessionFlow e nenhum --to informado; "
+            "especifique a sessão com --to <nome-ou-id>")
+
+    session = resolve_session(sessions, target_name)
+    if session is None:
+        die(f"nenhuma sessão encontrada casando com '{target_name}'. "
+            "Use 'sf list' para ver os nomes/ids ativos.")
+
+    session_id = session["id"]
+    name = session.get("tmux_name") or session.get("display_name") or session_id
+    status, body = _upload_file(
+        f"{base}/sessions/{session_id}/shared-files", token, path
+    )
+    if status != 201:
+        die(f"upload falhou (HTTP {status}): {body}")
+
+    size_kb = body.get("size", 0) / 1024
+    print(f"compartilhado ✅ -> [{name}] {body.get('filename')} ({size_kb:.1f}KB)")
+    print("  disponível no app (botão de arquivos na tela da sessão), inclusive fora do Mac.")
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="sf",
+        description="Delega tarefas pesadas a workers filhos do SessionFlow "
+                    "em outros provedores e colhe só o resultado (handoff).",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    d = sub.add_parser(
+        "delegate",
+        help="cria um worker filho (outro provedor), manda a tarefa e ele "
+             "escreve o resultado num arquivo de handoff.",
+        description="Ideia: use um provedor MAIS BARATO e um MODELO "
+                    "INTERMEDIÁRIO (--model) para economizar token. O filho "
+                    "roda autônomo (yolo). NÃO acompanhe o stream; use "
+                    "'sf check' de vez em quando e leia só o handoff.",
+    )
+    d.add_argument("--provider", required=True, choices=PROVIDERS,
+                   help="provedor do worker filho.")
+    d.add_argument("--model", default=None,
+                   help="id do modelo (OMITA para usar o default do provedor; "
+                        "prefira um modelo intermediário p/ economizar).")
+    d.add_argument("--effort", default=None,
+                   help="nível de esforço (low/medium/high; ignorado no gemini).")
+    d.add_argument("--dir", default=None,
+                   help="work_dir do filho (default: diretório atual).")
+    d.add_argument("--task", required=True, help="texto da tarefa a delegar.")
+    d.add_argument("--role", default=None,
+                   help="papel: resolve persona global e overlay local por referência.")
+    d.add_argument("--context-file", default=None,
+                   help="JSON de referências/fatos/decisões; nunca transcript.")
+    d.add_argument("--name", default=None,
+                   help="nome do worker (default: slug da tarefa + sufixo).")
+    d.add_argument("--host", default=None,
+                   help="host de destino (host_id, nome, hostname, emoji ou trecho) "
+                        "ou 'auto' (escolhe o mais livre com o provider e a pasta). "
+                        "Remoto: --dir é caminho/nome NAQUELE host (veja 'sf dirs').")
+    d.add_argument("--worktree", action="store_true",
+                   help="(remoto) roda num worktree novo na branch sf/<nome>.")
+    d.add_argument("--push", action="store_true",
+                   help="(remoto) filho faz git push da branch; sem isso, devolve .patch.")
+    _REMOTE_HELP = (
+        "controla uma instância SessionFlow de OUTRO amigo/deploy em vez da "
+        "local — credenciais em ~/.claude/secrets/sf-remotes.env "
+        "(<ALIAS>_BASE_URL/_EMAIL/_PASSWORD), ex.: --remote heverton."
+    )
+    d.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    d.set_defaults(func=cmd_delegate)
+
+    c = sub.add_parser(
+        "check",
+        help="mostra status/activity do worker e imprime o handoff se existir.",
+    )
+    c.add_argument("target", help="nome (tmux_name) ou id da sessão.")
+    c.add_argument("--dir", default=None,
+                   help="work_dir onde está o handoff (default: diretório atual).")
+    c.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    c.add_argument("--summary", action="store_true",
+                   help="imprime somente handoff JSON compacto validado.")
+    c.set_defaults(func=cmd_check)
+
+    r = sub.add_parser(
+        "request-context",
+        help="pede fato/path pontual ao orquestrador sem puxar transcript.",
+    )
+    r.add_argument("target", help="sessão do orquestrador (nome ou id).")
+    r.add_argument("question", help="pergunta curta, específica.")
+    r.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    r.set_defaults(func=cmd_request_context)
+
+    mt = sub.add_parser(
+        "metrics",
+        help="mede bytes de manifests/handoffs locais; sem API ou transcript.",
+    )
+    mt.add_argument("--dir", default=None,
+                    help="work_dir contendo .sessionflow/handoff (default: diretório atual).")
+    mt.add_argument("--strict", action="store_true",
+                    help="falha se orçamento exceder ou JSON/contrato for inválido.")
+    mt.set_defaults(func=cmd_metrics)
+
+    ds = sub.add_parser(
+        "dirs",
+        help="lista pastas indexadas de um host (use p/ escolher --dir remoto).",
+    )
+    ds.add_argument("--host", required=True,
+                    help="host: host_id, nome, hostname, emoji ou trecho único.")
+    ds.add_argument("term", nargs="?", default="", help="trecho do caminho/nome.")
+    ds.add_argument("--limit", type=int, default=20, help="máx. de pastas (≤50).")
+    ds.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    ds.set_defaults(func=cmd_dirs)
+
+    l = sub.add_parser(
+        "list",
+        help="lista as sessões ativas (nome, agente, status, host, id) — "
+             "use pra descobrir o alvo do 'sf send'.",
+    )
+    l.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    l.set_defaults(func=cmd_list)
+
+    hs = sub.add_parser(
+        "hosts",
+        help="lista os workers/hosts ativos (online/offline, hostname, "
+             "host_id, capabilities) — de onde se tira o --host do delegate.",
+    )
+    hs.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    hs.set_defaults(func=cmd_hosts)
+
+    st = sub.add_parser(
+        "start",
+        help="liga/inicia uma máquina Colab ou worker remoto.",
+    )
+    st.add_argument("host", help="host: host_id, nome, hostname, emoji ou alias (ex: colab1-cpu, colab2-pro).")
+    st.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    st.set_defaults(func=cmd_start)
+
+    sp = sub.add_parser(
+        "stop",
+        help="desliga/para uma máquina Colab ou worker remoto.",
+    )
+    sp.add_argument("host", help="host: host_id, nome, hostname, emoji ou alias (ex: colab1-cpu, colab2-pro).")
+    sp.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    sp.set_defaults(func=cmd_stop)
+
+    m = sub.add_parser(
+        "send",
+        help="manda uma mensagem/instrução pro terminal de uma sessão JÁ "
+             "EXISTENTE (irmã), sem precisar criar sessão nem descobrir a API.",
+    )
+    m.add_argument("target", help="nome (tmux_name/display_name) ou id da sessão-alvo.")
+    m.add_argument("text", help="texto a enviar pro terminal da sessão-alvo.")
+    m.add_argument("--no-enter", action="store_true",
+                   help="não aperta Enter depois do texto (default: aperta).")
+    m.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    m.set_defaults(func=cmd_send)
+
+    mv = sub.add_parser(
+        "move",
+        help="move uma sessão claude já iniciada pra outro host, retomando a "
+             "mesma conversa (exige repo commitado e com push na origem).",
+    )
+    mv.add_argument("target", help="nome (tmux_name/display_name) ou id da sessão.")
+    mv.add_argument("--host", required=True,
+                    help="host de destino (host_id, nome, hostname, emoji ou trecho) "
+                         "ou 'auto' (o mais livre com claude e a pasta, fora o atual).")
+    mv.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    mv.set_defaults(func=cmd_move)
+
+    h = sub.add_parser(
+        "share",
+        help="sobe um arquivo do disco pra ficar disponível no app "
+             "(inclusive celular) — ex: uma imagem/PDF que você acabou de gerar.",
+    )
+    h.add_argument("path", help="caminho do arquivo (aceita ~ e relativo).")
+    h.add_argument("--to", default=None,
+                   help="sessão-alvo (nome ou id). Default: a própria sessão "
+                        "de onde o comando roda (detecta via $TMUX).")
+    h.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    h.set_defaults(func=cmd_share)
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

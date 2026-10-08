@@ -1,0 +1,133 @@
+/* ============================================================
+   Prata Digital — Color tokens
+   Base palette extracted from the admin codebase
+   (_statementVariables.scss + theme.json default theme)
+   ============================================================ */
+
+:root {
+  /* ---- Brand: Prata Green ----
+     The signature mint/teal. 500 is the bright brand mark colour
+     (theme primary); 600 is the action/“is-success” button green. */
+  --prata-green-50:  #E7F6F3;
+  --prata-green-100: #CDFEEB;
+  --prata-green-300: #63F2CA;
+  --prata-green-500: #00E4B4; /* brand primary */
+  --prata-green-600: #00A482; /* primary action */
+  --prata-green-700: #00836C;
+  --prata-green-800: #006756;
+
+  /* ---- Ink / Navy ----
+     The dark brand colour: wordmark, sidebar, headings. */
+  --navy-900: #1A1C32; /* logo wordmark */
+  --navy-800: #1A1E39; /* theme secondary */
+  --navy-700: #374178;
+
+  /* ---- Stone (warm neutral) ----
+     Primary text + border ramp across the product. */
+  --stone-50:  #FAFAF9;
+  --stone-100: #F5F5F4;
+  --stone-200: #E7E5E4;
+  --stone-300: #D6D3D1;
+  --stone-400: #A8A29E;
+  --stone-500: #78716C;
+  --stone-700: #44403C;
+  --stone-900: #1C1917;
+  --stone-950: #0C0A09;
+
+  /* ---- Gray (cool neutral) ----
+     Inputs, statements, table chrome. */
+  --gray-50:  #FAFAF9;
+  --gray-100: #F3F4F6;
+  --gray-200: #E5E7EB;
+  --gray-300: #D1D5DB;
+  --gray-400: #9CA3AF;
+  --gray-500: #6B7280;
+  --gray-600: #4B5563;
+  --gray-700: #374151;
+  --gray-900: #111827;
+  --gray-950: #030712;
+
+  /* ---- Slate (table / panel tints) ---- */
+  --slate-50:  #F8FAFC;
+  --slate-100: #F1F5F9;
+  --slate-200: #E2E8F0;
+
+  /* ---- Indigo / Blue (links, info) ---- */
+  --blue-100: #E3EEFC;
+  --blue-500: #3B82F6;
+  --blue-600: #5666D5; /* link / primary blue */
+  --blue-700: #4754BB;
+  --blue-900: #374178;
+  --blue-950: #1A1C32;
+
+  /* ---- Red (danger) ---- */
+  --red-50:  #FEF2F2;
+  --red-100: #FEE2E2;
+  --red-200: #FECACA;
+  --red-600: #DC2626;
+  --red-700: #B91C1C;
+
+  /* ---- Green (positive / statements) ---- */
+  --green-50:  #F0FDF4;
+  --green-200: #BBF7D0;
+  --green-500: #22C55E;
+  --green-600: #16A34A;
+
+  /* ---- Orange / Amber / Yellow ---- */
+  --orange-100: #FFEDD5;
+  --orange-500: #F97316;
+  --orange-600: #EA580C;
+  --amber-100:  #FEF3C7;
+  --yellow-50:  #FEFCE8;
+  --coin-gold:  #EAB308; /* Prata coin (P$) */
+
+  /* ---- Livelo partner (rewards) ---- */
+  --livelo-pink-light: #F8EDF4;
+  --livelo-pink:       #DF0979;
+
+  /* ============================================================
+     SEMANTIC ALIASES — use these in product UI
+     ============================================================ */
+
+  /* Theme (overridable per white-label tenant via the theme API) */
+  --color-primary:   var(--prata-green-500);
+  --color-primary-rgb: 0, 228, 180;
+  --color-secondary: var(--navy-800);
+  --color-light:     #F8F8F8;
+
+  /* Brand action green (buttons, active states, success) */
+  --action-primary:        var(--prata-green-600);
+  --action-primary-hover:  var(--prata-green-700);
+  --action-primary-soft:   var(--prata-green-100);
+
+  /* Text */
+  --text-strong: var(--stone-900);
+  --text-body:   var(--stone-700);
+  --text-muted:  var(--stone-500);
+  --text-subtle: var(--gray-500);
+  --text-link:   var(--blue-600);
+  --text-on-dark: #FFFFFF;
+  --text-on-primary: var(--stone-900);
+
+  /* Surfaces */
+  --surface-page:   #FFFFFF;
+  --surface-subtle: var(--stone-50);
+  --surface-card:   #FFFFFF;
+  --surface-sidebar: var(--color-primary);
+  --surface-inverse: var(--navy-800);
+
+  /* Borders */
+  --border-subtle:  var(--stone-100);
+  --border-default: var(--gray-300);
+  --border-strong:  var(--stone-300);
+
+  /* Feedback (text/bg pairs match the .tag system) */
+  --success-fg: #065F46;  --success-bg: #D1FAE5;
+  --info-fg:    #1E40AF;  --info-bg:    #DBEAFE;
+  --warning-fg: #92400E;  --warning-bg: #FEF3C7;
+  --danger-fg:  #991B1B;  --danger-bg:  #FEE2E2;
+  --hold-fg:    #5B21B6;  --hold-bg:    #EDE9FE;
+  --neutral-fg: #182A4E;  --neutral-bg: #F1F2F4;
+
+  --focus-ring: rgba(0, 228, 180, 0.45);
+}

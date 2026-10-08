@@ -1,0 +1,33 @@
+/* ============================================================
+   Prata Digital — Typography tokens
+   Body/UI: Inter · Display: Unbounded · Legacy: Montserrat
+   ============================================================ */
+
+:root {
+  /* Families */
+  --font-sans:    "Inter", "Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Unbounded", "Inter", sans-serif; /* geometric brand display */
+  --font-legacy:  "Montserrat", "Inter", sans-serif; /* older marketing surfaces */
+
+  /* Weights (Inter axis used across the product) */
+  --fw-regular:  400; /* @kind font */
+  --fw-medium:   500; /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+  --fw-bold:     700; /* @kind font */
+  --fw-extra:    800; /* @kind font */
+
+  /* Type scale — size / line-height pairs (matches _textVariables.scss) */
+  --text-xs:   12px;  --leading-xs:   16px;  /* .font-sm — captions, tags */
+  --text-sm:   14px;  --leading-sm:   20px;  /* base UI size */
+  --text-base: 16px;  --leading-base: 24px;  /* .font-md — inputs, body */
+  --text-md:   18px;  --leading-md:   24px;  /* .font-lg */
+  --text-lg:   20px;  --leading-lg:   25px;  /* .font-xl */
+  --text-xl:   26px;  --leading-xl:   39px;  /* .font-ul — section heads */
+  --text-2xl:  32px;  --leading-2xl:  40px;  /* page titles */
+  --text-3xl:  44px;  --leading-3xl:  52px;  /* hero */
+
+  /* Letter spacing */
+  --tracking-tight: -0.02em; /* display headings */
+  --tracking-normal: 0;
+  --tracking-wide:  0.04em;  /* eyebrows / uppercase labels */
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+.angular
+.git
+.vscode
+*.log
+npm-debug.log*
+.DS_Store
+README.md

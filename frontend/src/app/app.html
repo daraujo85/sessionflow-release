@@ -1,0 +1,84 @@
+@if (updating()) {
+  <div class="sf-update-toast" role="status" aria-live="polite">
+    <span class="sf-update-spinner" aria-hidden="true"></span>
+    Nova versão — atualizando…
+  </div>
+}
+
+<!-- Toast global de notificação de OUTRA sessão — clicável, leva direto pra
+     ela de qualquer tela do app (Home, dentro de outra sessão, Perfil…). -->
+@if (sse.globalToast(); as gt) {
+  <button type="button" class="sf-global-toast" (click)="openToastSession(gt.sessionTmux)">
+    <span class="sf-gt-title">{{ gt.title }}</span>
+    @if (gt.desc) {
+      <span class="sf-gt-desc">{{ gt.desc }}</span>
+    }
+  </button>
+}
+
+@if (sessionClone.errorToast(); as cloneErr) {
+  <div class="sf-global-toast sf-global-toast--error" role="alert">
+    {{ cloneErr }}
+  </div>
+}
+
+<div class="sf-shell" [class.sf-shell--overlay]="isOverlay()" [class.sf-shell--login]="isLogin()"
+     [class.sf-shell--nav-collapsed]="navCollapsed()">
+  <!-- Sem header global: cada tela renderiza o próprio topo (logo/título/sino),
+       como no mockup. Evita sino/marca duplicados. -->
+  <main class="sf-content" [@pageFade]="routeKey()">
+    <router-outlet />
+  </main>
+
+  @if (showFab()) {
+    <a class="sf-fab" routerLink="/criar" aria-label="Criar sessão">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </a>
+  }
+
+  @if (!isOverlay()) {
+    <nav class="sf-nav" aria-label="Navegação principal">
+      <!-- Recolher/expandir o menu (só aparece no desktop, onde a nav é sidebar). -->
+      <button
+        type="button"
+        class="sf-nav-collapse"
+        (click)="toggleNav()"
+        [attr.aria-pressed]="navCollapsed()"
+        [attr.aria-label]="navCollapsed() ? 'Expandir menu' : 'Recolher menu'"
+        [title]="navCollapsed() ? 'Expandir menu' : 'Recolher menu'"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path [attr.d]="navCollapsed() ? 'm9 18 6-6-6-6' : 'm15 18-6-6 6-6'" />
+        </svg>
+      </button>
+      @for (item of navItems; track item.path) {
+        <a
+          class="sf-nav-item"
+          [routerLink]="'/' + item.path"
+          routerLinkActive="is-active"
+          [attr.aria-label]="item.label"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path [attr.d]="item.d" />
+          </svg>
+          <span class="sf-nav-label">{{ item.label }}</span>
+        </a>
+      }
+      @if (!navCollapsed() && ollamaByHost().length > 0) {
+        <div class="sf-nav-ollama">
+          @for (h of ollamaByHost(); track h.hostId) {
+            <div class="sf-nav-ollama-row">
+              <span class="sf-nav-ollama-label">{{ h.label }}</span>
+              <span class="sf-nav-ollama-model">{{ h.activeModel ?? 'ocioso' }}</span>
+            </div>
+          }
+        </div>
+      }
+    </nav>
+  }
+</div>

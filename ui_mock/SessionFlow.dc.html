@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    @keyframes sf-pulse-green { 0%{box-shadow:0 0 0 0 rgba(0,228,180,.5)} 70%{box-shadow:0 0 0 7px rgba(0,228,180,0)} 100%{box-shadow:0 0 0 0 rgba(0,228,180,0)} }
+    @keyframes sf-pulse-amber { 0%{box-shadow:0 0 0 0 rgba(251,191,36,.55)} 70%{box-shadow:0 0 0 7px rgba(251,191,36,0)} 100%{box-shadow:0 0 0 0 rgba(251,191,36,0)} }
+    @keyframes sf-fade { from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:translateY(0)} }
+    @keyframes sf-rec { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.22);opacity:.55} }
+    @keyframes sf-cursor { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+    .sf-scroll::-webkit-scrollbar{ width:0; height:0 }
+    .sf-screen{ animation: sf-fade .26s ease both }
+    input.sf-in::placeholder, textarea.sf-in::placeholder{ color:#5A6072 }
+    input.sf-in:focus, textarea.sf-in:focus{ outline:none; border-color:#00A482 }
+  </style>
+</helmet>
+
+<div style="min-height:100%; display:flex; align-items:center; justify-content:center; background:radial-gradient(120% 90% at 50% 0%, #0e2620 0%, #0a0e0c 55%, #060807 100%); padding:32px 16px; font-family:'Inter',system-ui,sans-serif;">
+
+  <div style="position:relative; width:390px; height:844px; background:#0a0a0d; border-radius:54px; padding:13px; box-shadow:0 0 0 2px #1c1c22, 0 40px 90px -20px rgba(0,0,0,.8), 0 0 0 11px #000; flex:none;">
+
+    <div style="position:relative; width:100%; height:100%; background:#0E1113; border-radius:42px; overflow:hidden; display:flex; flex-direction:column;">
+
+      <!-- status bar -->
+      <div style="position:relative; z-index:30; height:52px; flex:none; display:flex; align-items:flex-end; justify-content:space-between; padding:0 30px 7px; color:#F4F5F7; font-size:15px; font-weight:600; letter-spacing:.2px;">
+        <span>21:42</span>
+        <div style="position:absolute; left:50%; top:9px; transform:translateX(-50%); width:108px; height:30px; background:#000; border-radius:18px;"></div>
+        <div style="display:flex; align-items:center; gap:7px;">
+          <svg width="18" height="12" viewBox="0 0 18 12" fill="#F4F5F7"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="5" y="4.5" width="3" height="7.5" rx="1"/><rect x="10" y="2" width="3" height="10" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="#F4F5F7"><path d="M8.5 2.4c2.2 0 4.2.8 5.7 2.2l1.3-1.4A10 10 0 0 0 8.5.5 10 10 0 0 0 1 3.2l1.3 1.4A8 8 0 0 1 8.5 2.4Zm0 3.4c1.3 0 2.5.5 3.4 1.3l1.3-1.4a7 7 0 0 0-9.4 0l1.3 1.4a4.8 4.8 0 0 1 3.4-1.3Zm0 3.3 1.9 2-1.9 0-1.9 0 1.9-2Z"/></svg>
+          <svg width="26" height="13" viewBox="0 0 26 13" fill="none"><rect x="1" y="1" width="21" height="11" rx="3" stroke="#F4F5F7" stroke-opacity=".5"/><rect x="3" y="3" width="16" height="7" rx="1.5" fill="#F4F5F7"/><rect x="23" y="4" width="2" height="5" rx="1" fill="#F4F5F7" fill-opacity=".5"/></svg>
+        </div>
+      </div>
+
+      <div style="position:relative; flex:1; min-height:0;">
+
+        <!-- ============ TAB SCREENS ============ -->
+        <sc-if value="{{ showTabs }}" hint-placeholder-val="{{ true }}">
+        <div class="sf-scroll" style="position:absolute; inset:0; overflow-y:auto; -webkit-overflow-scrolling:touch;">
+
+          <!-- INÍCIO -->
+          <sc-if value="{{ showInicio }}" hint-placeholder-val="{{ true }}">
+          <div class="sf-screen" style="padding:6px 20px 120px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0 18px;">
+              <div style="display:flex; align-items:center; gap:11px;">
+                <div style="width:36px; height:36px; border-radius:11px; background:linear-gradient(150deg,#2CECC4,#00A482); display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px -4px rgba(0,200,160,.55);">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#06231d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6"/></svg>
+                </div>
+                <span style="font-size:20px; font-weight:700; color:#F4F5F7; letter-spacing:-.3px;">SessionFlow</span>
+              </div>
+              <div onClick="{{ openNotifications }}" style="position:relative; width:42px; height:42px; border-radius:13px; background:#181C1B; border:1px solid #283230; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+                <span style="position:absolute; top:-5px; right:-5px; min-width:19px; height:19px; padding:0 5px; border-radius:10px; background:#00A482; color:#04140f; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; border:2px solid #0E1113;">{{ notifCount }}</span>
+              </div>
+            </div>
+
+            <div style="font-size:26px; font-weight:700; color:#F4F5F7; letter-spacing:-.5px;">Boa noite, Diego 👋</div>
+            <div style="font-size:16px; font-weight:600; color:#00E4B4; margin-top:4px;">{{ activeCountLabel }}</div>
+
+            <div style="display:flex; align-items:center; justify-content:space-between; margin:28px 0 14px;">
+              <span style="font-size:18px; font-weight:700; color:#F4F5F7;">Sessões ativas</span>
+              <span onClick="{{ goSessoes }}" style="font-size:14px; font-weight:600; color:#00E4B4; cursor:pointer;">Ver todas</span>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <sc-for list="{{ activeSessions }}" as="s" hint-placeholder-count="3">
+                <div onClick="{{ s.open }}" style="background:#181C1B; border:1px solid #283230; border-radius:18px; padding:16px; display:flex; align-items:center; gap:13px; cursor:pointer;">
+                  <span style="width:11px; height:11px; border-radius:50%; flex:none; background: {{ s.statusDot }}; animation: {{ s.pulseAnim }};"></span>
+                  <div style="flex:1; min-width:0;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <span style="font-size:16px; font-weight:600; color:#F4F5F7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ s.name }}</span>
+                      <span style="font-size:10px; font-weight:800; letter-spacing:.4px; padding:2px 7px; border-radius:6px; flex:none; color: {{ s.agentColor }}; background: {{ s.agentBg }};">{{ s.agentShort }}</span>
+                    </div>
+                    <div style="font-size:13.5px; color: {{ s.statusColor }}; margin-top:3px;">{{ s.statusLine }}</div>
+                    <div style="font-size:13px; color:#7A8090; margin-top:2px;">{{ s.subline }}</div>
+                  </div>
+                  <sc-if value="{{ s.hasBadge }}" hint-placeholder-val="{{ false }}">
+                    <span style="min-width:24px; height:24px; padding:0 6px; border-radius:7px; background:#F59E0B; color:#1b1304; font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center;">{{ s.badge }}</span>
+                  </sc-if>
+                  <sc-if value="{{ s.showChevron }}" hint-placeholder-val="{{ true }}">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5A6072" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display:flex; align-items:center; justify-content:space-between; margin:28px 0 14px;">
+              <span style="font-size:18px; font-weight:700; color:#F4F5F7;">Tarefas recentes</span>
+              <span onClick="{{ goTimeline }}" style="font-size:14px; font-weight:600; color:#00E4B4; cursor:pointer;">Ver todas</span>
+            </div>
+
+            <div style="background:#181C1B; border:1px solid #283230; border-radius:18px; overflow:hidden;">
+              <sc-for list="{{ recentTasks }}" as="t" hint-placeholder-count="3">
+                <div style="display:flex; align-items:center; gap:13px; padding:15px 16px; border-top:1px solid {{ t.divider }};">
+                  <span style="width:30px; height:30px; border-radius:9px; flex:none; display:flex; align-items:center; justify-content:center; color: {{ t.color }}; background: {{ t.bg }};">
+                    <sc-if value="{{ t.isDone }}" hint-placeholder-val="{{ false }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></sc-if>
+                    <sc-if value="{{ t.isDoing }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg></sc-if>
+                    <sc-if value="{{ t.isAttention }}" hint-placeholder-val="{{ false }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg></sc-if>
+                  </span>
+                  <div style="flex:1; min-width:0;">
+                    <div style="font-size:15px; font-weight:600; color:#F4F5F7;">{{ t.title }}</div>
+                    <div style="font-size:12.5px; color: {{ t.metaColor }}; margin-top:1px;">{{ t.meta }}</div>
+                  </div>
+                  <span style="font-size:10px; font-weight:700; color:#6B7180; letter-spacing:.4px;">{{ t.session }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- SESSÕES -->
+          <sc-if value="{{ showSessoes }}" hint-placeholder-val="{{ false }}">
+          <div class="sf-screen" style="padding:6px 20px 120px;">
+            <div style="padding:10px 0 16px;"><span style="font-size:28px; font-weight:700; color:#F4F5F7; letter-spacing:-.6px;">Sessões</span></div>
+            <div class="sf-scroll" style="display:flex; gap:8px; overflow-x:auto; margin:0 -20px 18px; padding:0 20px;">
+              <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+                <span onClick="{{ f.set }}" style="flex:none; padding:8px 15px; border-radius:11px; font-size:13.5px; font-weight:600; cursor:pointer; color: {{ f.color }}; background: {{ f.bg }}; border:1px solid {{ f.border }};">{{ f.label }}</span>
+              </sc-for>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <sc-for list="{{ filteredSessions }}" as="s" hint-placeholder-count="5">
+                <div onClick="{{ s.open }}" style="background:#181C1B; border:1px solid #283230; border-radius:18px; padding:15px 16px; cursor:pointer;">
+                  <div style="display:flex; align-items:center; gap:11px;">
+                    <span style="width:38px; height:38px; border-radius:11px; flex:none; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; letter-spacing:.3px; color: {{ s.agentColor }}; background: {{ s.agentBg }};">{{ s.agentShort }}</span>
+                    <div style="flex:1; min-width:0;">
+                      <div style="font-size:16px; font-weight:600; color:#F4F5F7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ s.name }}</div>
+                      <div style="font-size:12.5px; color:#7A8090; font-family:'JetBrains Mono',monospace; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ s.dir }}</div>
+                    </div>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5A6072" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                  </div>
+                  <div style="display:flex; align-items:center; justify-content:space-between; margin-top:13px; padding-top:13px; border-top:1px solid #23262F;">
+                    <span style="display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; padding:4px 10px; border-radius:8px; color: {{ s.statusColor }}; background: {{ s.statusBg }};"><span style="width:7px; height:7px; border-radius:50%; background: {{ s.statusDot }};"></span>{{ s.statusName }}</span>
+                    <span style="font-size:12.5px; color:#6B7180;">{{ s.timeAgo }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- TIMELINE -->
+          <sc-if value="{{ showTimeline }}" hint-placeholder-val="{{ false }}">
+          <div class="sf-screen" style="padding:6px 20px 120px;">
+            <div style="padding:10px 0 18px;"><span style="font-size:28px; font-weight:700; color:#F4F5F7; letter-spacing:-.6px;">Timeline</span></div>
+            <sc-for list="{{ timelineGroups }}" as="g" hint-placeholder-count="2">
+              <div style="margin-bottom:22px;">
+                <div style="font-size:13px; font-weight:700; color:#6B7180; letter-spacing:.5px; text-transform:uppercase; margin-bottom:12px;">{{ g.label }}</div>
+                <div style="position:relative; padding-left:26px;">
+                  <div style="position:absolute; left:6px; top:6px; bottom:6px; width:2px; background:#283230;"></div>
+                  <sc-for list="{{ g.items }}" as="e" hint-placeholder-count="3">
+                    <div style="position:relative; padding-bottom:18px;">
+                      <span style="position:absolute; left:-26px; top:3px; width:14px; height:14px; border-radius:50%; border:3px solid #0E1113; background: {{ e.dot }};"></span>
+                      <div style="display:flex; align-items:baseline; gap:8px;">
+                        <span style="font-size:14.5px; font-weight:600; color:#F4F5F7;">{{ e.title }}</span>
+                        <span style="font-size:12px; color:#6B7180; margin-left:auto; font-variant-numeric:tabular-nums;">{{ e.time }}</span>
+                      </div>
+                      <div style="font-size:13px; color:#8A90A0; margin-top:2px;">{{ e.desc }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          </sc-if>
+
+          <!-- FEEDBACK -->
+          <sc-if value="{{ showFeedback }}" hint-placeholder-val="{{ false }}">
+          <div class="sf-screen" style="padding:6px 20px 120px;">
+            <div style="padding:10px 0 4px;"><span style="font-size:28px; font-weight:700; color:#F4F5F7; letter-spacing:-.6px;">Responder</span></div>
+            <div style="font-size:14px; color:#8A90A0; margin-bottom:20px;">1 sessão aguardando sua decisão.</div>
+
+            <div style="background:#181C1B; border:1px solid #4a3c1c; border-radius:18px; padding:16px;">
+              <div style="display:flex; align-items:center; gap:10px; margin-bottom:13px;">
+                <span style="width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:#10A37F; background:rgba(16,163,127,.16);">Cx</span>
+                <div>
+                  <div style="font-size:15.5px; font-weight:600; color:#F4F5F7;">Sonar Pipeline</div>
+                  <div style="font-size:12.5px; color:#FBBF24;">● Aguardando feedback · há 15 min</div>
+                </div>
+              </div>
+              <div style="background:#0E1113; border:1px solid #283230; border-radius:12px; padding:13px 14px; font-family:'JetBrains Mono',monospace; font-size:12.5px; line-height:1.6; color:#cdd2da;">
+                <span style="color:#7A8090;">codex&gt;</span> O lint apontou 3 warnings em <span style="color:#00E4B4;">auth.service.ts</span>. Posso aplicar o autofix e seguir com o commit?
+              </div>
+            </div>
+
+            <div style="font-size:13px; font-weight:700; color:#8A90A0; margin:24px 0 10px;">Respostas rápidas</div>
+            <div style="display:flex; flex-wrap:wrap; gap:9px;">
+              <sc-for list="{{ replyChips }}" as="c" hint-placeholder-count="4">
+                <span onClick="{{ c.pick }}" style="padding:9px 15px; border-radius:11px; font-size:13.5px; font-weight:600; cursor:pointer; color: {{ c.color }}; background: {{ c.bg }}; border:1px solid {{ c.border }};">{{ c.label }}</span>
+              </sc-for>
+            </div>
+
+            <div style="font-size:13px; font-weight:700; color:#8A90A0; margin:24px 0 10px;">Sua resposta</div>
+            <textarea class="sf-in" value="{{ fbText }}" onChange="{{ onFbText }}" placeholder="Escreva uma resposta para o agente…" style="width:100%; box-sizing:border-box; min-height:96px; resize:none; background:#181C1B; border:1px solid #283230; border-radius:14px; padding:14px; color:#F4F5F7; font-size:14.5px; font-family:'Inter',sans-serif; line-height:1.5;"></textarea>
+
+            <div style="display:flex; align-items:center; gap:12px; margin-top:14px;">
+              <div onClick="{{ toggleRec }}" style="width:54px; height:54px; flex:none; border-radius:50%; background: {{ recBg }}; border:1px solid {{ recBorder }}; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{ recIcon }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation: {{ recAnim }};"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+              </div>
+              <div style="flex:1; font-size:13.5px; color: {{ recTextColor }};">{{ recText }}</div>
+              <div style="height:54px; padding:0 22px; border-radius:14px; background:linear-gradient(150deg,#00E4B4,#00A482); display:flex; align-items:center; gap:8px; cursor:pointer; box-shadow:0 6px 16px -6px rgba(0,200,160,.6);">
+                <span style="font-size:15px; font-weight:700; color:#04140f;">Enviar</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- PERFIL -->
+          <sc-if value="{{ showPerfil }}" hint-placeholder-val="{{ false }}">
+          <div class="sf-screen" style="padding:6px 20px 120px;">
+            <div style="padding:10px 0 22px;"><span style="font-size:28px; font-weight:700; color:#F4F5F7; letter-spacing:-.6px;">Perfil</span></div>
+            <div style="display:flex; align-items:center; gap:14px; margin-bottom:22px;">
+              <div style="width:58px; height:58px; border-radius:18px; background:linear-gradient(150deg,#2CECC4,#00A482); display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:800; color:#06231d;">D</div>
+              <div>
+                <div style="font-size:19px; font-weight:700; color:#F4F5F7;">Diego</div>
+                <div style="font-size:13.5px; color:#8A90A0;">Operador · sessionflow.local</div>
+              </div>
+            </div>
+
+            <div style="background:#181C1B; border:1px solid #283230; border-radius:18px; padding:16px; margin-bottom:18px; display:flex; align-items:center; gap:13px;">
+              <span style="width:11px; height:11px; border-radius:50%; background:#34D399; animation:sf-pulse-green 2.4s infinite;"></span>
+              <div style="flex:1;">
+                <div style="font-size:15px; font-weight:600; color:#F4F5F7;">Worker conectado</div>
+                <div style="font-size:12.5px; color:#7A8090; font-family:'JetBrains Mono',monospace; margin-top:2px;">MacBook-Pro.local · uptime 3d 4h</div>
+              </div>
+              <span style="font-size:11px; font-weight:700; color:#34D399; background:rgba(52,211,153,.14); padding:4px 9px; border-radius:8px;">online</span>
+            </div>
+
+            <div style="display:flex; gap:12px; margin-bottom:18px;">
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:16px; padding:15px;">
+                <div style="font-size:24px; font-weight:800; color:#F4F5F7;">12</div>
+                <div style="font-size:12.5px; color:#7A8090; margin-top:2px;">Sessões hoje</div>
+              </div>
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:16px; padding:15px;">
+                <div style="font-size:24px; font-weight:800; color:#00E4B4;">3</div>
+                <div style="font-size:12.5px; color:#7A8090; margin-top:2px;">Ativas agora</div>
+              </div>
+            </div>
+
+            <div style="background:#181C1B; border:1px solid #283230; border-radius:18px; overflow:hidden;">
+              <sc-for list="{{ settings }}" as="o" hint-placeholder-count="4">
+                <div onClick="{{ o.toggle }}" style="display:flex; align-items:center; gap:13px; padding:15px 16px; border-top:1px solid {{ o.divider }}; cursor: {{ o.cursor }};">
+                  <span style="width:30px; height:30px; border-radius:9px; flex:none; display:flex; align-items:center; justify-content:center; color:#9AA0AE; background:#22272A;" innerHTML="{{ o.icon }}"></span>
+                  <span style="flex:1; font-size:15px; font-weight:500; color:#F4F5F7;">{{ o.label }}</span>
+                  <sc-if value="{{ o.isToggle }}" hint-placeholder-val="{{ true }}">
+                    <span style="width:44px; height:26px; border-radius:13px; flex:none; padding:3px; box-sizing:border-box; background: {{ o.trackBg }}; transition:background .2s; display:flex; justify-content: {{ o.knobJustify }};">
+                      <span style="width:20px; height:20px; border-radius:50%; background:#fff;"></span>
+                    </span>
+                  </sc-if>
+                  <sc-if value="{{ o.isLink }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:13.5px; color:#7A8090;">{{ o.value }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="margin-top:18px; text-align:center; padding:15px; border-radius:14px; border:1px solid #3a2326; color:#F87171; font-size:15px; font-weight:600; cursor:pointer;">Sair</div>
+          </div>
+          </sc-if>
+
+        </div>
+        </sc-if>
+
+        <!-- ============ DETAIL OVERLAY ============ -->
+        <sc-if value="{{ showDetail }}" hint-placeholder-val="{{ false }}">
+        <div class="sf-screen" style="position:absolute; inset:0; background:#0E1113; display:flex; flex-direction:column;">
+          <div style="flex:none; padding:6px 16px 14px; border-bottom:1px solid #20262A;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div onClick="{{ back }}" style="width:38px; height:38px; border-radius:11px; background:#181C1B; border:1px solid #283230; display:flex; align-items:center; justify-content:center; cursor:pointer; flex:none;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              </div>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:17px; font-weight:700; color:#F4F5F7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ sel.name }}</div>
+                <div style="font-size:12px; color:#7A8090; font-family:'JetBrains Mono',monospace;">{{ sel.dir }}</div>
+              </div>
+              <span style="font-size:11px; font-weight:800; padding:4px 9px; border-radius:8px; flex:none; color: {{ sel.agentColor }}; background: {{ sel.agentBg }};">{{ sel.agentShort }}</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:13px;">
+              <span style="display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; padding:5px 11px; border-radius:9px; color: {{ sel.statusColor }}; background: {{ sel.statusBg }};"><span style="width:7px; height:7px; border-radius:50%; background: {{ sel.statusDot }};"></span>{{ sel.statusName }}</span>
+              <span style="margin-left:auto; display:flex; gap:8px;">
+                <span onClick="{{ resumeSel }}" style="font-size:12.5px; font-weight:600; color:#C9CDD6; padding:6px 12px; border-radius:9px; border:1px solid #283230; cursor:pointer;">Retomar</span>
+                <span onClick="{{ killSel }}" style="font-size:12.5px; font-weight:600; color:#F87171; padding:6px 12px; border-radius:9px; border:1px solid #3a2326; cursor:pointer;">Encerrar</span>
+              </span>
+            </div>
+          </div>
+
+          <div style="flex:none; padding:13px 16px 14px; border-bottom:1px solid #20262A; background:#121614;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+              <div style="display:flex; align-items:center; gap:9px; min-width:0;">
+                <span style="width:8px; height:8px; border-radius:50%; flex:none; background: {{ sel.agentColor }};"></span>
+                <div style="min-width:0;">
+                  <div style="font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#6B7180;">Modelo</div>
+                  <div style="font-size:14px; font-weight:600; color:#F4F5F7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ sel.model }}</div>
+                </div>
+              </div>
+              <div style="text-align:right; flex:none;">
+                <div style="font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#6B7180;">Contexto usado</div>
+                <div style="font-size:19px; font-weight:800; line-height:1.1; color: {{ sel.ctxColor }};">{{ sel.ctxPctLabel }}</div>
+              </div>
+            </div>
+            <div style="margin-top:11px; height:7px; border-radius:4px; background:#23262F; overflow:hidden;">
+              <div style="height:100%; width: {{ sel.ctxWidth }}; background: {{ sel.ctxColor }}; border-radius:4px;"></div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:7px;">
+              <span style="font-size:11.5px; color:#7A8090; font-family:'JetBrains Mono',monospace;">{{ sel.ctxLabel }}</span>
+              <sc-if value="{{ sel.nearLimit }}" hint-placeholder-val="{{ false }}">
+                <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; color:#F87171; flex:none;">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#F87171" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+                  considere /compact
+                </span>
+              </sc-if>
+            </div>
+
+            <div style="display:flex; gap:10px; margin-top:13px;">
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:9px;">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M12 5v12"/><path d="m6 11 6 6 6-6"/></svg>
+                <div style="min-width:0;"><div style="font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#6B7180;">Entrada</div><div style="font-size:14.5px; font-weight:700; color:#F4F5F7; font-family:'JetBrains Mono',monospace;">{{ sel.tokIn }}</div></div>
+              </div>
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:9px;">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#4796E3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M12 19V7"/><path d="m6 13 6-6 6 6"/></svg>
+                <div style="min-width:0;"><div style="font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#6B7180;">Saída</div><div style="font-size:14.5px; font-weight:700; color:#F4F5F7; font-family:'JetBrains Mono',monospace;">{{ sel.tokOut }}</div></div>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:10px; margin-top:10px;">
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:12px; padding:10px 12px;">
+                <div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#6B7180;">Limite diário</span><span style="font-size:13px; font-weight:800; color: {{ sel.limDayColor }};">{{ sel.limDayLabel }}</span></div>
+                <div style="margin-top:7px; height:5px; border-radius:3px; background:#23262F; overflow:hidden;"><div style="height:100%; width: {{ sel.limDayW }}; background: {{ sel.limDayColor }};"></div></div>
+              </div>
+              <div style="flex:1; background:#181C1B; border:1px solid #283230; border-radius:12px; padding:10px 12px;">
+                <div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#6B7180;">Limite semanal</span><span style="font-size:13px; font-weight:800; color: {{ sel.limWeekColor }};">{{ sel.limWeekLabel }}</span></div>
+                <div style="margin-top:7px; height:5px; border-radius:3px; background:#23262F; overflow:hidden;"><div style="height:100%; width: {{ sel.limWeekW }}; background: {{ sel.limWeekColor }};"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sf-scroll" style="flex:1; min-height:0; overflow-y:auto; background:#0B0E0F; padding:14px 16px; font-family:'JetBrains Mono',monospace; font-size:12.5px; line-height:1.7;">
+            <sc-for list="{{ terminalLines }}" as="l" hint-placeholder-count="8">
+              <div style="white-space:pre-wrap; word-break:break-word; color: {{ l.color }};">{{ l.text }}</div>
+            </sc-for>
+            <div style="display:flex; align-items:center; gap:2px; color:#00E4B4;"><span>{{ sel.prompt }}</span><span style="display:inline-block; width:8px; height:15px; background:#00E4B4; margin-left:4px; animation:sf-cursor 1.1s step-end infinite;"></span></div>
+          </div>
+
+          <div style="flex:none; padding:12px 14px 16px; border-top:1px solid #20262A; display:flex; align-items:center; gap:10px;">
+            <div onClick="{{ toggleRec }}" style="width:44px; height:44px; flex:none; border-radius:13px; background: {{ recBg }}; border:1px solid {{ recBorder }}; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ recIcon }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation: {{ recAnim }};"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+            </div>
+            <input class="sf-in" value="{{ termInput }}" onChange="{{ onTermInput }}" placeholder="Enviar comando ao terminal…" style="flex:1; min-width:0; height:44px; background:#181C1B; border:1px solid #283230; border-radius:13px; padding:0 14px; color:#F4F5F7; font-size:14px; font-family:'JetBrains Mono',monospace;">
+            <div onClick="{{ sendTerm }}" style="width:44px; height:44px; flex:none; border-radius:13px; background:linear-gradient(150deg,#00E4B4,#00A482); display:flex; align-items:center; justify-content:center; cursor:pointer;">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ CREATE OVERLAY ============ -->
+        <sc-if value="{{ showCreate }}" hint-placeholder-val="{{ false }}">
+        <div class="sf-screen" style="position:absolute; inset:0; background:#0E1113; display:flex; flex-direction:column;">
+          <div style="flex:none; display:flex; align-items:center; gap:12px; padding:6px 18px 16px; border-bottom:1px solid #20262A;">
+            <div onClick="{{ back }}" style="width:38px; height:38px; border-radius:11px; background:#181C1B; border:1px solid #283230; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </div>
+            <span style="font-size:19px; font-weight:700; color:#F4F5F7;">Nova sessão</span>
+          </div>
+          <div class="sf-scroll" style="flex:1; overflow-y:auto; padding:22px 20px 30px;">
+            <div style="font-size:13px; font-weight:700; color:#8A90A0; margin-bottom:10px;">Nome da sessão</div>
+            <input class="sf-in" value="{{ newName }}" onChange="{{ onNewName }}" placeholder="ex: Portal do Tomador" style="width:100%; box-sizing:border-box; height:50px; background:#181C1B; border:1px solid #283230; border-radius:14px; padding:0 15px; color:#F4F5F7; font-size:15px; font-family:'Inter',sans-serif;">
+
+            <div style="display:flex; align-items:baseline; justify-content:space-between; margin:24px 0 10px;">
+              <span style="font-size:13px; font-weight:700; color:#8A90A0;">Tipo de agente</span>
+              <span style="font-size:11px; color:#6B7180;">% restante do limite</span>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:11px;">
+              <sc-for list="{{ agentOptions }}" as="a" hint-placeholder-count="4">
+                <div onClick="{{ a.select }}" style="background:#181C1B; border:1.5px solid {{ a.border }}; border-radius:15px; padding:13px; cursor:pointer;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; color: {{ a.color }}; background: {{ a.bg }};">{{ a.short }}</span>
+                    <div style="min-width:0;">
+                      <div style="font-size:13.5px; font-weight:600; color:#F4F5F7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ a.label }}</div>
+                      <div style="font-size:10.5px; color:#7A8090; font-family:'JetBrains Mono',monospace;">{{ a.cmd }}</div>
+                    </div>
+                  </div>
+                  <div style="margin-top:11px; display:flex; flex-direction:column; gap:6px;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:9.5px; font-weight:700; letter-spacing:.3px; color:#6B7180; width:26px; flex:none;">DIA</span>
+                      <span style="flex:1; height:5px; border-radius:3px; background:#23262F; overflow:hidden;"><span style="display:block; height:100%; width: {{ a.dayW }}; background: {{ a.dayColor }};"></span></span>
+                      <span style="font-size:10.5px; font-weight:700; width:34px; text-align:right; flex:none; color: {{ a.dayColor }};">{{ a.dayLabel }}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:9.5px; font-weight:700; letter-spacing:.3px; color:#6B7180; width:26px; flex:none;">SEM</span>
+                      <span style="flex:1; height:5px; border-radius:3px; background:#23262F; overflow:hidden;"><span style="display:block; height:100%; width: {{ a.weekW }}; background: {{ a.weekColor }};"></span></span>
+                      <span style="font-size:10.5px; font-weight:700; width:34px; text-align:right; flex:none; color: {{ a.weekColor }};">{{ a.weekLabel }}</span>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="font-size:13px; font-weight:700; color:#8A90A0; margin:24px 0 10px;">Modelo</div>
+            <div class="sf-scroll" style="display:flex; gap:8px; overflow-x:auto; margin:0 -20px; padding:0 20px;">
+              <sc-for list="{{ modelOptions }}" as="m" hint-placeholder-count="3">
+                <span onClick="{{ m.pick }}" style="flex:none; padding:9px 15px; border-radius:11px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap; color: {{ m.color }}; background: {{ m.bg }}; border:1px solid {{ m.border }};">{{ m.label }}</span>
+              </sc-for>
+            </div>
+
+            <div style="display:flex; align-items:baseline; justify-content:space-between; margin:24px 0 10px;">
+              <span style="font-size:13px; font-weight:700; color:#8A90A0;">Esforço de raciocínio</span>
+              <span style="font-size:11px; color:#6B7180; font-family:'JetBrains Mono',monospace;">reasoning effort</span>
+            </div>
+            <div style="display:flex; gap:7px;">
+              <sc-for list="{{ effortOptions }}" as="e" hint-placeholder-count="4">
+                <span onClick="{{ e.pick }}" style="flex:1; text-align:center; padding:9px 4px; border-radius:11px; font-size:13px; font-weight:600; cursor:pointer; color: {{ e.color }}; background: {{ e.bg }}; border:1px solid {{ e.border }};">{{ e.label }}</span>
+              </sc-for>
+            </div>
+
+            <div style="font-size:13px; font-weight:700; color:#8A90A0; margin:24px 0 10px;">Diretório de trabalho</div>
+            <input class="sf-in" value="{{ newDir }}" onChange="{{ onNewDir }}" placeholder="~/dev/meu-projeto" style="width:100%; box-sizing:border-box; height:50px; background:#181C1B; border:1px solid #283230; border-radius:14px; padding:0 15px; color:#F4F5F7; font-size:14px; font-family:'JetBrains Mono',monospace;">
+
+            <div style="margin-top:10px; background:#181C1B; border:1px solid #283230; border-radius:14px; overflow:hidden;">
+              <div style="display:flex; align-items:center; gap:7px; padding:11px 14px 8px; font-size:10.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#6B7180;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00E4B4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                <span>{{ dirSuggLabel }}</span>
+              </div>
+              <sc-for list="{{ dirSuggestions }}" as="d" hint-placeholder-count="5">
+                <div onClick="{{ d.pick }}" style="display:flex; align-items:center; gap:11px; padding:11px 14px; border-top:1px solid #23262F; cursor:pointer;">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7A8090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                  <div style="flex:1; min-width:0; font-family:'JetBrains Mono',monospace; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    <span style="color:#6B7180;">{{ d.parent }}</span><span style="color:#F4F5F7; font-weight:600;">{{ d.name }}</span>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00E4B4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v6"/></svg>
+                </div>
+              </sc-for>
+              <sc-if value="{{ dirNoMatch }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:14px; border-top:1px solid #23262F; font-size:13px; color:#7A8090; text-align:center;">Nenhum diretório conhecido. Será criado um novo.</div>
+              </sc-if>
+            </div>
+
+            <div style="background:#13201c; border:1px solid #1f3a32; border-radius:14px; padding:14px; margin-top:22px; display:flex; gap:11px; align-items:flex-start;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00E4B4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none; margin-top:1px;"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/><path d="M11 12h1v4h1"/></svg>
+              <div style="font-size:12.5px; color:#9AA8A2; line-height:1.5;">O SessionFlow vai criar uma sessão tmux e iniciar o agente automaticamente no diretório informado.</div>
+            </div>
+
+            <div onClick="{{ createSession }}" style="margin-top:24px; height:54px; border-radius:15px; background:linear-gradient(150deg,#00E4B4,#00A482); display:flex; align-items:center; justify-content:center; gap:9px; cursor:pointer; box-shadow:0 8px 22px -8px rgba(0,200,160,.7);">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              <span style="font-size:16px; font-weight:700; color:#04140f;">Criar sessão</span>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- ============ NOTIFICATIONS OVERLAY ============ -->
+        <sc-if value="{{ showNotifications }}" hint-placeholder-val="{{ false }}">
+        <div class="sf-screen" style="position:absolute; inset:0; background:#0E1113; display:flex; flex-direction:column;">
+          <div style="flex:none; display:flex; align-items:center; gap:12px; padding:6px 18px 16px; border-bottom:1px solid #20262A;">
+            <div onClick="{{ back }}" style="width:38px; height:38px; border-radius:11px; background:#181C1B; border:1px solid #283230; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C9CDD6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </div>
+            <span style="font-size:19px; font-weight:700; color:#F4F5F7;">Notificações</span>
+          </div>
+          <div class="sf-scroll" style="flex:1; overflow-y:auto; padding:16px 20px 30px;">
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <sc-for list="{{ notifications }}" as="n" hint-placeholder-count="4">
+                <div onClick="{{ n.open }}" style="background:#181C1B; border:1px solid {{ n.border }}; border-radius:16px; padding:15px; display:flex; gap:13px; cursor: {{ n.cursor }};">
+                  <span style="width:36px; height:36px; border-radius:11px; flex:none; display:flex; align-items:center; justify-content:center; color: {{ n.color }}; background: {{ n.bg }};" innerHTML="{{ n.icon }}"></span>
+                  <div style="flex:1; min-width:0;">
+                    <div style="display:flex; align-items:baseline; gap:8px;">
+                      <span style="font-size:15px; font-weight:600; color:#F4F5F7;">{{ n.title }}</span>
+                      <span style="font-size:11.5px; color:#6B7180; margin-left:auto; flex:none;">{{ n.time }}</span>
+                    </div>
+                    <div style="font-size:13px; color:#8A90A0; margin-top:3px; line-height:1.45;">{{ n.body }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- FAB -->
+        <sc-if value="{{ showFab }}" hint-placeholder-val="{{ true }}">
+        <div onClick="{{ openCreate }}" style="position:absolute; right:20px; bottom:96px; width:58px; height:58px; border-radius:19px; background:linear-gradient(150deg,#00E4B4,#00A482); display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 10px 26px -6px rgba(0,200,160,.7); z-index:25;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        </sc-if>
+
+      </div>
+
+      <!-- bottom nav -->
+      <sc-if value="{{ showNav }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:none; position:relative; z-index:20; background:rgba(14,17,19,.92); backdrop-filter:blur(12px); border-top:1px solid #20262A; padding:8px 8px 22px; display:flex;">
+        <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+          <div onClick="{{ n.go }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; color: {{ n.color }};">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ n.d }}"/></svg>
+            <span style="font-size:10.5px; font-weight: {{ n.weight }};">{{ n.label }}</span>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:440,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  state = {
+    tab: 'inicio',
+    overlay: null,
+    selectedId: 's1',
+    filter: 'todas',
+    termInput: '',
+    fbText: '',
+    recording: false,
+    settingsOn: { push: true, realtime: true, dark: true },
+    sessions: null,
+  };
+
+  fmtTok(n) {
+    if (n >= 1000) { const k = Math.round((n / 1000) * 10) / 10; return String(k).replace('.', ',') + 'k'; }
+    return String(n);
+  }
+
+  hexA(hex, a) {
+    const h = hex.replace('#', '');
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  seed() {
+    return [
+      { id: 's1', name: 'Portal do Tomador', agent: 'claude', status: 'running', dir: '~/dev/portal-tomador', timeAgo: 'há 2h 12m', statusLine: 'Executando há 2h 12m', subline: '4 tarefas ativas', tasks: 4, prompt: '› ',
+        terminal: [
+          { t: 'cmd', text: '› claude' },
+          { t: 'sys', text: '● Claude Code v1.4.2 — ~/dev/portal-tomador' },
+          { t: 'agent', text: 'Vou implementar o fluxo de OTP via SMS no login.' },
+          { t: 'tool', text: '⎿ Read  src/auth/login.controller.ts' },
+          { t: 'tool', text: '⎿ Edit  src/auth/otp.service.ts (+48 -3)' },
+          { t: 'tool', text: '⎿ Bash  npm run test:auth' },
+          { t: 'out', text: '  PASS  test/auth/otp.spec.ts (12 testes)' },
+          { t: 'agent', text: 'Testes passando. Atualizei o template de SMS e o rate-limit.' },
+          { t: 'ask', text: '? Deseja que eu faça o commit dessas mudanças agora? (s/n)' },
+        ] },
+      { id: 's2', name: 'Sonar Pipeline', agent: 'codex', status: 'waiting_input', dir: '~/dev/sonar', timeAgo: 'há 15 min', statusLine: 'Aguardando feedback', subline: 'há 15 min', badge: 1, prompt: 'codex> ',
+        terminal: [
+          { t: 'cmd', text: '› codex' },
+          { t: 'sys', text: '● Codex CLI — ~/dev/sonar' },
+          { t: 'agent', text: 'Rodando análise estática do pipeline de CI.' },
+          { t: 'tool', text: '⎿ Bash  sonar-scanner' },
+          { t: 'out', text: '  3 warnings · 0 errors' },
+          { t: 'ask', text: '? O lint apontou 3 warnings em auth.service.ts. Aplico o autofix?' },
+        ] },
+      { id: 's3', name: 'Refatoração API', agent: 'gemini', status: 'running', dir: '~/dev/api-core', timeAgo: 'há 45 min', statusLine: 'Executando há 45 min', subline: '2 tarefas ativas', tasks: 2, prompt: '> ',
+        terminal: [
+          { t: 'cmd', text: '› gemini' },
+          { t: 'sys', text: '● Gemini CLI — ~/dev/api-core' },
+          { t: 'agent', text: 'Extraindo os controllers em módulos por domínio.' },
+          { t: 'tool', text: '⎿ Edit  src/modules/user/user.module.ts' },
+          { t: 'tool', text: '⎿ Edit  src/modules/billing/billing.module.ts' },
+          { t: 'out', text: '  build ok · 0 erros de tipagem' },
+        ] },
+      { id: 's4', name: 'Migração Auth', agent: 'opencode', status: 'detached', dir: '~/dev/auth-service', timeAgo: 'há 3h', statusLine: 'Detached', subline: 'desconectada há 3h', prompt: '$ ',
+        terminal: [
+          { t: 'cmd', text: '› opencode' },
+          { t: 'sys', text: '● OpenCode — ~/dev/auth-service' },
+          { t: 'agent', text: 'Migrando sessões para JWT assimétrico.' },
+          { t: 'out', text: '  sessão desanexada do tmux (detached)' },
+        ] },
+      { id: 's5', name: 'Testes E2E', agent: 'claude', status: 'completed', dir: '~/dev/e2e-suite', timeAgo: '18:30', statusLine: 'Concluído · 18:30', subline: '48 testes passaram', prompt: '› ',
+        terminal: [
+          { t: 'cmd', text: '› claude' },
+          { t: 'sys', text: '● Claude Code v1.4.2 — ~/dev/e2e-suite' },
+          { t: 'agent', text: 'Executando a suíte completa de testes E2E.' },
+          { t: 'tool', text: '⎿ Bash  npx playwright test' },
+          { t: 'out', text: '  48 passed (1m 12s)' },
+          { t: 'agent', text: 'Todos os 48 testes passaram. Pronto.' },
+        ] },
+    ];
+  }
+
+  componentDidMount() {
+    if (!this.state.sessions) this.setState({ sessions: this.seed() });
+  }
+
+  go(tab) { this.setState({ tab, overlay: null }); }
+  openSession(id) { this.setState({ selectedId: id, overlay: 'detail' }); }
+  openCreate() { this.setState({ overlay: 'create' }); }
+  openNotifications() { this.setState({ overlay: 'notifications' }); }
+  back() { this.setState({ overlay: null }); }
+  setFilter(f) { this.setState({ filter: f }); }
+  toggleRec() { this.setState(s => ({ recording: !s.recording })); }
+  toggleSetting(k) { this.setState(s => ({ settingsOn: { ...s.settingsOn, [k]: !s.settingsOn[k] } })); }
+
+  setStatus(id, status) {
+    this.setState(s => ({ sessions: (s.sessions || this.seed()).map(x => x.id === id ? { ...x, status } : x) }));
+  }
+  sendTerm() {
+    const txt = (this.state.termInput || '').trim();
+    if (!txt) return;
+    const id = this.state.selectedId;
+    this.setState(s => ({
+      termInput: '',
+      sessions: (s.sessions || this.seed()).map(x => x.id === id ? { ...x, terminal: [...x.terminal, { t: 'cmd', text: x.prompt + txt }] } : x),
+    }));
+  }
+
+  iconHTML(name) {
+    const w = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+    const M = {
+      bell: `<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>`,
+      alert: `<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 17h.01"/>`,
+      check: `<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>`,
+      info: `<circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/><path d="M11 12h1v4h1"/>`,
+      unplug: `<path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 14.3 9 17l-2 2-4-4 2-2 2.7 2.7"/><path d="M14.3 6.3 17 9l2-2-4-4-2 2 2.7 2.7"/>`,
+      zap: `<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>`,
+      moon: `<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>`,
+      globe: `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/>`,
+    };
+    return `<svg width="18" height="18" viewBox="0 0 24 24" ${w}>${M[name] || ''}</svg>`;
+  }
+
+  renderVals() {
+    const A = {
+      claude: { label: 'Claude Code', short: 'CC', color: '#D97757', cmd: 'claude' },
+      codex: { label: 'Codex', short: 'Cx', color: '#10A37F', cmd: 'codex' },
+      gemini: { label: 'Gemini CLI', short: 'G', color: '#4796E3', cmd: 'gemini' },
+      opencode: { label: 'OpenCode', short: 'OC', color: '#06B6D4', cmd: 'opencode' },
+    };
+    const ST = {
+      running: { name: 'Executando', color: '#34D399', dot: '#34D399' },
+      waiting_input: { name: 'Aguardando', color: '#FBBF24', dot: '#FBBF24' },
+      waiting_external: { name: 'Aguardando externo', color: '#FB923C', dot: '#FB923C' },
+      completed: { name: 'Concluído', color: '#34D399', dot: '#34D399' },
+      error: { name: 'Erro', color: '#F87171', dot: '#F87171' },
+      stopped: { name: 'Encerrada', color: '#8A90A0', dot: '#6B7280' },
+      detached: { name: 'Detached', color: '#9AA0AE', dot: '#9AA0AE' },
+    };
+    const sessions = (this.state.sessions || this.seed());
+
+    const STATS = {
+      s1: { model: 'Claude Sonnet 4.5', tin: 84200, tout: 12600, used: 176000, max: 200000 },
+      s2: { model: 'GPT-5.1 Codex', tin: 38400, tout: 6100, used: 188000, max: 256000 },
+      s3: { model: 'Gemini 2.5 Pro', tin: 210000, tout: 18300, used: 248000, max: 1000000 },
+      s4: { model: 'GLM-4.6', tin: 52000, tout: 9400, used: 96000, max: 200000 },
+      s5: { model: 'Claude Sonnet 4.5', tin: 120000, tout: 22400, used: 158000, max: 200000 },
+    };
+    const LIMITS = {
+      claude: { day: 41, week: 28 },
+      codex: { day: 76, week: 63 },
+      gemini: { day: 90, week: 84 },
+      opencode: { day: 100, week: 100 },
+    };
+    const MODELS = {
+      claude: ['Opus 4.6', 'Sonnet 4.5', 'Haiku 4.5'],
+      codex: ['GPT-5.1 Codex', 'GPT-5.1 Codex Mini', 'GPT-5.1'],
+      gemini: ['Gemini 3 Pro', 'Gemini 2.5 Pro', 'Gemini 2.5 Flash'],
+      opencode: ['Claude Sonnet 4.5', 'GLM-4.6', 'Kimi K2', 'Qwen3 Coder', 'MiniMax M2'],
+    };
+    const MODEL_DEFAULT = { claude: 'Sonnet 4.5', codex: 'GPT-5.1 Codex', gemini: 'Gemini 3 Pro', opencode: 'GLM-4.6' };
+    const EFFORTS = ['Baixo', 'Médio', 'Alto', 'Máximo'];
+    const limColor = (p) => p >= 50 ? '#34D399' : (p >= 20 ? '#FBBF24' : '#F87171');
+
+    const decorate = (s) => {
+      const a = A[s.agent], st = ST[s.status];
+      const pulse = s.status === 'running' ? 'sf-pulse-green 2.4s infinite' : (s.status === 'waiting_input' ? 'sf-pulse-amber 1.8s infinite' : 'none');
+      const stt = STATS[s.id] || STATS.s1;
+      const pct = Math.round((stt.used / stt.max) * 100);
+      const ctxColor = pct >= 85 ? '#F87171' : (pct >= 70 ? '#FBBF24' : '#00E4B4');
+      const lim = LIMITS[s.agent] || LIMITS.claude;
+      return {
+        ...s,
+        model: stt.model,
+        tokIn: this.fmtTok(stt.tin), tokOut: this.fmtTok(stt.tout),
+        ctxPctLabel: pct + '%', ctxWidth: pct + '%', ctxColor,
+        ctxLabel: this.fmtTok(stt.used) + ' / ' + this.fmtTok(stt.max) + ' tokens',
+        nearLimit: pct >= 85,
+        limDayLabel: lim.day + '%', limDayW: lim.day + '%', limDayColor: limColor(lim.day),
+        limWeekLabel: lim.week + '%', limWeekW: lim.week + '%', limWeekColor: limColor(lim.week),
+        agentColor: a.color, agentShort: a.short, agentLabel: a.label,
+        agentBg: this.hexA(a.color, 0.16),
+        statusColor: st.color, statusDot: st.dot, statusName: st.name,
+        statusBg: this.hexA(st.color, 0.13),
+        pulseAnim: pulse,
+        hasBadge: !!s.badge, showChevron: !s.badge,
+        open: () => this.openSession(s.id),
+      };
+    };
+
+    const all = sessions.map(decorate);
+    const active = all.filter(s => s.status === 'running' || s.status === 'waiting_input');
+
+    const filterDefs = [
+      { key: 'todas', label: 'Todas' },
+      { key: 'running', label: 'Ativas' },
+      { key: 'waiting_input', label: 'Aguardando' },
+      { key: 'completed', label: 'Concluídas' },
+      { key: 'detached', label: 'Detached' },
+    ];
+    const filters = filterDefs.map(f => {
+      const on = this.state.filter === f.key;
+      return { label: f.label, set: () => this.setFilter(f.key),
+        color: on ? '#04140f' : '#C9CDD6', bg: on ? '#00E4B4' : '#181C1B', border: on ? '#00E4B4' : '#283230' };
+    });
+    const filtered = this.state.filter === 'todas' ? all : all.filter(s => s.status === this.state.filter);
+
+    const taskDefs = [
+      { title: 'OTP SMS', meta: 'Concluído · há 15 min', session: 'PORTAL', kind: 'done' },
+      { title: 'Contratos CLT', meta: 'Em andamento', session: 'PORTAL', kind: 'doing' },
+      { title: 'Margem Crédito', meta: 'Requer atenção', session: 'SONAR', kind: 'attention' },
+    ];
+    const tk = { done: { color: '#34D399', bg: 'rgba(52,211,153,.14)', metaColor: '#34D399' }, doing: { color: '#FBBF24', bg: 'rgba(251,191,36,.14)', metaColor: '#8A90A0' }, attention: { color: '#F87171', bg: 'rgba(248,113,113,.14)', metaColor: '#F87171' } };
+    const recentTasks = taskDefs.map((t, i) => ({ ...t, ...tk[t.kind], divider: i === 0 ? 'transparent' : '#23262F',
+      isDone: t.kind === 'done', isDoing: t.kind === 'doing', isAttention: t.kind === 'attention' }));
+
+    const timelineGroups = [
+      { label: 'Hoje', items: [
+        { title: 'Sonar Pipeline', time: '21:30', desc: 'Codex aguardando sua decisão sobre o autofix.', dot: '#FBBF24' },
+        { title: 'Portal do Tomador', time: '19:30', desc: 'Tarefa concluída: OTP SMS (12 testes passando).', dot: '#34D399' },
+        { title: 'Refatoração API', time: '18:45', desc: 'Sessão Gemini iniciada em ~/dev/api-core.', dot: '#4796E3' },
+        { title: 'Testes E2E', time: '18:30', desc: 'Concluída — 48 testes passaram em 1m 12s.', dot: '#34D399' },
+      ] },
+      { label: 'Ontem', items: [
+        { title: 'Migração Auth', time: '22:10', desc: 'OpenCode desanexada do tmux (detached).', dot: '#9AA0AE' },
+        { title: 'Portal do Tomador', time: '16:05', desc: 'Sessão criada e agente Claude Code iniciado.', dot: '#34D399' },
+      ] },
+    ];
+
+    const replyDefs = [
+      { label: 'Aprovar', kind: 'ok' }, { label: 'Rejeitar', kind: 'no' },
+      { label: 'Refazer', kind: 'n' }, { label: 'Continuar', kind: 'n' }, { label: 'Rodar os testes', kind: 'n' },
+    ];
+    const rc = { ok: { color: '#34D399', bg: 'rgba(52,211,153,.13)', border: 'rgba(52,211,153,.3)' }, no: { color: '#F87171', bg: 'rgba(248,113,113,.12)', border: 'rgba(248,113,113,.28)' }, n: { color: '#C9CDD6', bg: '#181C1B', border: '#283230' } };
+    const replyChips = replyDefs.map(c => ({ label: c.label, ...rc[c.kind], pick: () => this.setState({ fbText: c.label }) }));
+
+    const notifDefs = [
+      { title: 'Sonar Pipeline', body: 'O agente Codex está aguardando sua decisão sobre o autofix do lint.', time: 'há 15 min', kind: 'attention', sid: 's2' },
+      { title: 'Refatoração API', body: 'Concluiu uma tarefa — 2 módulos extraídos com sucesso.', time: 'há 32 min', kind: 'info', sid: 's3' },
+      { title: 'Migração Auth', body: 'A sessão foi desanexada do tmux (detached).', time: 'há 3h', kind: 'warning', sid: 's4' },
+      { title: 'Testes E2E', body: 'Sessão concluída — todos os 48 testes passaram.', time: '18:30', kind: 'success', sid: 's5' },
+    ];
+    const nc = {
+      attention: { color: '#F87171', bg: 'rgba(248,113,113,.14)', border: '#3a2326', icon: this.iconHTML('alert') },
+      info: { color: '#4796E3', bg: 'rgba(71,150,227,.14)', border: '#283230', icon: this.iconHTML('info') },
+      warning: { color: '#FBBF24', bg: 'rgba(251,191,36,.14)', border: '#283230', icon: this.iconHTML('unplug') },
+      success: { color: '#34D399', bg: 'rgba(52,211,153,.14)', border: '#283230', icon: this.iconHTML('check') },
+    };
+    const notifications = notifDefs.map(n => ({ ...n, ...nc[n.kind], cursor: 'pointer', open: () => this.openSession(n.sid) }));
+
+    const so = this.state.settingsOn;
+    const tog = (k, label, icon) => ({ label, icon, isToggle: true, isLink: false, cursor: 'pointer', divider: '#23262F',
+      toggle: () => this.toggleSetting(k), trackBg: so[k] ? '#00A482' : '#2c3330', knobJustify: so[k] ? 'flex-end' : 'flex-start' });
+    const settings = [
+      { ...tog('push', 'Notificações push', this.iconHTML('bell')), divider: 'transparent' },
+      tog('realtime', 'Tempo real (SSE)', this.iconHTML('zap')),
+      tog('dark', 'Tema escuro', this.iconHTML('moon')),
+      { label: 'Idioma', icon: this.iconHTML('globe'), isToggle: false, isLink: true, value: 'Português (BR)', cursor: 'default', divider: '#23262F', toggle: () => {} },
+    ];
+
+    const knownDirs = ['~/dev/portal-tomador', '~/dev/sonar', '~/dev/api-core', '~/dev/auth-service', '~/dev/e2e-suite', '~/dev/landing-site', '~/dev/mobile-app', '~/work/banco-prata/admin', '~/work/banco-prata/api', '~/work/banco-prata/worker', '~/sandbox/scripts'];
+    const dq = (this.state.newDir || '').trim().toLowerCase();
+    let dirMatches = dq ? knownDirs.filter(d => d.toLowerCase().includes(dq)) : knownDirs.slice(0, 5);
+    dirMatches = dirMatches.slice(0, 6);
+    const splitDir = (p) => { const i = p.lastIndexOf('/'); return { parent: p.slice(0, i + 1), name: p.slice(i + 1) }; };
+    const dirSuggestions = dirMatches.map(p => { const s = splitDir(p); return { full: p, parent: s.parent, name: s.name, pick: () => this.setState({ newDir: p }) }; });
+    const dirSuggLabel = dq ? 'Sugestões do host' : 'Diretórios recentes';
+    const dirNoMatch = dq.length > 0 && dirMatches.length === 0;
+
+    const selAgent = this.state.newAgent || 'claude';
+    const newModel = this.state.newModel || MODEL_DEFAULT[selAgent];
+    const newEffort = this.state.newEffort || 'Médio';
+    const agentOptions = ['claude', 'codex', 'gemini', 'opencode'].map(k => {
+      const a = A[k]; const lim = LIMITS[k]; const on = selAgent === k;
+      return { label: a.label, short: a.short, cmd: a.cmd, color: a.color, bg: this.hexA(a.color, 0.16),
+        border: on ? a.color : '#283230',
+        dayLabel: lim.day + '%', dayW: lim.day + '%', dayColor: limColor(lim.day),
+        weekLabel: lim.week + '%', weekW: lim.week + '%', weekColor: limColor(lim.week),
+        select: () => this.setState({ newAgent: k, newModel: MODEL_DEFAULT[k] }) };
+    });
+    const chipStyle = (on) => ({ color: on ? '#04140f' : '#C9CDD6', bg: on ? '#00E4B4' : '#181C1B', border: on ? '#00E4B4' : '#283230' });
+    const modelOptions = (MODELS[selAgent] || []).map(m => ({ label: m, ...chipStyle(m === newModel), pick: () => this.setState({ newModel: m }) }));
+    const effortOptions = EFFORTS.map(e => ({ label: e, ...chipStyle(e === newEffort), pick: () => this.setState({ newEffort: e }) }));
+
+    const navDefs = [
+      { key: 'inicio', label: 'Início', d: 'M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z' },
+      { key: 'sessoes', label: 'Sessões', d: 'M4 5h16v14H4zM8 10l3 2-3 2M13.5 14h3' },
+      { key: 'timeline', label: 'Timeline', d: 'M8 6h12M8 12h12M8 18h12M3.5 6h.01M3.5 12h.01M3.5 18h.01' },
+      { key: 'feedback', label: 'Responder', d: 'M21 11.5a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 11.5z' },
+      { key: 'perfil', label: 'Perfil', d: 'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21v-1a6 6 0 0 1 12 0v1' },
+    ];
+    const navItems = navDefs.map(n => {
+      const on = this.state.tab === n.key && !this.state.overlay;
+      return { label: n.label, d: n.d, go: () => this.go(n.key), color: on ? '#00E4B4' : '#6B7180', weight: on ? 700 : 500 };
+    });
+
+    const tab = this.state.tab, ov = this.state.overlay;
+    const sel = decorate(sessions.find(s => s.id === this.state.selectedId) || sessions[0]);
+    const lineColor = { cmd: '#E8EBEF', sys: '#7A8090', agent: '#cdd2da', tool: '#00C8A0', out: '#7f9bd1', ask: '#FBBF24' };
+    const terminalLines = sel.terminal.map(l => ({ text: l.text, color: lineColor[l.t] || '#cdd2da' }));
+
+    const rec = this.state.recording;
+
+    return {
+      showTabs: !ov,
+      showInicio: !ov && tab === 'inicio',
+      showSessoes: !ov && tab === 'sessoes',
+      showTimeline: !ov && tab === 'timeline',
+      showFeedback: !ov && tab === 'feedback',
+      showPerfil: !ov && tab === 'perfil',
+      showDetail: ov === 'detail',
+      showCreate: ov === 'create',
+      showNotifications: ov === 'notifications',
+      showNav: !ov,
+      showFab: !ov && (tab === 'inicio' || tab === 'sessoes'),
+
+      activeCountLabel: active.length + ' sessões ativas',
+      notifCount: notifDefs.length,
+      activeSessions: active,
+      filteredSessions: filtered,
+      filters, recentTasks, timelineGroups, replyChips, notifications, settings, agentOptions, navItems,
+      modelOptions, effortOptions,
+
+      goSessoes: () => this.go('sessoes'),
+      goTimeline: () => this.go('timeline'),
+      openCreate: () => this.openCreate(),
+      openNotifications: () => this.openNotifications(),
+      back: () => this.back(),
+
+      sel, terminalLines,
+      termInput: this.state.termInput,
+      onTermInput: (e) => this.setState({ termInput: e.target.value }),
+      sendTerm: () => this.sendTerm(),
+      resumeSel: () => this.setStatus(sel.id, 'running'),
+      killSel: () => { this.setStatus(sel.id, 'stopped'); this.go('sessoes'); },
+
+      newName: this.state.newName || '',
+      onNewName: (e) => this.setState({ newName: e.target.value }),
+      newDir: this.state.newDir || '',
+      onNewDir: (e) => this.setState({ newDir: e.target.value }),
+      dirSuggestions, dirSuggLabel, dirNoMatch,
+      createSession: () => this.go('sessoes'),
+
+      fbText: this.state.fbText,
+      onFbText: (e) => this.setState({ fbText: e.target.value }),
+      toggleRec: () => this.toggleRec(),
+      recBg: rec ? 'rgba(248,113,113,.15)' : '#181C1B',
+      recBorder: rec ? '#F87171' : '#283230',
+      recIcon: rec ? '#F87171' : '#9AA0AE',
+      recAnim: rec ? 'sf-rec 1s infinite' : 'none',
+      recText: rec ? 'Gravando… toque para parar' : 'Toque para gravar um áudio',
+      recTextColor: rec ? '#F87171' : '#7A8090',
+    };
+  }
+}
+</script>
+</body>
+</html>

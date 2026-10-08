@@ -1,0 +1,46 @@
+/* ============================================================
+   Prata Digital — Base element defaults
+   Minimal resets + body type. Tokens come from the other files.
+   ============================================================ */
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--text-body);
+  background-color: var(--surface-subtle);
+}
+
+/* Default heading rhythm — display face, navy ink */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--font-display);
+  color: var(--text-strong);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--fw-bold);
+  text-wrap: balance;
+}
+
+p { text-wrap: pretty; }
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+/* Selection uses the brand mint */
+::selection {
+  background: var(--prata-green-100);
+  color: var(--stone-900);
+}
+
+/* Used by Button's loading spinner */
+@keyframes pd-spin { to { transform: rotate(360deg); } }

@@ -1,0 +1,3072 @@
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  OnInit,
+  computed,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
+import { Router } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
+import { SseService } from '../../core/sse.service';
+import { JarvisAudioService } from '../../core/jarvis-audio.service';
+import { SessionCloneService } from '../../core/session-clone.service';
+import { RemoteSession, Session, SessionStatus, Task, TaskState } from '../../core/models';
+
+/** Display state for a task row; extends TaskState with a derived "paused". */
+type TaskDisplayState = TaskState | 'paused';
+import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
+import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
+import { WorkersStore } from '../../core/workers-store';
+import { SessionGroup, buildSessionGroups } from '../../core/session-tree';
+
+/** Chave do localStorage do modo da lista de sessões da Home. */
+const VIEW_MODE_KEY = 'sf.inicio.viewMode';
+/** Chave do sessionStorage do abre/fecha manual dos grupos. */
+const GROUP_OPEN_KEY = 'sf.inicio.groupOpen';
+/** Chave do localStorage do toggle de resposta rápida no hover. */
+const QUICK_REPLY_KEY = 'sf.inicio.quickReply';
+/** Status que, sozinhos, não justificam mostrar um grupo (sessão encerrada). */
+const DORMANT_STATUSES: readonly SessionStatus[] = ['stopped', 'detached'];
+
+/** Session statuses considered "active" on the home screen. */
+const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
+
+/**
+ * Home screen ("Início"). Shows a greeting, the live count of active sessions,
+ * the active-session cards and the most recent tasks. Subscribes to the SSE
+ * stream so the lists update live as the backend emits events.
+ */
+@Component({
+  selector: 'sf-inicio',
+  standalone: true,
+  imports: [NgTemplateOutlet],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <section class="sf-inicio">
+      <!-- Toast de "tarefa concluída" 🎉 (some sozinho). -->
+      @if (sse.taskDoneToast(); as t) {
+        <div class="sf-task-toast" role="status" aria-live="polite">
+          <span class="sf-task-toast-emoji" aria-hidden="true">🎉</span>
+          <span class="sf-task-toast-body">
+            <span class="sf-task-toast-title">Tarefa concluída</span>
+            <span class="sf-task-toast-sub">{{ t.title }} · {{ t.session }}</span>
+          </span>
+        </div>
+      }
+      <!-- Header -->
+      <header class="sf-header">
+        <div class="sf-brand">
+          <span class="sf-logo" aria-hidden="true">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#06231d"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M17 7H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6" />
+            </svg>
+          </span>
+          <span class="sf-brand-name">SessionFlow</span>
+        </div>
+
+        <!-- Custo global estimado (todas as sessões) — some se não há dado. -->
+        @if (globalCost(); as g) {
+          <button
+            type="button"
+            class="sf-cost-chip mono"
+            [class.is-open]="costPanelOpen()"
+            [title]="globalCostTip()"
+            (click)="costPanelOpen.set(!costPanelOpen())"
+            aria-label="Custo estimado de todas as sessões"
+          >
+            <span aria-hidden="true">💰</span>
+            <span>{{ '~$' + fmtMoney(g.usd) }}</span>
+            @if (g.brl != null) {
+              <span class="sf-cost-chip-brl">· ~R$ {{ fmtMoney(g.brl) }}</span>
+            }
+          </button>
+        }
+
+        <button
+          type="button"
+          class="sf-bell"
+          aria-label="Notificações"
+          (click)="openNotifications()"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#C9CDD6"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+          </svg>
+          @if (notifCount() > 0) {
+            <span class="sf-bell-badge">{{ notifCount() }}</span>
+          }
+        </button>
+
+        <!-- Toggle resposta rápida no hover -->
+        <button
+          type="button"
+          class="sf-quick-reply-toggle"
+          [class.is-on]="quickReplyEnabled()"
+          (click)="toggleQuickReply()"
+          [title]="quickReplyEnabled() ? 'Desativar resposta rápida no hover' : 'Ativar resposta rápida no hover'"
+          aria-label="Resposta rápida no hover"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+        </button>
+      </header>
+
+      <!-- Mini-painel do custo global: quebra por modelo (abre pelo chip). -->
+      @if (costPanelOpen() && globalCost(); as g) {
+        <div class="sf-cost-panel">
+          <div class="sf-cost-panel-head">
+            <span class="sf-cost-panel-title">Custo estimado · todas as sessões</span>
+            <span class="mono sf-cost-panel-total">
+              {{ '~$' + fmtMoney(g.usd) }}
+              @if (g.brl != null) {
+                <span class="sf-cost-panel-brl">· ~R$ {{ fmtMoney(g.brl) }}</span>
+              }
+            </span>
+          </div>
+          <div class="mono sf-cost-panel-toks">
+            in {{ fmtTok(g.tokensIn) }} · out {{ fmtTok(g.tokensOut) }}
+          </div>
+          @for (r of g.rows; track r.model) {
+            <div class="sf-cost-row">
+              <span class="sf-cost-model">{{ r.model }}</span>
+              <span class="mono sf-cost-toks"
+                >in {{ fmtTok(r.input) }} · out {{ fmtTok(r.output) }} · cache
+                {{ fmtTok(r.cache_read + r.cache_write) }}</span
+              >
+              <span class="mono sf-cost-usd">{{
+                r.usd != null ? '~$' + fmtUsd(r.usd) : '— (preço desconhecido)'
+              }}</span>
+            </div>
+          }
+          <div class="sf-cost-note">
+            Estimativa em preço de API; sessões sem dado de custo não entram na
+            soma.
+            @if (g.rate != null) {
+              Câmbio do dia: US$ 1 = R$ {{ fmtUsd(g.rate) }}.
+            }
+          </div>
+        </div>
+      }
+
+      <!-- Greeting -->
+      <h1 class="sf-greeting">{{ greeting() }}{{ greetingName() ? ', ' + greetingName() : '' }} 👋</h1>
+      <p class="sf-active-count">{{ activeCountLabel() }}</p>
+
+      <!-- Active sessions -->
+      <div class="sf-section-head">
+        <h2>Sessões ativas</h2>
+        <span class="sf-section-acts">
+          @if (activeSessions().length > 0) {
+            <button
+              type="button"
+              class="sf-icon-link"
+              [class.spinning]="refreshingAllMilestones()"
+              [disabled]="refreshingAllMilestones()"
+              (click)="refreshAllMilestones()"
+              aria-label="Pedir pra todas as sessões ativas revisarem as tarefas"
+              title="Pedir pra TODAS as sessões ativas revisar/atualizar as tarefas agora"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+              </svg>
+            </button>
+          }
+          <span class="sf-view-toggle" role="group" aria-label="Modo de exibição">
+            <button type="button" [class.is-on]="viewMode() === 'grouped'"
+                    [attr.aria-pressed]="viewMode() === 'grouped'"
+                    (click)="setViewMode('grouped')">Agrupado</button>
+            <button type="button" [class.is-on]="viewMode() === 'list'"
+                    [attr.aria-pressed]="viewMode() === 'list'"
+                    (click)="setViewMode('list')">Lista</button>
+          </span>
+          <button type="button" class="sf-link" (click)="goSessoes()">
+            Ver todas
+          </button>
+        </span>
+      </div>
+
+      @if (hasCards()) {
+        <div class="sf-cards">
+          @for (r of remoteSessions(); track r.id) {
+            <div class="sf-card-item">
+              <button
+                type="button"
+                class="sf-card sf-card--remote"
+                [style.borderColor]="remoteColor(r)"
+                (click)="openRemoteSession(r)"
+              >
+                <span class="sf-remote-badge" [style.background]="remoteColor(r)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                    <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+                  </svg>
+                </span>
+                <span class="sf-card-body">
+                  <span class="sf-card-top">
+                    <span class="sf-card-name">{{ r.label }}</span>
+                  </span>
+                  <span class="sf-card-sub mono">{{ remoteHost(r) }}</span>
+                  <span class="sf-card-status-row">
+                    <span class="sf-card-status" [style.color]="remoteColor(r)">Compartilhada</span>
+                    @if (remoteTimeAgo(r)) {
+                      <span class="sf-card-time">· {{ remoteTimeAgo(r) }}</span>
+                    }
+                  </span>
+                </span>
+                <svg
+                  class="sf-chevron"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#5A6072"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="sf-card-remove"
+                (click)="removeRemoteSession(r)"
+                aria-label="Remover sessão compartilhada"
+                title="Remover daqui"
+              >
+                ×
+              </button>
+            </div>
+          }
+          @if (viewMode() === 'list') {
+            @for (s of activeSessions(); track s.id; let i = $index) {
+              <ng-container *ngTemplateOutlet="sessionCard; context: { $implicit: s, i: i }" />
+            }
+          } @else {
+            @for (g of visibleGroups(); track g.key) {
+              <div class="sf-group" [class.is-open]="isGroupOpen(g)">
+                <button
+                  type="button"
+                  class="sf-group-head"
+                  [attr.aria-expanded]="isGroupOpen(g)"
+                  (click)="toggleGroup(g)"
+                >
+                  <svg class="sf-group-chev" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M9 6l6 6-6 6" />
+                  </svg>
+                  <span class="sf-group-name">{{ g.root ? displayName(g.root) : 'Delegadas sem principal' }}</span>
+                  <span class="sf-group-counts">
+                    <span class="sf-gc" title="Workers (descendentes)">👷 {{ g.counts.workers }}</span>
+                    @if (g.counts.running) {
+                      <span class="sf-gc is-run" title="Rodando">▶ {{ g.counts.running }}</span>
+                    }
+                    @if (g.counts.waiting) {
+                      <span class="sf-gc is-wait" title="Aguardando">⏳ {{ g.counts.waiting }}</span>
+                    }
+                    @if (g.counts.done) {
+                      <span class="sf-gc is-done" title="Concluídas">✓ {{ g.counts.done }}</span>
+                    }
+                  </span>
+                </button>
+                @if (isGroupOpen(g)) {
+                  <div class="sf-group-body">
+                    @for (n of g.nodes; track n.session.id; let i = $index) {
+                      <div class="sf-tree-node" [style.--sf-depth]="n.depth" [class.is-child]="n.depth > 0">
+                        <ng-container *ngTemplateOutlet="sessionCard; context: { $implicit: n.session, i: i }" />
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+      } @else {
+        <p class="sf-empty">Nenhuma sessão ativa no momento.</p>
+      }
+
+      <!-- Top 3 sessões por consumo de tokens (in+out) — só aparece quando há
+           ao menos 1 sessão com métricas de uso (feature recente). -->
+      @if (topTokenSessions().length > 0 || topTokensPeriod() !== 'all') {
+        <div class="sf-section-head">
+          <h2>Top consumo</h2>
+          <div class="sf-period-tabs" role="group" aria-label="Período do Top consumo">
+            @for (opt of topTokensPeriodOptions; track opt.key) {
+              <button
+                type="button"
+                class="sf-period-tab"
+                [class.is-on]="topTokensPeriod() === opt.key"
+                (click)="topTokensPeriod.set(opt.key)"
+              >
+                {{ opt.label }}
+              </button>
+            }
+          </div>
+        </div>
+        @if (topTokenSessions().length > 0) {
+          <div class="sf-top-toks">
+            @for (r of topTokenSessions(); track r.session.id; let i = $index) {
+              <button
+                type="button"
+                class="sf-top-tok-row"
+                (click)="openSession(r.session.id)"
+              >
+                <span class="sf-top-tok-rank">{{ i + 1 }}</span>
+                <span class="sf-top-tok-name">{{ displayName(r.session) }}</span>
+                <span class="mono sf-top-tok-toks"
+                  >in {{ fmtTok(r.tokensIn) }} · out {{ fmtTok(r.tokensOut) }}</span
+                >
+                <span class="mono sf-top-tok-usd">{{
+                  r.usd != null ? '~$' + fmtUsd(r.usd) : fmtTok(r.total) + 'tok'
+                }}</span>
+              </button>
+            }
+          </div>
+        } @else {
+          <p class="sf-empty">Sem consumo registrado nesse período.</p>
+        }
+      }
+
+      <!-- Tarefas (marcos do agente, via .sessionflow/milestones.json) -->
+      <div class="sf-section-head">
+        <h2>Tarefas</h2>
+        <button type="button" class="sf-link" (click)="goTimeline()">
+          Ver todas
+        </button>
+      </div>
+
+      @if (tasks().length > 0) {
+        <div class="sf-task-filters">
+          <div class="sf-tchips">
+            @for (f of taskFilters; track f.key) {
+              <button
+                type="button"
+                class="sf-tfilter"
+                [class.sel]="taskStatus() === f.key"
+                (click)="taskStatus.set(taskStatus() === f.key ? 'all' : f.key)"
+              >
+                {{ f.label }}
+              </button>
+            }
+          </div>
+          @if (taskSessions().length > 1) {
+            <select
+              class="sf-tsessel"
+              (change)="taskSession.set($any($event.target).value)"
+            >
+              <option value="">Todas as sessões</option>
+              @for (s of taskSessions(); track s) {
+                <option [value]="s" [selected]="taskSession() === s">{{ s }}</option>
+              }
+            </select>
+          }
+        </div>
+      }
+
+      @if (recentTasks().length > 0) {
+        <div class="sf-task-list">
+          @for (t of recentTasks(); track t.id; let first = $first; let i = $index) {
+            <div
+              class="sf-task-wrap sf-enter"
+              [style.animation-delay]="enterDelay(i)"
+              [class.sf-task-divider]="!first"
+            >
+              <button
+                type="button"
+                class="sf-tdelete"
+                [class.is-open]="taskOffset(t.id) <= -72"
+                tabindex="-1"
+                [attr.aria-hidden]="taskOffset(t.id) > -72"
+                (click)="confirmEliminateTask(t)"
+                aria-label="Apagar tarefa"
+              >
+                <span class="sf-tdelete__inner">
+                  <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                  <span class="sf-tdelete__label">Eliminar</span>
+                </span>
+              </button>
+            <div
+              class="sf-task"
+              [class.is-dragging]="taskDragId() === t.id"
+              [class.sf-task-clickable]="!!t.session_id"
+              [style.transform]="'translateX(' + taskOffset(t.id) + 'px)'"
+              (click)="onTaskClick(t, $event)"
+              (pointerdown)="onTaskPointerDown(t, $event)"
+              (pointermove)="onTaskPointerMove(t, $event)"
+              (pointerup)="onTaskPointerUp(t, $event)"
+              (pointercancel)="onTaskPointerUp(t, $event)"
+            >
+              <span
+                class="sf-task-icon"
+                [style.color]="taskMeta(effectiveTaskState(t)).color"
+                [style.background]="taskMeta(effectiveTaskState(t)).bg"
+              >
+                @switch (effectiveTaskState(t)) {
+                  @case ('done') {
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                  }
+                  @case ('doing') {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2" /><circle cx="12" cy="12" r="9" /></svg>
+                  }
+                  @case ('paused') {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="6" width="3.2" height="12" rx="1" /><rect x="13.8" y="6" width="3.2" height="12" rx="1" /></svg>
+                  }
+                  @case ('blocked') {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M5.6 5.6 18.4 18.4" /></svg>
+                  }
+                  @case ('attention') {
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5" /><path d="M12 17h.01" /><circle cx="12" cy="12" r="9" /></svg>
+                  }
+                  @default {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" /></svg>
+                  }
+                }
+              </span>
+              <span class="sf-task-body">
+                <span class="sf-task-title">{{ t.title }}</span>
+                <span class="sf-task-meta" [style.color]="taskMeta(effectiveTaskState(t)).color">{{
+                  taskMeta(effectiveTaskState(t)).label
+                }}</span>
+              </span>
+              @if (t.state === 'todo') {
+                <button
+                  type="button"
+                  class="sf-task-play"
+                  aria-label="Iniciar tarefa"
+                  (click)="startTask(t, $event)"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                </button>
+              }
+              @if (taskHostBadge(t); as host) {
+                <span class="sf-task-host" [title]="'Roda em: ' + host">
+                  @if (taskHostEmoji(t); as emoji) {
+                    <span aria-hidden="true">{{ emoji }}</span>
+                  } @else {
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="4" width="18" height="8" rx="2" />
+                      <rect x="3" y="12" width="18" height="8" rx="2" />
+                      <path d="M7 8h.01M7 16h.01" />
+                    </svg>
+                  }
+                </span>
+              }
+              <span class="sf-task-session mono">{{ sessionShort(t) }}</span>
+            </div>
+            </div>
+          }
+          @if (remainingTasks() > 0) {
+            <button type="button" class="sf-task-more" (click)="showMoreTasks()">
+              Ver mais {{ remainingTasks() }}
+            </button>
+          }
+        </div>
+      } @else {
+        <p class="sf-empty">
+          {{ tasks().length > 0 ? 'Nenhuma tarefa com esse filtro.' : 'Nenhuma tarefa ainda.' }}
+        </p>
+      }
+
+      <ng-template #sessionCard let-s let-i="i">
+        <div class="sf-card-item" (mouseenter)="quickReplyEnabled() && openQuickReply(s.id, $event)" (mouseleave)="closeQuickReply()">
+        <button
+          type="button"
+          class="sf-card sf-enter"
+          [class.is-waiting]="statusIcon(s) === 'wait'"
+          [class.is-running]="isWorkingIcon(statusIcon(s))"
+          [class.is-external]="s.status === 'waiting_external'"
+          [class.is-completed]="statusIcon(s) === 'done'"
+          [class.sf-has-agents]="subAgentCount(s) > 0"
+          [class.sf-flash]="taskFlash(s)"
+          [class.sf-quick-reply-open]="quickReplySession() === s.id"
+          [style.animation-delay]="enterDelay(i)"
+          (click)="openSession(s.id)"
+        >
+          <span
+            class="sf-stat-icon"
+            [class.sf-stat-pulse]="isActiveIcon(s)"
+            [style.color]="statusColor(s)"
+          >
+            @switch (statusIcon(s)) {
+              @case ('think') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /></svg>
+              }
+              @case ('code') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9l-3 3 3 3M16 9l3 3-3 3" /></svg>
+              }
+              @case ('analyze') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-3.5-3.5" /></svg>
+              }
+              @case ('run') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8l4 4-4 4M12 16h6" /></svg>
+              }
+              @case ('wait') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10M7 20h10M8 4c0 4 8 6 8 8s-8 4-8 8M16 4c0 4-8 6-8 8" /></svg>
+              }
+              @case ('external') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><path d="M15 3h6v6M10 14 21 3" /></svg>
+              }
+              @case ('done') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10" /></svg>
+              }
+              @case ('play') {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 7l8 5-8 5z" /></svg>
+              }
+              @default {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 9h6v6H9z" /></svg>
+              }
+            }
+          </span>
+          <span class="sf-card-body">
+            <span class="sf-card-top">
+              <span class="sf-card-name" [title]="s.ai_description || displayName(s)">{{ displayName(s) }}</span>
+              <span
+                class="sf-agent"
+                [style.color]="agent(s).color"
+                [style.background]="agentBg(s)"
+                >{{ agent(s).short }}</span
+              >
+              @if (isWorker(s)) {
+                <span class="sf-worker-chip" title="Worker / sub-agente">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 8V4H8" />
+                    <rect width="16" height="12" x="4" y="8" rx="2" />
+                    <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+                  </svg>
+                </span>
+              }
+              @if (isSpeaking(s)) {
+                <span class="sf-speaker" title="Áudio desta sessão tocando agora"
+                      aria-label="Falando">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M11 5 6 9H2v6h4l5 4z" />
+                    <path class="sf-wave sf-wave1" d="M15.5 8.5a5 5 0 0 1 0 7" />
+                    <path class="sf-wave sf-wave2" d="M18.5 5.5a9 9 0 0 1 0 13" />
+                  </svg>
+                </span>
+              }
+              @if (subAgentCount(s) > 0) {
+                <span class="sf-subagents" [title]="subAgentTip(s)"
+                      [attr.aria-label]="subAgentCount(s) + ' sub-agentes rodando'">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" />
+                    <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+                  </svg>
+                  {{ subAgentCount(s) }}
+                </span>
+              }
+              @if (hostBadge(s); as host) {
+                <span class="sf-host-chip" [title]="'Roda em: ' + host">
+                  @if (hostEmoji(s); as emoji) {
+                    <span aria-hidden="true">{{ emoji }}</span>
+                  } @else {
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="4" width="18" height="8" rx="2" />
+                      <rect x="3" y="12" width="18" height="8" rx="2" />
+                      <path d="M7 8h.01M7 16h.01" />
+                    </svg>
+                  }
+                </span>
+              }
+            </span>
+            @if (latestTaskFor(s); as lt) {
+              <span
+                class="sf-card-sub sf-card-task"
+                [class.shimmering]="cardTaskShimmer(s)"
+                [style.color]="cardTaskShimmer(s) ? 'transparent' : statusColor(s)"
+                [title]="lt.title"
+              >{{ lt.title }}</span>
+            } @else {
+              <span class="sf-card-sub mono" [title]="subline(s)">{{ subline(s) }}</span>
+            }
+            <span class="sf-card-status-row">
+              <span class="sf-card-status" [style.color]="statusColor(s)">{{
+                statusLabel(s)
+              }}</span>
+              @if (timeAgo(s)) {
+                <span class="sf-card-time">· {{ timeAgo(s) }}</span>
+              }
+            </span>
+          </span>
+          <svg
+            class="sf-chevron"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#5A6072"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+        <!-- Input de resposta rápida no hover -->
+        @if (quickReplySession() === s.id) {
+          <div class="sf-quick-reply-input-wrap" (click)="$event.stopPropagation()">
+            <input
+              type="text"
+              class="sf-quick-reply-input"
+              [class.is-loading]="quickReplySending()"
+              [class.has-error]="quickReplyError()"
+              [value]="quickReplyText()"
+              [disabled]="quickReplySending()"
+              placeholder="Enviar mensagem..."
+              (input)="quickReplyText.set($any($event.target).value)"
+              (keydown)="onQuickReplyKeydown(s.id, $event)"
+              (click)="onQuickReplyClick($event)"
+            />
+            @if (quickReplyError()) {
+              <span class="sf-quick-reply-error">{{ quickReplyError() }}</span>
+            }
+          </div>
+        }
+        <button
+          type="button"
+          class="sf-card-clone"
+          aria-label="Clonar sessão"
+          (click)="cloneSession($event, s.id)"
+        >
+          ⧉
+        </button>
+        </div>
+      </ng-template>
+    </section>
+  `,
+  styles: [
+    `
+      :host {
+        display: block;
+      }
+
+      .sf-inicio {
+        padding: 6px 20px 120px;
+      }
+
+      /* Header */
+      .sf-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0 18px;
+      }
+      .sf-brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+      }
+      .sf-logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 11px;
+        background: linear-gradient(150deg, #2cecc4, #00a482);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 16px -4px rgba(0, 200, 160, 0.55);
+      }
+      .sf-brand-name {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-strong);
+        letter-spacing: -0.3px;
+      }
+      /* Chip discreto do custo global (header). */
+      .sf-cost-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+        margin-right: 10px;
+        min-width: 0;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border-default);
+        background: var(--surface-card);
+        color: #c9cdd6;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-cost-chip.is-open {
+        border-color: rgba(0, 228, 180, 0.45);
+        color: #e7eae9;
+      }
+      .sf-cost-chip-brl {
+        color: #7a8090;
+        font-weight: 600;
+      }
+      /* Telas estreitas: esconde o R$ pro header nunca quebrar (fica no painel). */
+      @media (max-width: 459px) {
+        .sf-cost-chip-brl {
+          display: none;
+        }
+      }
+
+      /* Mini-painel do custo global por modelo (mesmo dark dos cards). */
+      .sf-cost-panel {
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin: 0 0 16px;
+      }
+      .sf-cost-panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .sf-cost-panel-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        color: #9aa0ae;
+      }
+      .sf-cost-panel-total {
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #00e4b4;
+        white-space: nowrap;
+      }
+      .sf-cost-panel-brl {
+        color: #7a8090;
+        font-weight: 600;
+      }
+      .sf-cost-panel-toks {
+        font-size: 11.5px;
+        color: #7a8090;
+        white-space: nowrap;
+        margin-bottom: 6px;
+      }
+      .sf-cost-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 0;
+        min-width: 0;
+      }
+      .sf-cost-model {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 40%;
+      }
+      .sf-cost-toks {
+        flex: 1;
+        min-width: 0;
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-cost-usd {
+        flex: none;
+        font-size: 12px;
+        font-weight: 700;
+        color: #00e4b4;
+      }
+      .sf-cost-note {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #6a7080;
+        line-height: 1.45;
+      }
+
+      /* Filtro de período do Top consumo */
+      .sf-period-tabs {
+        display: flex;
+        gap: 4px;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 10px;
+        padding: 3px;
+      }
+      .sf-period-tab {
+        appearance: none;
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        color: #9aa0ae;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      .sf-period-tab.is-on {
+        background: var(--color-accent-strong);
+        color: var(--text-on-accent);
+      }
+
+      /* Top 3 sessões por consumo de tokens */
+      .sf-top-toks {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .sf-top-tok-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+        text-align: left;
+      }
+      .sf-top-tok-rank {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: rgba(0, 228, 180, 0.14);
+        color: #00e4b4;
+        font-size: 11.5px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sf-top-tok-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-top-tok-toks {
+        flex: none;
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+      }
+      .sf-top-tok-usd {
+        flex: none;
+        font-size: 12px;
+        font-weight: 700;
+        color: #00e4b4;
+        white-space: nowrap;
+      }
+
+      .sf-bell {
+        position: relative;
+        width: 42px;
+        height: 42px;
+        border-radius: 13px;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+      }
+      .sf-bell-badge {
+        position: absolute;
+        top: -5px;
+        right: -5px;
+        min-width: 19px;
+        height: 19px;
+        padding: 0 5px;
+        border-radius: 10px;
+        background: var(--color-accent-strong);
+        color: var(--text-on-accent);
+        font-size: 11px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid var(--surface-page);
+      }
+
+      /* Toggle resposta rápida no hover */
+      .sf-quick-reply-toggle {
+        width: 42px;
+        height: 42px;
+        border-radius: 13px;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+        color: var(--text-muted);
+        margin-left: 8px;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .sf-quick-reply-toggle:hover {
+        color: var(--text-strong);
+      }
+      .sf-quick-reply-toggle.is-on {
+        color: var(--color-accent);
+        border-color: var(--color-accent);
+      }
+
+      /* Greeting */
+      .sf-greeting {
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--text-strong);
+        letter-spacing: -0.5px;
+        margin: 0;
+      }
+      .sf-active-count {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--color-accent);
+        margin: 4px 0 0;
+      }
+
+      /* Section headers */
+      .sf-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 28px 0 14px;
+      }
+      .sf-section-head h2 {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-strong);
+        margin: 0;
+      }
+      .sf-section-acts {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .sf-icon-link {
+        appearance: none;
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+      }
+      .sf-icon-link:hover:not(:disabled) {
+        color: var(--text-strong);
+      }
+      .sf-icon-link:disabled {
+        cursor: default;
+      }
+      .sf-icon-link.spinning svg {
+        animation: sf-icon-spin 0.8s linear infinite;
+      }
+      @keyframes sf-icon-spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .sf-link {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--color-accent);
+        cursor: pointer;
+        background: none;
+        border: none;
+        padding: 0;
+      }
+
+      /* Active session cards */
+      .sf-cards {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      /* Telas largas: sessões ativas em grid. */
+      @media (min-width: 768px) {
+        .sf-cards {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        }
+      }
+      .sf-card-item {
+        position: relative;
+      }
+      /* Toggle Agrupado | Lista */
+      .sf-view-toggle {
+        display: inline-flex;
+        border: 1px solid var(--border-default);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .sf-view-toggle button {
+        background: transparent;
+        border: 0;
+        color: var(--text-secondary, #8a90a2);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      .sf-view-toggle button.is-on {
+        background: var(--surface-card);
+        color: var(--text-primary, #e8eaf0);
+      }
+      /* Acordeão por sessão principal */
+      .sf-group {
+        grid-column: 1 / -1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .sf-group-head {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        width: 100%;
+        min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border-default);
+        border-radius: 14px;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-group-chev {
+        flex: none;
+        color: #8a90a2;
+        transition: transform 0.15s;
+      }
+      .sf-group.is-open .sf-group-chev {
+        transform: rotate(90deg);
+      }
+      .sf-group-name {
+        flex: 1 1 0;
+        min-width: 0;
+        font-weight: 700;
+        font-size: 15px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sf-group-counts {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 12px;
+      }
+      .sf-gc {
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        white-space: nowrap;
+      }
+      .sf-gc.is-run { color: #34d399; }
+      .sf-gc.is-wait { color: #fbbf24; }
+      .sf-gc.is-done { color: #8a90a2; }
+      .sf-group-body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 0;
+      }
+      /* Recuo por nível; limitado p/ não estourar a largura no celular. */
+      .sf-tree-node {
+        min-width: 0;
+        margin-left: calc(min(var(--sf-depth, 0), 4) * 14px);
+      }
+      .sf-tree-node.is-child {
+        border-left: 2px solid var(--border-default);
+        padding-left: 8px;
+      }
+      .sf-card-clone,
+      .sf-card-remove {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        z-index: 1;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font-size: 16px;
+        line-height: 1;
+      }
+      .sf-card-remove {
+        color: #fca5a5;
+        cursor: pointer;
+      }
+      /* Input de resposta rápida no hover */
+      .sf-quick-reply-input-wrap {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: 8px;
+        z-index: 2;
+      }
+      .sf-quick-reply-input {
+        width: 100%;
+        padding: 8px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--color-accent);
+        background: var(--surface-page);
+        color: var(--text-primary);
+        font-size: 13px;
+        font-family: inherit;
+        outline: none;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+      .sf-quick-reply-input::placeholder {
+        color: var(--text-muted);
+      }
+      .sf-quick-reply-input:disabled {
+        opacity: 0.6;
+      }
+      .sf-quick-reply-input.has-error {
+        border-color: #f87171;
+      }
+      .sf-quick-reply-error {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        font-size: 11px;
+        color: #f87171;
+        margin-top: 2px;
+      }
+      /* Esconde no mobile/touch */
+      @media (hover: none) {
+        .sf-quick-reply-input-wrap {
+          display: none;
+        }
+      }
+      .sf-card {
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 18px;
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        cursor: pointer;
+        text-align: left;
+        width: 100%;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
+          border-color 0.15s;
+      }
+      /* Press feedback (no swipe here, so scale goes on the card directly). */
+      .sf-card:active {
+        transform: scale(0.97);
+      }
+      /* Aguardando AÇÃO do usuário: fundo âmbar + brilho neon pulsante. */
+      .sf-card.is-waiting {
+        border-color: #4a3a16;
+        background: #1b1710;
+        animation: sf-wait-glow 2.1s ease-in-out infinite;
+      }
+      /* Toast "tarefa concluída" 🎉 — banner fixo no topo, some sozinho. */
+      .sf-task-toast {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 12px);
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        max-width: calc(100vw - 24px);
+        padding: 10px 16px;
+        border-radius: 14px;
+        background: linear-gradient(150deg, #14b88f, #00926f);
+        color: #04140f;
+        box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.6);
+        animation: sf-task-toast-in 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .sf-task-toast-emoji {
+        font-size: 20px;
+        flex: none;
+      }
+      .sf-task-toast-body {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .sf-task-toast-title {
+        font-weight: 800;
+        font-size: 13.5px;
+      }
+      .sf-task-toast-sub {
+        font-size: 12px;
+        opacity: 0.85;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      @keyframes sf-task-toast-in {
+        from {
+          opacity: 0;
+          transform: translate(-50%, -8px);
+        }
+        to {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+      }
+      /* Tarefa concluída: destaque verde pulsante por alguns segundos. */
+      .sf-card.sf-flash {
+        border-color: #1f7a5c;
+        animation: sf-task-glow 1s ease-in-out 3;
+      }
+      @keyframes sf-task-glow {
+        0%,
+        100% {
+          box-shadow: 0 0 0 1px rgba(0, 228, 180, 0.25);
+        }
+        50% {
+          box-shadow: 0 0 18px 2px rgba(0, 228, 180, 0.55);
+        }
+      }
+      @keyframes sf-wait-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(251, 191, 36, 0.22),
+            0 0 12px -3px rgba(251, 191, 36, 0.28);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(251, 191, 36, 0.55),
+            0 0 22px 0 rgba(251, 191, 36, 0.5);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-waiting {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.45);
+        }
+      }
+      /* Rodando (codando): glow ciano pulsante — trabalho ativo, sem precisar
+         de você agora (diferencia de "aguardando decisão", que é âmbar). */
+      .sf-card.is-running {
+        border-color: #164a4a;
+        background: #0f1c1c;
+        animation: sf-run-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-run-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.18),
+            0 0 10px -3px rgba(34, 211, 238, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(34, 211, 238, 0.4),
+            0 0 16px -2px rgba(34, 211, 238, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-running {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35);
+        }
+      }
+      /* Aguardando algo EXTERNO (ex.: build/deploy, resposta de outro serviço):
+         glow laranja — não precisa de você, mas também não está "codando". */
+      .sf-card.is-external {
+        border-color: #4a2f16;
+        background: #1c150f;
+        animation: sf-ext-glow 2.4s ease-in-out infinite;
+      }
+      @keyframes sf-ext-glow {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.18),
+            0 0 10px -3px rgba(251, 146, 60, 0.22);
+        }
+        50% {
+          box-shadow:
+            0 0 0 1px rgba(251, 146, 60, 0.4),
+            0 0 16px -2px rgba(251, 146, 60, 0.35);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.is-external {
+          animation: none;
+          box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.35);
+        }
+      }
+      /* Concluída: SEM pulso (não tem mais urgência) — só uma borda verde
+         suave, pra distinguir de "rodando" à primeira vista. */
+      .sf-card.is-completed {
+        border-color: #1f7a5c;
+        box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.3);
+      }
+      .sf-stat-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+        line-height: 0;
+      }
+      .sf-stat-icon svg {
+        display: block;
+      }
+      .sf-stat-pulse {
+        animation: sf-icon-pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes sf-icon-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.6;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-stat-pulse {
+          animation: none;
+        }
+      }
+      .sf-card-body {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .sf-card-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .sf-card-name {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-agent {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        padding: 2px 7px;
+        border-radius: 6px;
+        flex: none;
+      }
+      /* Alto-falante "falando agora": ondas pulsando enquanto o áudio toca. */
+      .sf-speaker {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #00e4b4;
+      }
+      .sf-speaker .sf-wave {
+        transform-origin: 9px 12px;
+        animation: sf-speaker-wave 1.1s ease-in-out infinite;
+      }
+      .sf-speaker .sf-wave2 {
+        animation-delay: 0.18s;
+      }
+      @keyframes sf-speaker-wave {
+        0%,
+        100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-speaker .sf-wave {
+          animation: none;
+          opacity: 0.9;
+        }
+      }
+      .sf-worker-chip {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #c084fc;
+        background: rgba(192, 132, 252, 0.14);
+        border: 1px solid rgba(192, 132, 252, 0.3);
+        padding: 2px 5px;
+        border-radius: 6px;
+      }
+      /* Badge de host (multi-host) — compacto (só ícone + tooltip), só
+         aparece com >1 host ativo. */
+      .sf-host-chip {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #d4a373;
+        background: rgba(212, 163, 115, 0.14);
+        border: 1px solid rgba(212, 163, 115, 0.3);
+        padding: 2px 5px;
+        border-radius: 6px;
+      }
+      /* Badge de sub-agents rodando (contador + tooltip com nomes) */
+      .sf-subagents {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.16);
+        border: 1px solid rgba(56, 189, 248, 0.4);
+        padding: 1px 6px 1px 4px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        white-space: nowrap;
+        animation: sf-agents-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes sf-agents-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+        50% { box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18); }
+      }
+      /* Card com sub-agents rodando: borda-guia sutil pra destacar na lista. */
+      .sf-card.sf-has-agents {
+        border-color: rgba(56, 189, 248, 0.45);
+      }
+      .sf-card-status-row {
+        display: flex;
+        align-items: baseline;
+        margin-top: 3px;
+      }
+      .sf-card-status {
+        font-size: 13.5px;
+      }
+      .sf-card-time {
+        font-size: 12.5px;
+        color: #7a8090;
+        margin-left: 4px;
+      }
+      .sf-card-sub {
+        font-size: 13px;
+        color: #7a8090;
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-chevron {
+        flex: none;
+      }
+      .sf-card-task {
+        font-weight: 600;
+      }
+
+      /* Tasks */
+      /* Mobile: chips numa linha que rola + seletor de sessão largura cheia. */
+      .sf-task-filters {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .sf-tchips {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 2px;
+      }
+      .sf-tchips::-webkit-scrollbar {
+        display: none;
+      }
+      .sf-tfilter {
+        flex: none;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid #283230;
+        background: #181c1b;
+        color: #9aa0ae;
+        font-size: 12.5px;
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-tfilter.sel {
+        color: #06231d;
+        background: var(--color-accent, #00e4b4);
+        border-color: transparent;
+      }
+      .sf-tsessel {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid #283230;
+        background: #181c1b;
+        color: #d4d4d4;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      /* Desktop: tudo numa linha (chips + seletor à direita). */
+      @media (min-width: 768px) {
+        .sf-task-filters {
+          flex-direction: row;
+          align-items: center;
+        }
+        .sf-tchips {
+          flex-wrap: wrap;
+          overflow: visible;
+        }
+        .sf-tsessel {
+          width: auto;
+          max-width: 200px;
+          margin-left: auto;
+        }
+      }
+      .sf-task-list {
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 18px;
+        max-height: 420px;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+      /* Wrap que segura o swipe: a zona vermelha fica ATRÁS da linha. */
+      .sf-task-wrap {
+        position: relative;
+        overflow: hidden;
+      }
+      .sf-task {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        padding: 15px 16px;
+        background: var(--surface-card);
+        touch-action: pan-y;
+        transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      /* Sem animação de transform enquanto o dedo/mouse arrasta. */
+      .sf-task.is-dragging {
+        transition: none;
+      }
+      /* Shimmer "skeleton": revisão de tarefas pedida (botão da Home) → o
+         texto da última tarefa de cada card é SUBSTITUÍDO por uma barra
+         sólida com varredura de brilho (texto fica transparente via binding
+         inline), até ELE mudar (ou timeout). Por card, some individualmente
+         conforme cada sessão atualiza a sua. */
+      .sf-card-task.shimmering {
+        position: relative;
+        overflow: hidden;
+        border-radius: 6px;
+        background: #242b35;
+        min-height: 1em;
+        min-width: 65%;
+      }
+      .sf-card-task.shimmering::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(
+          105deg,
+          transparent 25%,
+          rgba(255, 255, 255, 0.18) 45%,
+          rgba(44, 236, 196, 0.26) 50%,
+          rgba(255, 255, 255, 0.18) 55%,
+          transparent 75%
+        );
+        background-size: 220% 100%;
+        animation: sf-task-shimmer 1.2s linear infinite;
+      }
+      @keyframes sf-task-shimmer {
+        from {
+          background-position: 120% 0;
+        }
+        to {
+          background-position: -120% 0;
+        }
+      }
+      .sf-task-divider {
+        border-top: 1px solid #23262f;
+      }
+      .sf-task-clickable {
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-task-clickable:hover {
+        background: #1c2422;
+      }
+      /* Ação vermelha "Eliminar" atrás da linha, à direita. */
+      .sf-tdelete {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 0;
+        width: 104px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        appearance: none;
+        border: none;
+        /* Soft danger gradient + subtle inner depth; the wrap/list clip the
+           corners (overflow:hidden) so this sits flush behind the row. */
+        background: linear-gradient(135deg, #7f1d1d, #b91c1c);
+        box-shadow: inset 1px 0 0 rgba(0, 0, 0, 0.25),
+          inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        color: #fecaca;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-tdelete__inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        /* Gently scale + fade in as the row reveals the action. */
+        opacity: 0;
+        transform: scale(0.85);
+        transition: opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: opacity, transform;
+      }
+      .sf-tdelete.is-open .sf-tdelete__inner {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .sf-tdelete__label {
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-tdelete__inner {
+          transition: none;
+        }
+      }
+      .sf-task-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sf-task-body {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .sf-task-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-task-meta {
+        font-size: 12.5px;
+        margin-top: 1px;
+      }
+      /* Chip com o NOME real da sessão (ellipsis só se muito longo). */
+      .sf-task-session {
+        flex: none;
+        max-width: 120px;
+        padding: 3px 9px;
+        border-radius: 8px;
+        background: #22272a;
+        border: 1px solid #283230;
+        color: #9aa0ae;
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Badge de host da tarefa (multi-host) — compacto, só ícone + tooltip. */
+      .sf-task-host {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        color: #d4a373;
+        font-size: 11px;
+      }
+
+      /* Botão ▶ para iniciar tarefas 'todo'. */
+      .sf-task-play {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: #34d399;
+        cursor: pointer;
+        border-radius: 8px;
+      }
+      .sf-task-play {
+        transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
+          background 0.12s;
+      }
+      .sf-task-play:active {
+        background: #1b2a24;
+        transform: scale(0.92);
+      }
+      .sf-tfilter:active {
+        transform: scale(0.97);
+      }
+
+      /* Empty state */
+      .sf-empty {
+        font-size: 14px;
+        color: var(--text-muted);
+        margin: 0;
+        padding: 4px 2px;
+      }
+      .sf-task-more {
+        display: block;
+        width: fit-content;
+        margin: 12px auto 2px;
+        padding: 8px 18px;
+        background: transparent;
+        border: 1px solid #263038;
+        border-radius: 999px;
+        color: #9fb0ad;
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .sf-task-more:hover {
+        color: #e7eae9;
+        border-color: #37464f;
+      }
+
+      /* Respect reduced-motion: disable entrance + press feedback. */
+      @media (prefers-reduced-motion: reduce) {
+        .sf-card.sf-enter,
+        .sf-task-wrap.sf-enter {
+          animation: none !important;
+        }
+        .sf-card,
+        .sf-task-play,
+        .sf-tfilter {
+          transition: none !important;
+          transform: none !important;
+        }
+      }
+
+      /* Card de sessão remota: MESMO .sf-card de sempre, mesma altura — só a
+         borda colorida entrega que é de outra conta. */
+      .sf-card--remote {
+        border-color: inherit;
+      }
+      .sf-remote-badge {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        color: #06231d;
+      }
+    `,
+  ],
+})
+export class InicioComponent implements OnInit {
+  private readonly api = inject(ApiService);
+  protected readonly sse = inject(SseService);
+  private readonly jarvis = inject(JarvisAudioService);
+  private readonly sessionClone = inject(SessionCloneService);
+  protected readonly workers = inject(WorkersStore);
+  private readonly router = inject(Router);
+  private readonly auth = inject(AuthService);
+
+  /** Nome pra saudação: deriva do e-mail de login (antes do @), capitalizado.
+   * Era hardcoded "Diego" — quebrava em qualquer instância que não fosse a
+   * dele (ex.: SessionFlow separado de outro usuário). */
+  protected readonly greetingName = computed(() => {
+    const email = this.auth.email();
+    const local = (email ?? '').split('@')[0]?.split('.')[0] || '';
+    return local ? local.charAt(0).toUpperCase() + local.slice(1) : '';
+  });
+
+  /** True quando o áudio (JARVIS) tocando agora é DESTA sessão → mostra o ícone. */
+  protected isSpeaking(s: Session): boolean {
+    return !!s.tmux_name && this.jarvis.speakingSessionId() === s.tmux_name;
+  }
+
+  /**
+   * FILHOS REAIS desta sessão: sessões delegadas (``parent === s.tmux_name``)
+   * que ainda estão ATIVAS (status != stopped). É o sinal mais confiável de
+   * "sub-agents rodando" — bate a heurística de tela quando existe.
+   */
+  private realChildren(s: Session): Session[] {
+    const parent = s.tmux_name;
+    if (!parent) {
+      return [];
+    }
+    return this.sessions().filter(
+      (c) => c.parent === parent && c.status !== 'stopped',
+    );
+  }
+
+  /**
+   * Quantos sub-agents estão rodando nesta sessão. PREFERE os filhos reais
+   * delegados (mais confiável); na ausência deles cai na heurística da tela
+   * (``subagents``). 0 = nenhum/desconhecido.
+   */
+  protected subAgentCount(s: Session): number {
+    const kids = this.realChildren(s).length;
+    if (kids > 0) {
+      return kids;
+    }
+    const n = s.subagents;
+    return typeof n === 'number' && n > 0 ? n : 0;
+  }
+
+  /** Tooltip do badge: lista os filhos reais (ou os nomes da heurística). */
+  protected subAgentTip(s: Session): string {
+    const kids = this.realChildren(s);
+    const names = kids.length
+      ? kids.map((c) => c.display_name || c.tmux_name)
+      : Array.isArray(s.subagent_names)
+        ? s.subagent_names
+        : [];
+    const n = this.subAgentCount(s);
+    const head = `${n} sub-agente${n === 1 ? '' : 's'} rodando`;
+    return names.length ? `${head}:\n• ${names.join('\n• ')}` : head;
+  }
+
+  /** True por alguns segundos após ESTA sessão concluir uma tarefa → destaca. */
+  protected taskFlash(s: Session): boolean {
+    return !!s.tmux_name && this.sse.taskDoneFlash() === s.tmux_name;
+  }
+  private readonly destroyRef = inject(DestroyRef);
+
+  /** Poll periódico (ms): atualiza atividade das sessões + tarefas sem SSE. */
+  private static readonly POLL_MS = 6000;
+  private pollHandle: ReturnType<typeof setInterval> | null = null;
+
+  /** All sessions loaded from the API, refreshed on SSE activity. */
+  private readonly sessions = signal<Session[]>([]);
+  /** Recent tasks loaded from the API. */
+  protected readonly tasks = signal<Task[]>([]);
+  protected readonly refreshingAllMilestones = signal(false);
+  /** Shimmer no texto da última tarefa DE CADA CARD de sessão enquanto a
+   * revisão pedida não muda aquele texto. Baseline por sessão (id → título no
+   * momento do clique); ativo enquanto o flag global estiver ligado. */
+  private readonly cardShimmerBaseline = signal<Record<string, string> | null>(null);
+  private cardShimmerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Toggle de resposta rápida no hover (localStorage). */
+  /** Toggle de resposta rápida no hover (localStorage). */
+  readonly quickReplyEnabled = signal(true);
+  /** Sessão que está com o input de resposta rápida aberto. */
+  readonly quickReplySession = signal<string | null>(null);
+  /** Texto atual do input de resposta rápida. */
+  readonly quickReplyText = signal('');
+  /** Loading state do envio de resposta rápida. */
+  readonly quickReplySending = signal(false);
+  /** Erro do último envio de resposta rápida. */
+  readonly quickReplyError = signal<string | null>(null);
+  private quickReplyErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** O texto da última tarefa deste card ainda é o mesmo do clique? → brilha. */
+  protected cardTaskShimmer(s: Session): boolean {
+    const base = this.cardShimmerBaseline();
+    if (!base || !(s.id in base)) {
+      return false;
+    }
+    return (this.latestTaskFor(s)?.title ?? '') === base[s.id];
+  }
+
+  private clearCardShimmer(): void {
+    this.cardShimmerBaseline.set(null);
+    if (this.cardShimmerTimer) {
+      clearTimeout(this.cardShimmerTimer);
+      this.cardShimmerTimer = null;
+    }
+  }
+
+  // --- Resposta rápida no hover ---
+
+  /** Alterna o toggle de resposta rápida. */
+  toggleQuickReply(): void {
+    const newVal = !this.quickReplyEnabled();
+    this.quickReplyEnabled.set(newVal);
+    try {
+      localStorage.setItem(QUICK_REPLY_KEY, String(newVal));
+    } catch {
+      // localStorage indisponível: ignora.
+    }
+    if (!newVal) {
+      this.quickReplySession.set(null);
+      this.quickReplyText.set('');
+    }
+  }
+
+  /** Abre o input de resposta rápida para uma sessão. */
+  openQuickReply(sessionId: string, event: MouseEvent): void {
+    event.stopPropagation();
+    if (!this.quickReplyEnabled()) return;
+    this.quickReplySession.set(sessionId);
+    this.quickReplyText.set('');
+    this.quickReplyError.set(null);
+  }
+
+  /** Fecha o input de resposta rápida. */
+  closeQuickReply(): void {
+    if (this.quickReplyErrorTimer) {
+      clearTimeout(this.quickReplyErrorTimer);
+      this.quickReplyErrorTimer = null;
+    }
+    this.quickReplySession.set(null);
+    this.quickReplyText.set('');
+    this.quickReplyError.set(null);
+  }
+
+  /** Envia a resposta rápida para a sessão. */
+  sendQuickReply(sessionId: string, event: KeyboardEvent): void {
+    event.preventDefault();
+    const text = this.quickReplyText().trim();
+    if (!text || this.quickReplySending()) return;
+
+    this.quickReplySending.set(true);
+    this.quickReplyError.set(null);
+
+    this.api
+      .sendInput(sessionId, text, true)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.quickReplySending.set(false);
+          this.quickReplyText.set('');
+          this.quickReplySession.set(null);
+        },
+        error: (err) => {
+          this.quickReplySending.set(false);
+          this.quickReplyError.set('Erro ao enviar');
+          this.quickReplyErrorTimer = setTimeout(() => this.quickReplyError.set(null), 3000);
+        },
+      });
+  }
+
+  /** Handle no keydown do input: Enter envia, Esc fecha. */
+  onQuickReplyKeydown(sessionId: string, event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Enter' && !event.shiftKey) {
+      this.sendQuickReply(sessionId, event);
+    } else if (event.key === 'Escape') {
+      this.closeQuickReply();
+    }
+  }
+
+  /** Impede clique no input de navegar para o detalhe. */
+  onQuickReplyClick(event: MouseEvent): void {
+    event.stopPropagation();
+  }
+
+  /** Pede pra TODAS as sessões ativas revisarem/atualizarem as tarefas agora. */
+  protected refreshAllMilestones(): void {
+    const active = this.activeSessions();
+    if (active.length === 0 || this.refreshingAllMilestones()) {
+      return;
+    }
+    this.refreshingAllMilestones.set(true);
+    // Shimmer no texto da última tarefa de cada card até ELE mudar (cada
+    // agente revisa no seu ritmo; o poll re-busca as tasks). Teto de 2min
+    // pra não brilhar pra sempre quando uma revisão não altera nada.
+    const base: Record<string, string> = {};
+    for (const s of active) {
+      base[s.id] = this.latestTaskFor(s)?.title ?? '';
+    }
+    this.cardShimmerBaseline.set(base);
+    if (this.cardShimmerTimer) {
+      clearTimeout(this.cardShimmerTimer);
+    }
+    this.cardShimmerTimer = setTimeout(() => this.clearCardShimmer(), 120_000);
+    let pending = active.length;
+    const done = () => {
+      pending--;
+      if (pending <= 0) {
+        this.refreshingAllMilestones.set(false);
+      }
+    };
+    for (const s of active) {
+      const text =
+        `[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.${s.tmux_name}.json: ` +
+        'confira o estado REAL do trabalho, atualize status desatualizados, remova ' +
+        'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing". ' +
+        'Revise também o campo "description" (1 frase, o que se trata esta sessão ' +
+        'na SUA observação) — atualize se o foco mudou; crie se não existir.';
+      this.api
+        .sendInput(s.id, text, true)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: done, error: done });
+    }
+  }
+
+  /**
+   * Badge do sino = SÓ as notificações não limpas (buffer SSE). Antes entrava
+   * também o nº de sessões em ``waiting_input`` (Math.max) — aí o "Limpar
+   * todas" zerava o buffer mas o badge continuava mostrando as aguardando e
+   * NUNCA zerava. Sessão aguardando já é sinalizada no próprio card
+   * (destaque "is-waiting"); o sino fica só com o que é notificação de fato.
+   */
+  readonly notifCount = computed(() => this.sse.notifications().length);
+
+  /** Painel do custo global (abre/fecha pelo chip do header). */
+  protected readonly costPanelOpen = signal(false);
+
+  /**
+   * Custo GLOBAL estimado: agrega o ``metrics.cost`` de TODAS as sessões.
+   * Soma USD/BRL ignorando nulls, pega o câmbio mais recente disponível e
+   * consolida a quebra por modelo (tokens + usd). Null = nenhuma sessão tem
+   * custo ainda (feature recente) → o chip não renderiza.
+   */
+  protected readonly globalCost = computed(() => {
+    let usd = 0;
+    let hasUsd = false;
+    let brl = 0;
+    let hasBrl = false;
+    let rate: number | null = null;
+    let rateTs = '';
+    const byModel = new Map<
+      string,
+      {
+        model: string;
+        input: number;
+        output: number;
+        cache_read: number;
+        cache_write: number;
+        usd: number | null;
+      }
+    >();
+
+    for (const s of this.sessions()) {
+      const c = s.metrics?.cost;
+      if (!c) {
+        continue;
+      }
+      if (c.total_usd != null) {
+        usd += c.total_usd;
+        hasUsd = true;
+      }
+      if (c.total_brl != null) {
+        brl += c.total_brl;
+        hasBrl = true;
+      } else if (c.total_usd != null && c.brl_rate != null) {
+        // Sessão com USD mas sem BRL calculado: converte com o câmbio dela.
+        brl += c.total_usd * c.brl_rate;
+        hasBrl = true;
+      }
+      if (c.brl_rate != null) {
+        const ts =
+          s.last_activity_at ?? (s['updated_at'] as string | undefined) ?? '';
+        if (rate === null || ts > rateTs) {
+          rate = c.brl_rate;
+          rateTs = ts;
+        }
+      }
+      for (const r of c.by_model ?? []) {
+        const cur = byModel.get(r.model) ?? {
+          model: r.model,
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+          usd: null as number | null,
+        };
+        cur.input += r.input;
+        cur.output += r.output;
+        cur.cache_read += r.cache_read;
+        cur.cache_write += r.cache_write;
+        if (r.usd != null) {
+          cur.usd = (cur.usd ?? 0) + r.usd;
+        }
+        byModel.set(r.model, cur);
+      }
+    }
+
+    if (!hasUsd) {
+      return null;
+    }
+    // Ordena por usd desc; modelos sem preço (usd null) por último.
+    const rows = [...byModel.values()].sort(
+      (a, b) => (b.usd ?? -1) - (a.usd ?? -1),
+    );
+    const tokensIn = rows.reduce((n, r) => n + r.input, 0);
+    const tokensOut = rows.reduce((n, r) => n + r.output, 0);
+    return {
+      usd,
+      brl: hasBrl ? brl : null,
+      rate,
+      rows,
+      tokensIn,
+      tokensOut,
+    };
+  });
+
+  /** Tooltip do chip: quebra por modelo + nota de estimativa. */
+  protected readonly globalCostTip = computed(() => {
+    const g = this.globalCost();
+    if (!g) {
+      return '';
+    }
+    const lines = g.rows.map(
+      (r) =>
+        `${r.model}: ${r.usd != null ? '~$' + this.fmtUsd(r.usd) : '—'} ` +
+        `(in ${this.fmtTok(r.input)}tok · out ${this.fmtTok(r.output)}tok)`,
+    );
+    return [
+      `Todas as sessões — in ${this.fmtTok(g.tokensIn)}tok · out ${this.fmtTok(g.tokensOut)}tok`,
+      ...lines,
+      'Estimativa em preço de API.',
+    ].join('\n');
+  });
+
+  /**
+   * Período do Top 3 de tokens. "today/week/month" são janelas ROLANTES
+   * (últimas 24h/7d/30d, calculadas no worker a partir do timestamp de cada
+   * turno no JSONL) — não calendário. "all" é o consumo total já existente
+   * (tokens_in/tokens_out/cost, sem filtro de tempo).
+   */
+  protected readonly topTokensPeriod = signal<'today' | 'week' | 'month' | 'all'>('all');
+  protected readonly topTokensPeriodOptions: { key: 'today' | 'week' | 'month' | 'all'; label: string }[] = [
+    { key: 'today', label: 'Hoje' },
+    { key: 'week', label: 'Semana' },
+    { key: 'month', label: 'Mês' },
+    { key: 'all', label: 'Sempre' },
+  ];
+
+  /**
+   * TOP 3 sessões por consumo de tokens (in+out) NO PERÍODO selecionado,
+   * maior primeiro. Ignora sessões sem dado pra aquele período (sessão nova,
+   * sem atividade na janela, ou métricas antigas sem `tokens_periods` ainda
+   * — feature recente). Ranking por tokens brutos (não por USD): reflete uso
+   * real mesmo quando o preço do modelo é desconhecido (``usd`` null).
+   */
+  /**
+   * Janela máxima de "atualidade" tolerada por período — além disso, o
+   * snapshot ``tokens_periods.<period>`` é considerado CONGELADO (a sessão
+   * parou de ser reconciliada e o valor é de uma janela rolante ANTIGA, não
+   * reflete o período atual de verdade). Um pouco folgado em relação ao
+   * próprio período (ex.: 36h pra "today") pra não cortar sessão só porque o
+   * ciclo do worker demorou alguns minutos.
+   */
+  private static readonly PERIOD_FRESHNESS_MS: Record<'today' | 'week' | 'month', number> = {
+    today: 36 * 60 * 60 * 1000,
+    week: 8 * 24 * 60 * 60 * 1000,
+    month: 32 * 24 * 60 * 60 * 1000,
+  };
+
+  protected readonly topTokenSessions = computed(() => {
+    const period = this.topTokensPeriod();
+    const now = Date.now();
+    const rows = this.sessions()
+      .map((s) => {
+        const m = s.metrics;
+        const usage = period === 'all' ? m : m?.tokens_periods?.[period];
+        // Snapshot desatualizado (sessão parada há mais tempo que a própria
+        // janela) → ignora: é uma janela rolante CONGELADA de outro período,
+        // não reflete "hoje/semana/mês" de verdade (ex.: sessão parada há 3
+        // dias ainda mostrando um "Hoje" antigo).
+        if (period !== 'all') {
+          const updatedAt = (s as unknown as { updated_at?: string })['updated_at'];
+          const age = updatedAt ? now - new Date(updatedAt).getTime() : Infinity;
+          if (age > InicioComponent.PERIOD_FRESHNESS_MS[period]) {
+            return null;
+          }
+        }
+        const tokensIn = usage?.tokens_in ?? 0;
+        const tokensOut = usage?.tokens_out ?? 0;
+        const total = tokensIn + tokensOut;
+        return {
+          session: s,
+          tokensIn,
+          tokensOut,
+          total,
+          usd: usage?.cost?.total_usd ?? null,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null && r.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 3);
+    return rows;
+  });
+
+  /** Formata tokens em k/M compactos: 248000→"248k", 18300→"18,3k". */
+  protected fmtTok(n: number | null | undefined): string {
+    if (n == null) {
+      return '—';
+    }
+    if (n >= 1_000_000) {
+      const m = Math.round((n / 1_000_000) * 10) / 10;
+      return String(m).replace('.', ',') + 'M';
+    }
+    if (n >= 1000) {
+      const k = Math.round((n / 1000) * 10) / 10;
+      return String(k).replace('.', ',') + 'k';
+    }
+    return String(n);
+  }
+
+  /** Formata USD: 2 casas; valores <0,01 ganham mais precisão (0.003). */
+  protected fmtUsd(n: number): string {
+    if (n > 0 && n < 0.01) {
+      return n.toFixed(3);
+    }
+    return n.toFixed(2);
+  }
+
+  /** Dinheiro compacto pro chip: >=1000 vira "1,2k"; senão 2 casas. */
+  protected fmtMoney(n: number): string {
+    if (n >= 1000) {
+      const k = Math.round((n / 1000) * 10) / 10;
+      return String(k).replace('.', ',') + 'k';
+    }
+    return this.fmtUsd(n);
+  }
+
+  /** Active sessions = running or waiting_input. */
+  readonly activeSessions = computed(() =>
+    this.sessions().filter((s) => ACTIVE_STATUSES.includes(s.status)),
+  );
+
+  /** Modo da lista: "grouped" (árvore por sessão principal) ou "list" (antigo). */
+  protected readonly viewMode = signal<'grouped' | 'list'>(InicioComponent.loadViewMode());
+
+  private static loadViewMode(): 'grouped' | 'list' {
+    try {
+      return localStorage.getItem(VIEW_MODE_KEY) === 'list' ? 'list' : 'grouped';
+    } catch {
+      return 'grouped';
+    }
+  }
+
+  protected setViewMode(mode: 'grouped' | 'list'): void {
+    this.viewMode.set(mode);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      /* storage indisponível (modo privado etc.) — fica só em memória */
+    }
+  }
+
+  /**
+   * Grupos por sessão principal. Esconde grupos só com sessões encerradas
+   * (stopped/detached) — senão a Home vira histórico.
+   */
+  protected readonly visibleGroups = computed(() =>
+    buildSessionGroups(this.sessions()).filter((g) =>
+      g.nodes.some((n) => !DORMANT_STATUSES.includes(n.session.status)),
+    ),
+  );
+
+  /** Abre/fecha manual por grupo (prevalece sobre o automático; vale na aba). */
+  private readonly groupOpenOverride = signal<Record<string, boolean>>(
+    InicioComponent.loadGroupOpen(),
+  );
+
+  private static loadGroupOpen(): Record<string, boolean> {
+    try {
+      const raw = sessionStorage.getItem(GROUP_OPEN_KEY);
+      const v = raw ? JSON.parse(raw) : {};
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  }
+
+  protected isGroupOpen(g: SessionGroup): boolean {
+    const manual = this.groupOpenOverride()[g.key];
+    return manual ?? g.active;
+  }
+
+  protected toggleGroup(g: SessionGroup): void {
+    const next = !this.isGroupOpen(g);
+    this.groupOpenOverride.update((m) => ({ ...m, [g.key]: next }));
+    try {
+      sessionStorage.setItem(GROUP_OPEN_KEY, JSON.stringify(this.groupOpenOverride()));
+    } catch {
+      /* sem storage — fica só em memória */
+    }
+  }
+
+  /** Há algo pra mostrar na área de cards no modo atual? */
+  protected readonly hasCards = computed(
+    () =>
+      this.remoteSessions().length > 0 ||
+      (this.viewMode() === 'list'
+        ? this.activeSessions().length > 0
+        : this.visibleGroups().length > 0),
+  );
+
+  /** Saudação conforme a hora LOCAL do cliente (fuso do aparelho). */
+  protected greeting(): string {
+    const h = new Date().getHours();
+    if (h < 12) {
+      return 'Bom dia';
+    }
+    if (h < 18) {
+      return 'Boa tarde';
+    }
+    return 'Boa noite';
+  }
+
+  readonly activeCountLabel = computed(() => {
+    const n = this.activeSessions().length;
+    return `${n} ${n === 1 ? 'sessão ativa' : 'sessões ativas'}`;
+  });
+
+  /** Filtros das tarefas: por status e por sessão. */
+  readonly taskStatus = signal<'all' | 'todo' | 'doing' | 'done' | 'blocked'>('all');
+  readonly taskSession = signal<string>('');
+  readonly taskFilters: { key: 'todo' | 'doing' | 'done' | 'blocked'; label: string }[] = [
+    { key: 'doing', label: 'Em andamento' },
+    { key: 'todo', label: 'A fazer' },
+    { key: 'blocked', label: 'Bloqueadas' },
+    { key: 'done', label: 'Concluídas' },
+  ];
+  /** Sessões distintas que têm tarefas (para o seletor). */
+  readonly taskSessions = computed(() => {
+    const set = new Set<string>();
+    for (const t of this.tasks()) {
+      if (t.session_id) set.add(t.session_id);
+    }
+    return [...set].sort();
+  });
+
+  /** Tamanho do "lote" carregado a cada avanço do infinite scroll. */
+  private static readonly TASKS_PAGE = 10;
+  /** Limite atual; null = mostrar só as de HOJE (default). */
+  readonly taskLimit = signal<number | null>(null);
+
+  /** Tarefas filtradas (status/sessão) e ordenadas por mais recentes primeiro. */
+  readonly filteredTasks = computed(() => {
+    const st = this.taskStatus();
+    const ses = this.taskSession();
+    return this.tasks()
+      .filter(
+        (t) =>
+          (st === 'all' || t.state === st) && (!ses || t.session_id === ses),
+      )
+      .slice()
+      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''));
+  });
+
+  /**
+   * Tarefas exibidas: por padrão só as de HOJE; se não houver nenhuma hoje,
+   * mostra um primeiro lote (p/ não ficar vazio). Ao rolar/"ver mais", o
+   * {@link taskLimit} cresce e passa a incluir as mais antigas.
+   */
+  readonly recentTasks = computed(() => {
+    const all = this.filteredTasks();
+    const limit = this.taskLimit();
+    if (limit === null) {
+      const today = all.filter((t) => isToday(t.updated_at));
+      return today.length > 0 ? today : all.slice(0, InicioComponent.TASKS_PAGE);
+    }
+    return all.slice(0, limit);
+  });
+
+  /** Quantas tarefas ainda faltam além das visíveis (0 = tudo à mostra). */
+  readonly remainingTasks = computed(() =>
+    Math.max(0, this.filteredTasks().length - this.recentTasks().length),
+  );
+
+  /** Carrega o próximo lote (botão "Ver mais" / infinite scroll). */
+  showMoreTasks(): void {
+    if (this.remainingTasks() === 0) {
+      return;
+    }
+    this.taskLimit.set(this.recentTasks().length + InicioComponent.TASKS_PAGE);
+  }
+
+  /** Ao rolar a página perto do fim da lista, carrega mais (infinite scroll). */
+  onTasksScroll(): void {
+    if (this.remainingTasks() === 0) {
+      return;
+    }
+    const doc = document.documentElement;
+    if (doc.scrollHeight - doc.scrollTop - doc.clientHeight < 240) {
+      this.showMoreTasks();
+    }
+  }
+
+  /** Tracks how many SSE events we have already reacted to. */
+  private lastEventCount = 0;
+
+  // ── Sessões de OUTRAS contas (bookmark de link de convidado, criado na
+  //    tela "Nova sessão" → aba "Compartilhada") ───────────────────────────
+
+  protected readonly remoteSessions = signal<RemoteSession[]>([]);
+
+  private loadRemoteSessions(): void {
+    this.api.listRemoteSessions().subscribe({
+      next: (list) => this.remoteSessions.set(list ?? []),
+      error: () => {
+        /* mantém o último estado conhecido em erro transitório */
+      },
+    });
+  }
+
+  /** Cor estável derivada do rótulo (mesma pessoa sempre com a mesma cor). */
+  protected remoteColor(r: RemoteSession): string {
+    const palette = ['#4796E3', '#34D399', '#F59E0B', '#F87171', '#A78BFA', '#2CECC4'];
+    let hash = 0;
+    for (let i = 0; i < r.label.length; i++) {
+      hash = (hash * 31 + r.label.charCodeAt(i)) >>> 0;
+    }
+    return palette[hash % palette.length];
+  }
+
+  /** Domínio do link de convidado — equivalente ao "diretório" do card normal. */
+  protected remoteHost(r: RemoteSession): string {
+    try {
+      return new URL(r.url).hostname;
+    } catch {
+      return r.url;
+    }
+  }
+
+  protected remoteTimeAgo(r: RemoteSession): string {
+    return fmtTimeAgo(r.created_at ?? undefined);
+  }
+
+  /** Abre em TELA CHEIA, igual uma sessão normal — não é modal. */
+  protected openRemoteSession(r: RemoteSession): void {
+    void this.router.navigate(['/remota', r.id]);
+  }
+
+  protected removeRemoteSession(r: RemoteSession): void {
+    this.api.deleteRemoteSession(r.id).subscribe({
+      next: () => this.remoteSessions.update((list) => list.filter((x) => x.id !== r.id)),
+      error: () => this.loadRemoteSessions(),
+    });
+  }
+
+  constructor() {
+    // Live updates: whenever the SSE event buffer grows, re-fetch the lists.
+    // Reading the signal inside an effect registers the dependency, so this
+    // runs again on every new frame the service decodes.
+    effect(() => {
+      const count = this.sse.events().length;
+      if (count !== this.lastEventCount) {
+        this.lastEventCount = count;
+        this.reloadSessions();
+        this.reloadTasks();
+        this.loadRemoteSessions();
+      }
+    });
+    // Trocar filtro/sessão volta a mostrar só as de hoje (reseta a paginação).
+    effect(() => {
+      this.taskStatus();
+      this.taskSession();
+      this.taskLimit.set(null);
+    });
+  }
+
+  ngOnInit(): void {
+    // Carrega toggle de resposta rápida do localStorage.
+    try {
+      const stored = localStorage.getItem(QUICK_REPLY_KEY);
+      if (stored !== null) {
+        this.quickReplyEnabled.set(stored === 'true');
+      }
+    } catch {
+      // localStorage indisponível: usa default.
+    }
+
+    if (!this.sse.connected()) {
+      this.sse.connect();
+    }
+    this.reloadSessions();
+    this.reloadTasks();
+    this.loadRemoteSessions();
+
+    // Poll periódico: a ATIVIDADE das sessões ("Pensando"/"Codificando"…) e o
+    // estado das tarefas mudam no ciclo do worker sem disparar SSE. Re-busca
+    // ambas as listas em intervalo curto p/ a home não ficar parada. O refetch
+    // por SSE continua valendo (atualização imediata em eventos).
+    this.pollHandle = setInterval(() => {
+      this.reloadSessions();
+      this.reloadTasks();
+      this.loadRemoteSessions();
+    }, InicioComponent.POLL_MS);
+    // Infinite scroll da lista de tarefas: carrega mais ao chegar perto do fim.
+    const onScroll = () => this.onTasksScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    this.destroyRef.onDestroy(() => {
+      if (this.pollHandle !== null) {
+        clearInterval(this.pollHandle);
+        this.pollHandle = null;
+      }
+      window.removeEventListener('scroll', onScroll);
+    });
+  }
+
+  private reloadSessions(): void {
+    this.api.listSessions().subscribe({
+      next: (list) => this.sessions.set(list ?? []),
+      error: () => {
+        /* keep last known state */
+      },
+    });
+  }
+
+  private reloadTasks(): void {
+    this.api.getTasks().subscribe({
+      next: (list) => this.tasks.set(list ?? []),
+      error: () => {
+        /* keep last known state */
+      },
+    });
+  }
+
+  // --- View helpers ---
+
+  /** Staggered entrance delay per list index, capped so long lists don't lag. */
+  enterDelay(i: number): string {
+    return Math.min(i * 28, 220) + 'ms';
+  }
+
+  statusMeta(status: SessionStatus) {
+    return STATUS_META[status] ?? STATUS_META.detached;
+  }
+
+  /**
+   * Rótulo do status do card: para sessões RODANDO com ``activity`` derivado
+   * mostra o que o agente está fazendo (ex.: "Pensando"); senão o label padrão.
+   */
+  statusLabel(s: Session): string {
+    if (s.status === 'running' && s.activity) {
+      return s.activity;
+    }
+    return this.statusMeta(s.status).label;
+  }
+
+  /**
+   * "Última atividade há X" — usa ``last_activity_at`` (tela mudou / input real),
+   * não ``updated_at`` (batido todo ciclo). Mostra se a sessão está parada faz tempo.
+   */
+  protected timeAgo(s: Session): string {
+    return fmtTimeAgo(
+      s.last_activity_at ??
+        (s['updated_at'] as string | undefined) ??
+        (s['created_at'] as string | undefined),
+    );
+  }
+
+  /**
+   * Ícone expressivo do status do card, escolhido pela ``activity`` (sessões
+   * rodando) ou pelo status bruto.
+   */
+  statusIcon(
+    s: Session,
+  ): 'think' | 'code' | 'analyze' | 'run' | 'wait' | 'external' | 'done' | 'play' | 'stopped' {
+    if (s.status === 'waiting_input') {
+      return 'wait';
+    }
+    if (s.status === 'waiting_external') {
+      return 'external';
+    }
+    if (s.status === 'completed') {
+      return 'done';
+    }
+    if (s.status === 'stopped' || s.status === 'detached') {
+      return 'stopped';
+    }
+    if (s.status === 'running') {
+      switch (s.activity) {
+        case 'Pensando':
+          return 'think';
+        case 'Codificando':
+          return 'code';
+        case 'Analisando':
+          return 'analyze';
+        case 'Rodando comando':
+          return 'run';
+        case 'Aguardando você':
+          return 'wait';
+        case 'Concluído':
+          return 'done';
+        default:
+          return 'play';
+      }
+    }
+    return 'stopped';
+  }
+
+  /** Ícones "vivos" (com pulse sutil) — estados de trabalho ativo. */
+  isActiveIcon(s: Session): boolean {
+    return this.isWorkingIcon(this.statusIcon(s));
+  }
+
+  /**
+   * Cor ÚNICA do status — usada no texto do card E igual à do glow
+   * (`is-waiting`/`is-running`/`is-external`/`is-completed` no CSS). Antes o
+   * texto usava STATUS_META direto, que dá a MESMA cor pra "running" e
+   * "completed" — por isso não dava pra distinguir só pela cor.
+   */
+  protected statusColor(s: Session): string {
+    const k = this.statusIcon(s);
+    if (k === 'wait') {
+      return '#fbbf24'; // âmbar — precisa de você
+    }
+    if (k === 'external') {
+      return '#fb923c'; // laranja — aguardando algo externo
+    }
+    if (k === 'done') {
+      return '#34d399'; // verde — concluído, sem urgência
+    }
+    if (this.isWorkingIcon(k)) {
+      return '#22d3ee'; // ciano — trabalhando de verdade agora
+    }
+    return '#6b7280'; // cinza — parada/desconhecida
+  }
+
+  /** Estados de trabalho ainda em andamento (glow ciano do card) — usado
+   * tanto pro ícone quanto pro brilho do card em si. */
+  isWorkingIcon(k: ReturnType<InicioComponent['statusIcon']>): boolean {
+    return k === 'think' || k === 'code' || k === 'analyze' || k === 'run' || k === 'play';
+  }
+
+  agent(s: Session) {
+    return agentMeta(s.agent_type);
+  }
+
+  /** Worker/sub-agente pela convenção de nome (chip ⑂). */
+  isWorker(s: Session): boolean {
+    return isWorkerSession(s.tmux_name ?? s.display_name);
+  }
+
+  /**
+   * Nome do host desta sessão (multi-host, AD-011) — só quando existe MAIS
+   * DE 1 host ativo (não polui o card do caso comum de hoje, 1 host só).
+   */
+  hostBadge(s: Session): string | null {
+    if (!this.workers.hasMultipleHosts()) {
+      return null;
+    }
+    return this.workers.hostname(s.host_id);
+  }
+
+  /** Emoji do host desta sessão (ex. 🍎/🦆), ou null pro ícone genérico. */
+  hostEmoji(s: Session): string | null {
+    return this.workers.emoji(s.host_id);
+  }
+
+  agentBg(s: Session): string {
+    return this.hexToRgba(this.agent(s).color, 0.16);
+  }
+
+  displayName(s: Session): string {
+    return s.display_name || s.tmux_name || s.id;
+  }
+
+  subline(s: Session): string {
+    return s.work_dir || this.agent(s).label;
+  }
+
+  taskMeta(state: TaskDisplayState): { label: string; color: string; bg: string } {
+    const map: Record<TaskDisplayState, { label: string; color: string }> = {
+      todo: { label: 'A fazer', color: 'var(--text-muted)' },
+      doing: { label: 'Em andamento', color: 'var(--warning)' },
+      blocked: { label: 'Bloqueada', color: 'var(--danger)' },
+      done: { label: 'Concluída', color: 'var(--positive)' },
+      attention: { label: 'Requer atenção', color: 'var(--warning)' },
+      paused: { label: 'Pausada', color: '#9aa0ad' },
+    };
+    const m = map[state] ?? map.todo;
+    return { ...m, bg: this.cssVarToRgba(m.color) };
+  }
+
+  /**
+   * Tarefa mais recentemente atualizada desta sessão (qualquer status) — pro
+   * card da Início mostrar "no que ela está" no lugar do caminho (que já é
+   * meio redundante — some do card, mas continua visível dentro da sessão).
+   */
+  protected latestTaskFor(s: Session): Task | null {
+    const mine = this.tasks().filter((t) => t.session_id === s.tmux_name);
+    if (mine.length === 0) {
+      return null;
+    }
+    // Mesma prioridade do Detalhe (`currentTask`): doing > blocked > mais
+    // recente — senão o card mostrava "a última tocada" enquanto a própria
+    // sessão prioriza a que está DE FATO em andamento (podiam divergir).
+    return (
+      mine.find((t) => t.state === 'doing') ??
+      mine.find((t) => t.state === 'blocked') ??
+      mine.reduce((a, b) => ((b.updated_at ?? '') > (a.updated_at ?? '') ? b : a))
+    );
+  }
+
+  /** Status da sessão (tmux_name) a que a tarefa pertence — null se não achar. */
+  private sessionStatusFor(t: Task): string | null {
+    const s = this.sessions().find((s) => s.tmux_name === t.session_id);
+    return s ? s.status : null;
+  }
+
+  /**
+   * Estado de exibição efetivo: rebaixa 'doing' para 'paused' quando a sessão
+   * da tarefa não está rodando (parada, desanexada ou inexistente). Assim uma
+   * tarefa não aparece "Em andamento" sem o agente trabalhando de fato.
+   */
+  protected effectiveTaskState(t: Task): TaskDisplayState {
+    if (t.state === 'doing' && this.sessionStatusFor(t) !== 'running') {
+      return 'paused';
+    }
+    return t.state;
+  }
+
+  /** Nome da sessão da tarefa (chip à direita) — nome real, sem cortar a 6. */
+  sessionShort(t: Task): string {
+    return t.session_id ?? '';
+  }
+
+  /**
+   * Host da sessão dona desta tarefa (multi-host, AD-011) — só quando há
+   * MAIS DE 1 host ativo (não polui a lista do caso comum de hoje).
+   */
+  taskHostBadge(t: Task): string | null {
+    if (!this.workers.hasMultipleHosts() || !t.session_id) {
+      return null;
+    }
+    const session = this.sessions().find((s) => s.tmux_name === t.session_id);
+    return this.workers.hostname(session?.host_id);
+  }
+
+  /** Emoji do host desta tarefa (ex. 🍎/🦆), ou null pro ícone genérico. */
+  taskHostEmoji(t: Task): string | null {
+    if (!t.session_id) {
+      return null;
+    }
+    const session = this.sessions().find((s) => s.tmux_name === t.session_id);
+    return this.workers.emoji(session?.host_id);
+  }
+
+  // --- Navigation ---
+
+  openNotifications(): void {
+    this.router.navigate(['/notificacoes']);
+  }
+  goSessoes(): void {
+    this.router.navigate(['/sessoes']);
+  }
+  goTimeline(): void {
+    this.router.navigate(['/timeline']);
+  }
+  openSession(id: string): void {
+    this.router.navigate(['/sessao', id]);
+  }
+  protected cloneSession(event: Event, sessionId: string): void {
+    event.stopPropagation();
+    this.sessionClone.clone(sessionId);
+  }
+  /** Resolve o tmux_name da tarefa para o _id real da sessão. */
+  private sessionIdForTask(t: Task): string | null {
+    const match = this.sessions().find(
+      (s) => s.tmux_name === t.session_id || s.display_name === t.session_id,
+    );
+    return match ? match.id : null;
+  }
+
+  /** Clique na tarefa → abre a sessão onde ela está acontecendo. */
+  openTaskSession(t: Task): void {
+    const id = this.sessionIdForTask(t);
+    if (id) {
+      this.router.navigate(['/sessao', id], { queryParams: { task: t.title } });
+    }
+  }
+
+  // ── Swipe-to-delete nas tarefas (iOS style, espelha SessoesComponent) ─────
+  private static readonly OPEN = -88;
+  private static readonly SNAP = -72;
+  private static readonly CLAMP = -96;
+  private static readonly TAP_THRESHOLD = 8;
+
+  /** translateX por tarefa (px). 0 = fechado. */
+  private readonly taskOffsets = signal<Map<string, number>>(new Map());
+  /** Id da tarefa em arrasto ativo (desabilita a transição CSS). */
+  protected readonly taskDragId = signal<string | null>(null);
+  /** Sinaliza que o último gesto foi swipe (suprime o tap seguinte). */
+  private lastTaskWasSwipe = false;
+
+  private taskGesture: {
+    id: string;
+    startX: number;
+    startY: number;
+    baseOffset: number;
+    locked: boolean;
+    moved: boolean;
+    cancelled: boolean;
+  } | null = null;
+
+  protected taskOffset(id: string): number {
+    return this.taskOffsets().get(id) ?? 0;
+  }
+
+  private setTaskOffset(id: string, value: number): void {
+    this.taskOffsets.update((m) => {
+      const next = new Map(m);
+      if (value === 0) {
+        next.delete(id);
+      } else {
+        next.set(id, value);
+      }
+      return next;
+    });
+  }
+
+  private closeAllTasks(except?: string): void {
+    this.taskOffsets.update((m) => {
+      if (m.size === 0) {
+        return m;
+      }
+      const next = new Map<string, number>();
+      if (except && m.has(except)) {
+        next.set(except, m.get(except)!);
+      }
+      return next;
+    });
+  }
+
+  protected onTaskPointerDown(t: Task, ev: PointerEvent): void {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) {
+      return;
+    }
+    this.taskGesture = {
+      id: t.id,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      baseOffset: this.taskOffset(t.id),
+      locked: false,
+      moved: false,
+      cancelled: false,
+    };
+  }
+
+  protected onTaskPointerMove(t: Task, ev: PointerEvent): void {
+    const g = this.taskGesture;
+    if (!g || g.id !== t.id || g.cancelled) {
+      return;
+    }
+    const dx = ev.clientX - g.startX;
+    const dy = ev.clientY - g.startY;
+
+    if (!g.locked) {
+      if (Math.abs(dx) < 4 && Math.abs(dy) < 4) {
+        return;
+      }
+      // Scroll vertical vence → deixa rolar, aborta o swipe.
+      if (Math.abs(dy) > Math.abs(dx)) {
+        g.cancelled = true;
+        return;
+      }
+      g.locked = true;
+      this.taskDragId.set(t.id);
+      this.closeAllTasks(t.id);
+      (ev.target as Element).setPointerCapture?.(ev.pointerId);
+    }
+
+    if (Math.abs(dx) > InicioComponent.TAP_THRESHOLD) {
+      g.moved = true;
+    }
+
+    let next = g.baseOffset + dx;
+    if (next > 0) {
+      next = next * 0.25;
+    } else if (next < InicioComponent.CLAMP) {
+      const over = next - InicioComponent.CLAMP;
+      next = InicioComponent.CLAMP + over * 0.25;
+    }
+    this.setTaskOffset(t.id, next);
+  }
+
+  protected onTaskPointerUp(t: Task, ev: PointerEvent): void {
+    const g = this.taskGesture;
+    if (!g || g.id !== t.id) {
+      return;
+    }
+    this.taskGesture = null;
+    this.taskDragId.set(null);
+    if (g.cancelled || !g.locked) {
+      return;
+    }
+    (ev.target as Element).releasePointerCapture?.(ev.pointerId);
+    if (g.moved) {
+      this.lastTaskWasSwipe = true;
+    }
+    const cur = this.taskOffset(t.id);
+    this.setTaskOffset(
+      t.id,
+      cur <= InicioComponent.SNAP ? InicioComponent.OPEN : 0,
+    );
+  }
+
+  /** Tap na linha: abre a sessão; suprime quando houve swipe / está aberta. */
+  protected onTaskClick(t: Task, ev: MouseEvent): void {
+    const moved = this.taskOffset(t.id) !== 0;
+    if (this.lastTaskWasSwipe || moved) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (moved) {
+        this.setTaskOffset(t.id, 0);
+      }
+      this.lastTaskWasSwipe = false;
+      return;
+    }
+    this.openTaskSession(t);
+  }
+
+  /** Tap no botão vermelho: confirma, remove otimista e chama deleteTask. */
+  protected confirmEliminateTask(t: Task): void {
+    const ok = confirm(
+      'Apagar a tarefa "' +
+        (t.title ?? '') +
+        '"? Some daqui e do arquivo de marcos no Mac.',
+    );
+    if (!ok) {
+      this.setTaskOffset(t.id, 0); // snap back
+      return;
+    }
+
+    // Remoção otimista (guarda p/ rollback).
+    const prev = this.tasks();
+    this.setTaskOffset(t.id, 0);
+    this.tasks.update((list) => list.filter((x) => x.id !== t.id));
+
+    this.api.deleteTask(t.id).subscribe({
+      error: () => {
+        // Rollback + recarrega do servidor.
+        this.tasks.set(prev);
+        this.reloadTasks();
+      },
+    });
+  }
+
+  /** Botão ▶ em tarefas 'todo' → manda a sessão começar a trabalhar nela. */
+  startTask(t: Task, ev: Event): void {
+    ev.stopPropagation();
+    const id = this.sessionIdForTask(t);
+    if (!id) {
+      return;
+    }
+    this.api
+      .sendInput(id, 'Comece a trabalhar nesta tarefa: ' + t.title)
+      .subscribe({ next: () => {}, error: () => {} });
+  }
+
+  // --- Color utils ---
+
+  private hexToRgba(hex: string, alpha: number): string {
+    const h = hex.replace('#', '');
+    const full = h.length === 3
+      ? h.split('').map((c) => c + c).join('')
+      : h;
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  /** For CSS-var colors we can't parse, fall back to color-mix for the tint. */
+  private cssVarToRgba(color: string): string {
+    if (color.startsWith('#')) {
+      return this.hexToRgba(color, 0.16);
+    }
+    return `color-mix(in srgb, ${color} 16%, transparent)`;
+  }
+}
+
+/** True se o ISO cai no dia de HOJE (fuso local). Sem data → false. */
+function isToday(iso: string | null | undefined): boolean {
+  if (!iso) {
+    return false;
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return false;
+  }
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}

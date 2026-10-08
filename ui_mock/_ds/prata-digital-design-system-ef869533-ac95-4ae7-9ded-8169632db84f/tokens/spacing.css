@@ -1,0 +1,47 @@
+/* ============================================================
+   Prata Digital — Spacing, radii, shadows, layout
+   4px base grid (from _utils.scss)
+   ============================================================ */
+
+:root {
+  /* Spacing scale — 4px base */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Radii */
+  --radius-sm:   4px;  /* nav items, chips on dark */
+  --radius-md:   6px;  /* buttons, inputs */
+  --radius-lg:   8px;  /* cards (.is-card) */
+  --radius-xl:   10px; /* stat cards, tags, pills */
+  --radius-2xl:  16px; /* login panel, large modals */
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-xs:   0px 1px 2px 0px rgba(0, 0, 0, 0.05);   /* .is-card */
+  --shadow-sm:   0 1px 1px 1px rgba(10, 10, 10, 0.10);  /* stat card */
+  --shadow-md:   0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg:   0 10px 24px rgba(16, 24, 40, 0.12);    /* dropdowns, modals */
+  --shadow-hover: 0 0 10px rgba(10,10,10,0.1), 0 10px 10px rgba(10,10,10,0.1);
+
+  /* Layout chrome (from _css-variables.scss) */
+  --header-height: 75px;
+  --footer-height: 90px;
+  --info-height:   60px;
+  --sidebar-width: 240px;
+  --sidebar-width-min: 72px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --ease-sine:     cubic-bezier(0.45, 0.05, 0.55, 0.95); /* @kind other */
+  --dur-fast:   150ms; /* @kind other */
+  --dur-normal: 250ms; /* @kind other */
+  --dur-slow:   350ms; /* @kind other */
+}

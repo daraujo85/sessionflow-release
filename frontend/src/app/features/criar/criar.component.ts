@@ -1,0 +1,939 @@
+import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import { Subject, switchMap } from 'rxjs';
+import { debounceTime, distinctUntilChanged } from 'rxjs/operators';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { HttpErrorResponse } from '@angular/common/http';
+
+import { ApiService } from '../../core/api.service';
+import { AgentModel, AgentType, CreateSessionPayload, Directory } from '../../core/models';
+import { AGENT_META, AgentMeta } from '../../shared/status-color';
+import { WorkersStore } from '../../core/workers-store';
+
+/** Reasoning-effort options (hidden for the gemini agent). */
+type Effort = 'Baixo' | 'Médio' | 'Alto' | 'Máximo';
+const EFFORTS: Effort[] = ['Baixo', 'Médio', 'Alto', 'Máximo'];
+
+/** Selectable agents shown in the 2x2 grid (excludes "desconhecido"). */
+const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
+
+@Component({
+  selector: 'sf-criar',
+  standalone: true,
+  imports: [FormsModule],
+  template: `
+    <section class="overlay">
+      <!-- Header -->
+      <header class="hdr">
+        <button type="button" class="back" (click)="goBack()" aria-label="Voltar">←</button>
+        <h1>Nova sessão</h1>
+      </header>
+
+      <div class="mode-tabs" role="tablist" aria-label="Tipo de sessão">
+        <button
+          type="button"
+          role="tab"
+          class="mode-tab"
+          [class.selected]="mode() === 'local'"
+          [attr.aria-selected]="mode() === 'local'"
+          (click)="mode.set('local')"
+        >
+          Local
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="mode-tab"
+          [class.selected]="mode() === 'rapida'"
+          [attr.aria-selected]="mode() === 'rapida'"
+          (click)="mode.set('rapida')"
+          title="Sessão efêmera pré-configurada (claude-tudao, scratch no host, auto-limpa em 24h)"
+        >
+          ⚡ Rápida
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="mode-tab"
+          [class.selected]="mode() === 'compartilhada'"
+          [attr.aria-selected]="mode() === 'compartilhada'"
+          (click)="mode.set('compartilhada')"
+        >
+          Compartilhada
+        </button>
+      </div>
+
+      @if (mode() === 'compartilhada') {
+        <div class="body">
+          <label class="field">
+            <span class="label">Nome de quem compartilhou</span>
+            <input
+              class="input"
+              type="text"
+              placeholder="ex: Lucas"
+              [ngModel]="remoteLabel()"
+              (ngModelChange)="remoteLabel.set($event)"
+            />
+          </label>
+          <label class="field">
+            <span class="label">Link de convidado</span>
+            <input
+              class="input mono"
+              type="text"
+              placeholder="https://.../s/...?k=..."
+              autocomplete="off"
+              [ngModel]="remoteUrl()"
+              (ngModelChange)="remoteUrl.set($event)"
+            />
+            <span class="hint-muted">
+              Cole o link que a pessoa gerou no botão de compartilhar da sessão dela.
+            </span>
+          </label>
+          @if (errorMsg()) {
+            <p class="error">{{ errorMsg() }}</p>
+          }
+        </div>
+        <footer class="ftr">
+          <button
+            type="button"
+            class="submit"
+            [disabled]="!canSubmitRemote() || remoteSubmitting()"
+            (click)="submitRemote()"
+          >
+            {{ remoteSubmitting() ? 'Adicionando…' : 'Adicionar' }}
+          </button>
+        </footer>
+      } @else {
+      <div class="body">
+        <!-- Nome -->
+        <label class="field">
+          <span class="label">Nome da sessão</span>
+          <input
+            class="input"
+            type="text"
+            placeholder="ex: refatorar autenticação"
+            [ngModel]="name()"
+            (ngModelChange)="name.set($event)"
+          />
+          <span class="hint-muted slug-preview">
+            Terminal: <span class="mono">{{ slug() || '—' }}</span>
+          </span>
+        </label>
+
+        <!-- Tipo de agente -->
+        <div class="field">
+          <span class="label">Tipo de agente</span>
+          <div class="agent-grid">
+            @for (a of agents; track a) {
+              <button
+                type="button"
+                class="agent-card"
+                [class.selected]="agent() === a"
+                [style.--c]="meta(a).color"
+                (click)="selectAgent(a)"
+              >
+                <span class="agent-short" [style.background]="meta(a).color">{{ meta(a).short }}</span>
+                <span class="agent-text">
+                  <span class="agent-label">{{ meta(a).label }}</span>
+                  <span class="mono agent-cmd">{{ meta(a).cmd }}</span>
+                </span>
+              </button>
+            }
+          </div>
+        </div>
+
+        <!-- Modelo -->
+        <div class="field">
+          <span class="label">Modelo</span>
+          @if (modelsLoading()) {
+            <span class="hint-muted">Carregando modelos…</span>
+          } @else if (models().length) {
+            <div class="chips">
+              @for (m of models(); track m.id) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.selected]="model() === m.id"
+                  [attr.title]="m.description || null"
+                  (click)="model.set(m.id)"
+                >
+                  {{ m.label }}
+                </button>
+              }
+            </div>
+} @else if (mode() === 'rapida') {
+        <div class="body">
+          <!-- Host (só quando >1 ativo; senão vai no auto pro único host). -->
+          @if (workers.hasMultipleHosts()) {
+            <div class="field">
+              <span class="label">Rodar em</span>
+              <div class="chips">
+                <button
+                  type="button"
+                  class="chip"
+                  [class.selected]="hostId() === null"
+                  (click)="hostId.set(null)"
+                >
+                  Auto
+                </button>
+                @for (h of workers.workers(); track h.host_id) {
+                  <button
+                    type="button"
+                    class="chip"
+                    [class.selected]="hostId() === h.host_id"
+                    [disabled]="!h.online"
+                    [title]="h.online ? '' : 'Offline agora'"
+                    (click)="hostId.set(h.host_id ?? null)"
+                  >
+                    {{ h.emoji ? h.emoji + ' ' : '' }}{{ h.display_name || h.hostname || '—'
+                    }}{{ h.online ? '' : ' (offline)' }}
+                  </button>
+                }
+              </div>
+            </div>
+          } @else if (autoHostLabel(); as hostLabel) {
+            <span class="hint-muted">Vai rodar em <strong>{{ hostLabel }}</strong>.</span>
+          }
+
+          <!-- Missão: textarea multilinha. O conteúdo vira o nome da sessão
+               (slug curto) + display_name (texto cheio) + primeira instrução
+               enviada ao agente. -->
+          <label class="field">
+            <span class="label">Missão</span>
+            <textarea
+              class="input mission"
+              rows="5"
+              placeholder="Descreva o que esta sessão precisa fazer.&#10;Ex: Investigar por que o teste X está falhando e propor fix."
+              [ngModel]="mission()"
+              (ngModelChange)="mission.set($event)"
+            ></textarea>
+            <span class="hint-muted slug-preview">
+              Terminal: <span class="mono">{{ slug() || '—' }}</span>
+            </span>
+          </label>
+
+          <!-- Defaults fixos (info, não editável): agente + cleanup. -->
+          <div class="hint-muted ephemeral-meta">
+            <span>Agente: <strong>claude</strong> · modelo: <strong>claude-tudao</strong></span>
+            <span>Sessão + pasta removidas após <strong>24h</strong> sem atividade.</span>
+          </div>
+
+          @if (errorMsg()) {
+            <p class="error">{{ errorMsg() }}</p>
+          }
+        </div>
+        <footer class="ftr">
+          <button
+            type="button"
+            class="submit"
+            [disabled]="!canSubmitRapida() || submitting()"
+            (click)="submitRapida()"
+          >
+            {{ submitting() ? 'Criando…' : 'Criar sessão rápida' }}
+          </button>
+        </footer>
+      } @else {
+            <!-- Lista vazia (ex: gemini): campo livre. -->
+            <input
+              class="input"
+              type="text"
+              placeholder="digite o modelo (opcional)"
+              [ngModel]="freeModel()"
+              (ngModelChange)="freeModel.set($event)"
+            />
+            <span class="hint-muted">
+              Sem modelos pré-definidos — deixe vazio para usar o padrão do agente.
+            </span>
+          }
+        </div>
+
+        <!-- Esforço de raciocínio (oculto p/ gemini) -->
+        @if (agent() !== 'gemini') {
+          <div class="field">
+            <span class="label">Esforço de raciocínio</span>
+            <div class="chips">
+              @for (e of efforts; track e) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.selected]="effort() === e"
+                  (click)="effort.set(e)"
+                >
+                  {{ e }}
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Host onde criar (multi-host) — só aparece com >1 host ativo. -->
+        @if (hostOptions().length > 0) {
+          <div class="field">
+            <span class="label">Rodar em</span>
+            <div class="chips">
+              <button
+                type="button"
+                class="chip"
+                [class.selected]="hostId() === null"
+                (click)="hostId.set(null)"
+              >
+                Auto
+              </button>
+              @for (h of hostOptions(); track h.host_id) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.selected]="hostId() === h.host_id"
+                  [disabled]="!h.online"
+                  [title]="h.online ? '' : 'Offline agora'"
+                  (click)="hostId.set(h.host_id ?? null)"
+                >
+                  {{ h.emoji ? h.emoji + ' ' : '' }}{{ h.display_name || h.hostname || '—'
+                  }}{{ h.online ? '' : ' (offline)' }}
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Diretório de trabalho (autocomplete) -->
+        <div class="field">
+          <span class="label">Diretório de trabalho</span>
+          <input
+            class="input mono"
+            type="text"
+            placeholder="/caminho/do/projeto"
+            autocomplete="off"
+            [ngModel]="workDir()"
+            (ngModelChange)="onDirInput($event)"
+            (focus)="dirFocused.set(true)"
+            (blur)="onDirBlur()"
+          />
+          @if (dirFocused() && suggestions().length) {
+            <ul class="suggestions">
+              @for (d of suggestions(); track d.path) {
+                <li>
+                  <button type="button" class="sugg" (mousedown)="pickDir(d)">
+                    <span class="mono sugg-path">{{ d.path }}</span>
+                    <span class="sugg-name">{{ d.name }}</span>
+                  </button>
+                </li>
+              }
+            </ul>
+          } @else if (workDir().trim() && !suggestions().length && dirSearched()) {
+            <span class="hint">Nenhum diretório existente — será criado novo.</span>
+          }
+        </div>
+
+        <!-- Erro -->
+        @if (errorMsg()) {
+          <p class="error">{{ errorMsg() }}</p>
+        }
+      </div>
+
+      <!-- Ação -->
+      <footer class="ftr">
+        <button
+          type="button"
+          class="submit"
+          [disabled]="!canSubmit() || submitting()"
+          (click)="submit()"
+        >
+          {{ submitting() ? 'Criando…' : 'Criar sessão' }}
+        </button>
+      </footer>
+      }
+    </section>
+  `,
+  styles: [
+    `
+      :host {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: block;
+      }
+      .overlay {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--surface-page);
+        color: var(--text-body);
+      }
+      .hdr {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        padding: var(--space-4);
+        border-bottom: 1px solid var(--border-default);
+      }
+      .hdr h1 {
+        margin: 0;
+        font-size: var(--text-md);
+        font-weight: var(--fw-semibold);
+        color: var(--text-strong);
+      }
+      .mode-tabs {
+        display: flex;
+        gap: var(--space-2);
+        padding: var(--space-3) var(--space-4) 0;
+      }
+      .mode-tab {
+        flex: 1;
+        padding: var(--space-2) var(--space-3);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-full);
+        background: var(--surface-card);
+        color: var(--text-body);
+        font-size: var(--text-sm);
+        font-weight: var(--fw-medium);
+        cursor: pointer;
+      }
+      .mode-tab.selected {
+        border-color: var(--color-accent);
+        background: rgba(var(--color-accent-rgb), 0.12);
+        color: var(--color-accent);
+      }
+      .back {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+        color: var(--text-strong);
+        font-size: 20px;
+        cursor: pointer;
+      }
+      .body {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--space-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-6);
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        position: relative;
+      }
+      .label {
+        font-size: var(--text-sm);
+        font-weight: var(--fw-medium);
+        color: var(--text-strong);
+      }
+      .input {
+        width: 100%;
+        padding: var(--space-3);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-lg);
+        background: var(--surface-card);
+        color: var(--text-strong);
+        font-size: var(--text-base);
+        font-family: inherit;
+      }
+      .input.mono {
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+      }
+      .input:focus {
+        outline: none;
+        border-color: var(--color-accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .input.mission {
+        resize: vertical;
+        min-height: 110px;
+        line-height: var(--lh-snug);
+        font-family: inherit;
+      }
+      .ephemeral-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: var(--space-3);
+        border-radius: var(--radius-lg);
+        background: rgba(var(--color-accent-rgb), 0.08);
+        border: 1px solid rgba(var(--color-accent-rgb), 0.2);
+      }
+      .ephemeral-meta strong {
+        color: var(--text-strong);
+      }
+
+      /* Agent grid 2x2 */
+      .agent-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--space-3);
+      }
+      .agent-card {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        padding: var(--space-3);
+        border: 2px solid var(--border-default);
+        border-radius: var(--radius-lg);
+        background: var(--surface-card);
+        color: var(--text-body);
+        cursor: pointer;
+        text-align: left;
+      }
+      .agent-card.selected {
+        border-color: var(--c);
+        background: var(--surface-raised);
+      }
+      .agent-short {
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: var(--radius-md);
+        color: #fff;
+        font-size: var(--text-xs);
+        font-weight: var(--fw-bold);
+      }
+      .agent-text {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .agent-label {
+        font-size: var(--text-sm);
+        font-weight: var(--fw-medium);
+        color: var(--text-strong);
+      }
+      .agent-cmd {
+        font-size: var(--text-xs);
+        color: var(--text-muted);
+      }
+
+      /* Chips */
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+      }
+      .chip {
+        padding: var(--space-2) var(--space-3);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-full);
+        background: var(--surface-card);
+        color: var(--text-body);
+        font-size: var(--text-sm);
+        cursor: pointer;
+      }
+      .chip.selected {
+        border-color: var(--color-accent);
+        background: rgba(var(--color-accent-rgb), 0.12);
+        color: var(--color-accent);
+        font-weight: var(--fw-medium);
+      }
+
+      /* Autocomplete */
+      .suggestions {
+        list-style: none;
+        margin: var(--space-1) 0 0;
+        padding: var(--space-1);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-lg);
+        background: var(--surface-card);
+        max-height: 220px;
+        overflow-y: auto;
+      }
+      .sugg {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        width: 100%;
+        padding: var(--space-2) var(--space-3);
+        border: none;
+        border-radius: var(--radius-md);
+        background: transparent;
+        color: var(--text-body);
+        text-align: left;
+        cursor: pointer;
+      }
+      .sugg:hover {
+        background: var(--surface-raised);
+      }
+      .sugg-path {
+        font-size: var(--text-sm);
+        color: var(--text-strong);
+      }
+      .sugg-name {
+        font-size: var(--text-xs);
+        color: var(--text-muted);
+      }
+      .hint {
+        font-size: var(--text-xs);
+        color: var(--warning);
+      }
+      .hint-muted {
+        font-size: var(--text-xs);
+        color: var(--text-muted);
+      }
+      .slug-preview {
+        margin-top: var(--space-1);
+      }
+      .slug-preview .mono {
+        font-family: var(--font-mono);
+        color: var(--text-strong);
+      }
+      .error {
+        margin: 0;
+        padding: var(--space-3);
+        border-radius: var(--radius-lg);
+        background: rgba(248, 113, 113, 0.12);
+        color: var(--danger);
+        font-size: var(--text-sm);
+      }
+
+      /* Footer / submit */
+      .ftr {
+        padding: var(--space-4);
+        border-top: 1px solid var(--border-default);
+      }
+      .submit {
+        width: 100%;
+        padding: var(--space-4);
+        border: none;
+        border-radius: var(--radius-lg);
+        background: var(--color-accent);
+        color: var(--text-on-accent);
+        font-size: var(--text-base);
+        font-weight: var(--fw-semibold);
+        cursor: pointer;
+      }
+      .submit:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    `,
+  ],
+})
+export class CriarComponent {
+  private readonly api = inject(ApiService);
+  private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
+  protected readonly workers = inject(WorkersStore);
+
+  /** Static option lists exposed to the template. */
+  readonly agents = AGENTS;
+  readonly efforts = EFFORTS;
+
+  /** "Local" = fluxo de sempre (agente novo); "Compartilhada" = cola o link
+   * de convidado de uma sessão de OUTRA conta (ver `remote-sessions`).
+   * "Rapida" = sessão efêmera pré-configurada (claude-tudao, work_dir scratch
+   * no host, limpa após 24h sem atividade). */
+  readonly mode = signal<'local' | 'compartilhada' | 'rapida'>('local');
+  readonly remoteLabel = signal('');
+  readonly remoteUrl = signal('');
+  readonly remoteSubmitting = signal(false);
+  readonly canSubmitRemote = computed(
+    () => this.remoteLabel().trim().length > 0 && this.remoteUrl().trim().length > 0,
+  );
+
+  submitRemote(): void {
+    if (!this.canSubmitRemote() || this.remoteSubmitting()) {
+      return;
+    }
+    this.errorMsg.set('');
+    this.remoteSubmitting.set(true);
+    this.api
+      .createRemoteSession(this.remoteLabel().trim(), this.remoteUrl().trim())
+      .subscribe({
+        next: () => {
+          this.remoteSubmitting.set(false);
+          this.router.navigate(['/sessoes']);
+        },
+        error: (err: HttpErrorResponse) => {
+          this.remoteSubmitting.set(false);
+          const detail = (err.error && (err.error.detail || err.error.message)) || err.message;
+          this.errorMsg.set(`Falha ao adicionar: ${detail ?? 'erro desconhecido'}`);
+        },
+      });
+  }
+
+  // --- Modo "Rápida" (sessão efêmera pré-configurada) ---
+  /** Texto livre da missão (textarea). Vira o `display_name` + primeiro input
+   * ao agente quando a sessão sobe. O `name` (slug tmux) é derivado do
+   * início do texto. */
+  readonly mission = signal('');
+  /** Slug tmux derivado da missão: primeiras palavras, mesmo `slugify` do local. */
+  readonly rapidaSlug = computed(() => {
+    const head = (this.mission() || '').split(/\n/, 1)[0]?.trim() ?? '';
+    return this.slugify(head).slice(0, 32) || '';
+  });
+  /** Suffixo numérico p/ dedupe quando duas missões iguais sobem no mesmo minuto. */
+  readonly rapidaName = computed(() => {
+    const base = this.rapidaSlug();
+    return base ? `${base}-${Math.floor(Date.now() / 60_000)}` : '';
+  });
+  /** Label do host único (quando não há picker). `null` quando há múltiplos. */
+  readonly autoHostLabel = computed(() => {
+    if (this.workers.hasMultipleHosts()) {
+      return null;
+    }
+    const only = this.workers.workers()[0];
+    if (!only) {
+      return null;
+    }
+    return `${only.emoji ? only.emoji + ' ' : ''}${only.display_name || only.hostname || '—'}`;
+  });
+  /** Pode submeter se tem missão não-vazia. */
+  readonly canSubmitRapida = computed(() => this.rapidaName().length > 0);
+
+  submitRapida(): void {
+    if (!this.canSubmitRapida() || this.submitting()) {
+      return;
+    }
+    this.errorMsg.set('');
+    this.submitting.set(true);
+
+    // display_name = texto completo da missão (com quebras de linha → espaços
+    // pra caber em campo curto). Primeira linha vira a "TL;DR" da sessão.
+    const fullText = this.mission().trim();
+    const firstLine = fullText.split(/\n/, 1)[0]?.trim() ?? '';
+    const displayName = firstLine.length > 80 ? firstLine.slice(0, 77) + '…' : firstLine;
+
+    const payload: CreateSessionPayload = {
+      // ``name`` é o SLUG (nome tmux); ``display_name`` é o amigável.
+      name: this.rapidaName(),
+      display_name: displayName || fullText.slice(0, 80),
+      agent_type: 'claude',
+      model: 'claude-tudao',
+      effort: null,
+      // work_dir fica null/undefined → worker gera ~/.sessionflow/scratch/<slug>-<ts>
+      work_dir: null,
+      host_id: this.hostId(),
+      ephemeral: true,
+    };
+
+    this.api.createSession(payload).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.router.navigate(['/sessoes']);
+      },
+      error: (err: HttpErrorResponse) => {
+        this.submitting.set(false);
+        if (err.status === 409) {
+          this.errorMsg.set('Já existe uma sessão com esse nome. Aguarde 1 min e tente de novo.');
+        } else {
+          const detail =
+            (err.error && (err.error.detail || err.error.message)) || err.message;
+          this.errorMsg.set(`Falha ao criar a sessão: ${detail ?? 'erro desconhecido'}`);
+        }
+      },
+    });
+  };
+
+  // --- Form state (signals) ---
+  /** Friendly DISPLAY name (free text; spaces/accents OK). */
+  readonly name = signal('');
+  /** Terminal-safe slug derived live from the display name (tmux session name). */
+  readonly slug = computed(() => this.slugify(this.name()));
+  readonly agent = signal<AgentType>('claude');
+  /** Selected model id (when a chip list is available). */
+  readonly model = signal<string>('');
+  /** Free-text model (used when the agent has no predefined models). */
+  readonly freeModel = signal<string>('');
+  readonly effort = signal<Effort | null>(null);
+  readonly workDir = signal('');
+  /** Host ONDE criar (multi-host, AD-011). `null` = auto (worker mais ativo). */
+  readonly hostId = signal<string | null>(null);
+  /** Hosts conhecidos, pro seletor — só quando há MAIS DE 1 (não polui a
+   * tela do caso comum de hoje, 1 host só). */
+  readonly hostOptions = computed(() =>
+    this.workers.hasMultipleHosts() ? this.workers.workers() : [],
+  );
+
+  // --- Models (fetched per agent) ---
+  readonly models = signal<AgentModel[]>([]);
+  readonly modelsLoading = signal(false);
+
+  // --- Autocomplete state ---
+  readonly suggestions = signal<Directory[]>([]);
+  readonly dirFocused = signal(false);
+  readonly dirSearched = signal(false);
+
+  // --- Submit state ---
+  readonly submitting = signal(false);
+  readonly errorMsg = signal('');
+
+  /** Whether the form is ready to submit (slug must be non-empty). */
+  readonly canSubmit = computed(
+    () => this.slug().length > 0 && this.workDir().trim().length > 0,
+  );
+
+  /**
+   * Converte um nome amigável num slug seguro p/ tmux. Regras (idênticas ao
+   * worker): lowercase; NFD + remove acentos; troca runs de chars fora de
+   * [a-z0-9] por '-'; tira '-' das pontas. Ex: "Café da Manhã!" → "cafe-da-manha".
+   */
+  private slugify(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  private readonly dirQuery$ = new Subject<string>();
+
+  constructor() {
+    this.dirQuery$
+      .pipe(
+        debounceTime(250),
+        distinctUntilChanged(),
+        switchMap((q) => this.api.searchDirectories(q, this.hostId())),
+        takeUntilDestroyed(),
+      )
+      .subscribe({
+        next: (dirs) => {
+          this.suggestions.set(dirs);
+          this.dirSearched.set(true);
+        },
+        error: () => {
+          this.suggestions.set([]);
+          this.dirSearched.set(true);
+        },
+      });
+
+    // Load models for the initial agent.
+    this.loadModels(this.agent());
+
+    // Rebusca status dos hosts (online/offline) AGORA — o WorkersStore só
+    // busca 1x no boot do app, então sem isso essa tela mostrava um host
+    // como offline pra sempre mesmo que ele já tivesse voltado (heartbeat
+    // é só uma janela de 30s; qualquer soluço breve ficava "preso" aqui).
+    this.workers.refresh();
+  }
+
+  meta(a: AgentType): AgentMeta {
+    return AGENT_META[a];
+  }
+
+  selectAgent(a: AgentType): void {
+    if (this.agent() === a) {
+      return;
+    }
+    this.agent.set(a);
+    // Gemini has no reasoning-effort concept.
+    if (a === 'gemini') {
+      this.effort.set(null);
+    }
+    this.loadModels(a);
+  }
+
+  /** Token used to ignore responses from superseded model requests. */
+  private modelReqToken = 0;
+
+  /** Fetch real models for an agent and pick a sensible default. */
+  private loadModels(a: AgentType): void {
+    const token = ++this.modelReqToken;
+    this.models.set([]);
+    this.model.set('');
+    this.freeModel.set('');
+    this.modelsLoading.set(true);
+
+    this.api
+      .getModels(a)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          if (token !== this.modelReqToken) {
+            return;
+          }
+          const list = res?.models ?? [];
+          this.models.set(list);
+          // Default = is_default if any, else the first option.
+          const def = list.find((m) => m.is_default) ?? list[0];
+          this.model.set(def?.id ?? '');
+          this.modelsLoading.set(false);
+        },
+        error: () => {
+          if (token !== this.modelReqToken) {
+            return;
+          }
+          // Don't block the screen: fall back to a free-text field.
+          this.models.set([]);
+          this.model.set('');
+          this.modelsLoading.set(false);
+        },
+      });
+  }
+
+  onDirInput(value: string): void {
+    this.workDir.set(value);
+    this.dirSearched.set(false);
+    const q = value.trim();
+    if (q.length === 0) {
+      this.suggestions.set([]);
+      return;
+    }
+    this.dirQuery$.next(q);
+  }
+
+  pickDir(d: Directory): void {
+    this.workDir.set(d.path);
+    this.suggestions.set([]);
+    this.dirFocused.set(false);
+  }
+
+  onDirBlur(): void {
+    // Delay so an in-progress mousedown on a suggestion still fires.
+    setTimeout(() => this.dirFocused.set(false), 150);
+  }
+
+  goBack(): void {
+    this.router.navigate(['/sessoes']);
+  }
+
+  submit(): void {
+    if (!this.canSubmit() || this.submitting()) {
+      return;
+    }
+    this.errorMsg.set('');
+    this.submitting.set(true);
+
+    const isGemini = this.agent() === 'gemini';
+    // When the agent has predefined models use the selected id; otherwise the
+    // free-text field. Empty in either case means null.
+    const hasModelList = this.models().length > 0;
+    const modelValue = hasModelList ? this.model() : this.freeModel().trim();
+    const payload: CreateSessionPayload = {
+      // ``name`` é o SLUG (nome de sessão tmux); ``display_name`` é o amigável.
+      name: this.slug(),
+      display_name: this.name().trim(),
+      agent_type: this.agent(),
+      work_dir: this.workDir().trim(),
+      model: modelValue || null,
+      // effort is null for gemini or when nothing is selected.
+      effort: isGemini ? null : (this.effort() ?? null),
+      host_id: this.hostId(),
+    };
+
+    this.api.createSession(payload).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.router.navigate(['/sessoes']);
+      },
+      error: (err: HttpErrorResponse) => {
+        this.submitting.set(false);
+        if (err.status === 409) {
+          this.errorMsg.set('Já existe uma sessão com esse nome. Escolha outro.');
+        } else {
+          const detail =
+            (err.error && (err.error.detail || err.error.message)) || err.message;
+          this.errorMsg.set(`Falha ao criar a sessão: ${detail ?? 'erro desconhecido'}`);
+        }
+      },
+    });
+  }
+}

@@ -1,0 +1,168 @@
+# tools/
+
+## `start-worker.sh` — um comando só pra instalação de amigo
+
+Atualiza o clone (`git pull --ff-only`, só com árvore limpa), roda `uv sync` no
+`worker/`, sobe/reinicia o worker (unit systemd `sessionflow-worker` se existir;
+senão sessão tmux `sessionflow-worker` com loop que se reergue) e liga o
+auto-update (`sessionflow-autoupdate`, abaixo). Idempotente — rodar de novo só
+reinicia na versão nova. Requer `.env` na raiz e `uv` (+ `tmux` sem systemd).
+
+```bash
+./tools/start-worker.sh
+```
+
+## `self-update.sh` / `self-update-loop.sh` — auto-atualização (pull + rebuild sozinho)
+
+Pra instalações de amigo (Heverton, Alvarenga, Lucas…), o `origin` do clone
+aponta pro mirror PÚBLICO `daraujo85/sessionflow-release` (sem precisar de
+token/deploy key — repo é só leitura pra quem clona). `self-update.sh` checa
+se `origin/main` avançou; se sim, faz `git merge --ff-only`, reconstrói os
+containers (`docker compose --profile app up -d --build`) e reinicia o worker
+(sessão tmux `sessionflow-worker`, se existir — o `uv run` resincroniza deps
+sozinho). Só atualiza com a árvore de trabalho LIMPA (nunca reseta/descarta
+mudança local por engano).
+
+```bash
+# Rodar 1x (ex.: via cron)
+./tools/self-update.sh
+
+# Rodar em loop (default 30min) — crie numa sessão tmux de infra dedicada
+# (o app já esconde da tela de Sessões, igual sessionflow-worker/cloudflared-tunnel):
+tmux new-session -d -s sessionflow-autoupdate './tools/self-update-loop.sh'
+```
+
+Cortar uma versão nova pros amigos = espelhar o `main` privado pro público:
+
+```bash
+git push public main:main   # remote "public" = https://github.com/daraujo85/sessionflow-release.git
+```
+
+## `sf` — delega tarefa / fala com sessão irmã / compartilha arquivo (Fatia 1-3)
+
+CLI (Python 3, só stdlib) que faz uma sessão-chefe do SessionFlow **delegar uma
+tarefa pesada a um worker filho em OUTRO provedor** (gemini/codex/opencode/
+claude) e colher só o **resultado** via um arquivo de handoff — sem poluir a
+janela de contexto do chefe (economia de token).
+
+Modelo **delega-e-revisa**: o filho roda autônomo (yolo) e, ao terminar, escreve
+um resumo em `<DIR>/.sessionflow/handoff/<NOME>.md`. O chefe lê só esse arquivo.
+
+Lê credenciais/porta do `.env` do SessionFlow automaticamente. Sem dependências
+externas.
+
+### Uso
+
+```bash
+# Delegar
+./tools/sf delegate --provider gemini \
+  --task "Refatore o módulo X e rode os testes; relate o diff" \
+  --dir /caminho/do/projeto
+# opções: --model (omita p/ default), --effort low|medium|high, --name
+
+# Acompanhar / colher o resultado
+./tools/sf check <nome-ou-id> --dir /caminho/do/projeto
+
+# Listar sessões ativas (nome, agente, status, host, id)
+./tools/sf list
+
+# Mandar mensagem/instrução pro terminal de uma sessão JÁ EXISTENTE (irmã)
+./tools/sf send <nome-ou-id> "texto da mensagem"
+# opções: --no-enter (não aperta Enter automático depois do texto)
+
+# Compartilhar um arquivo gerado (imagem/PDF/relatório) de volta com o usuário
+./tools/sf share <caminho-do-arquivo>
+# opções: --to <nome-ou-id> (default: a própria sessão, via $TMUX)
+```
+
+### Delegar para OUTRO host (`--host`, ex.: Duck Server 🦆)
+
+Divide processamento: o filho roda na CPU/RAM do outro host, num worktree
+próprio, e devolve o resultado pelo próprio SessionFlow.
+
+```bash
+./tools/sf dirs --host duck sessionflow          # pastas indexadas lá ([git] = repo)
+./tools/sf delegate --host duck --dir sessionflow --worktree \
+  --provider claude --task "..."                 # branch sf/<nome> em <repo>-clones/<nome>
+# --push: filho faz git push da branch; sem ele, devolve <nome>.patch
+./tools/sf check <nome> --summary                # baixa .md/.handoff.json/.patch p/ .sessionflow/handoff/
+git am .sessionflow/handoff/<nome>.patch         # (modo patch) aplica no repo local
+```
+
+- `--host`: host_id, nome, hostname, emoji ou trecho único (`sf dirs` / `GET /workers`).
+- `--dir` remoto: nome da pasta (resolvido no índice do host) ou caminho **entre aspas**
+  (`--dir '~/x'`); sem aspas o zsh expande `~` pro home do Mac e o `sf` recusa.
+- Ao terminar, o filho manda `✅ HANDOFF <nome> status=...` pro terminal do pai.
+
+Pré-requisitos no host remoto: worker rodando; `sf` no PATH **dentro do WSL** com
+`.env` válido; repo sob um `SESSIONFLOW_SCAN_ROOTS`; credencial git/gh se `--push`.
+Repos em `/mnt/c` (9P) são lentos no WSL: prefira `~/`. Ao deletar a sessão no app,
+o worktree remoto é removido com `git worktree remove --force` (descarta mudanças
+não commitadas). A branch `sf/<nome>` permanece no repositório. `--push` exige
+`--worktree` (sem worktree, o push iria pra branch atual do repo remoto).
+
+### Controlar a instância de OUTRO amigo (`--remote`)
+
+`check`/`list`/`send`/`share` aceitam `--remote <alias>` pra falar com uma
+instância SessionFlow de outro amigo/deploy (não a local) — útil quando uma
+sessão sua quer acompanhar/mandar mensagem pra sessão de alguém em outra
+instalação (ex.: a `pvax` do Heverton). Credenciais ficam FORA do git, em
+`~/.claude/secrets/sf-remotes.env`, no formato `<ALIAS>_BASE_URL`/`_EMAIL`/
+`_PASSWORD` (alias em maiúsculas)::
+
+```
+HEVERTON_BASE_URL=https://api-sessionflow.anthonygabriel.com.br
+HEVERTON_EMAIL=heverton@...
+HEVERTON_PASSWORD=...
+```
+
+```bash
+./tools/sf list --remote heverton
+./tools/sf send pvax "oi, tudo certo por aí?" --remote heverton
+```
+
+`delegate` cria a sessão (POST /sessions), faz poll até `running` (~40s) e injeta
+a tarefa (+ bloco de handoff) via `/input`. Grava um registro local em
+`<DIR>/.sessionflow/handoff/<NOME>.json` para o `check` resolver por nome.
+
+`check` imprime status/activity (1 linha) e o conteúdo do handoff se já existir.
+
+`list`/`send` (Fatia 2) resolvem o caso "uma sessão quer passar contexto/
+instrução pra outra sessão já rodando" sem precisar descobrir a API do
+SessionFlow na mão: `list` acha o nome/id do alvo, `send` chama
+`POST /sessions/{id}/input` na sessão-alvo (mesmo mecanismo do `sendKey`/
+`sendInput` do frontend — roteamento multi-host automático). Resolução de
+`target` aceita id, tmux_name/display_name exato, ou substring única.
+
+`share` (Fatia 3) resolve o caso "gerei um arquivo (imagem/PDF/relatório) e o
+usuário pode estar longe do computador pra ver": lê o arquivo do disco e faz
+`POST /sessions/{id}/shared-files` (multipart, stdlib pura — sem dependências
+externas). O app expõe um botão de arquivos na tela da sessão com link de
+download/preview (`GET /shared-files/{id}/download`, `Content-Disposition:
+inline` — abre a imagem/PDF direto no navegador). Sessão-alvo por `--to` ou,
+por padrão, a própria sessão de onde `share` roda (detecta via `$TMUX`).
+Teto de 50MB por arquivo.
+
+### Instalação como skill
+
+Uma cópia deste script + um `SKILL.md` vivem em `~/.claude/skills/sf-delegate/`
+(fora do git), para o chefe (Claude Code) delegar automaticamente. Este arquivo
+no repo é a fonte versionada.
+
+### Limitações
+- `opencode`: no ambiente atual a CLI imprime help e cai no shell em vez de
+  subir num agente interativo (worker fica `detached`). Use `gemini`, `codex` ou
+  `claude` até o launcher ser ajustado.
+
+---
+
+## `watchdog/` — Auto-recuperação (Auto-Healing) do `sessionflow-api`
+
+Monitor de saúde leve que roda em background a cada 60s. Se a API travar (deadlock de event loop, queda do RabbitMQ) por 2 checagens consecutivas, reinicia o container `sessionflow-api` automaticamente via `docker restart`.
+
+```bash
+./tools/watchdog/install-watchdog.sh
+```
+
+Ver [tools/watchdog/README.md](watchdog/README.md) para detalhes.
+
