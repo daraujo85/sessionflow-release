@@ -9,6 +9,10 @@ máquinas, de qualquer lugar (inclusive do celular).
 - Marcos (milestones) por sessão, notificações, comandos programados
 - Delegação entre agentes (`tools/sf`): uma sessão "mãe" cria workers em outros hosts
 - Multi-host: Mac, Linux, Windows (WSL2) e até Google Colab, no mesmo painel
+- Painel de máquinas (CPU/RAM/GPU) e `sf delegate --host auto` escolhendo o host com mais folga
+- Mover sessão entre hosts (auto-clone do diretório no destino)
+- Sessão rápida (efêmera, expira em 24h) e resposta rápida direto do card na tela inicial
+- Watchdog com auto-healing dos containers
 
 ## Arquitetura
 
@@ -69,6 +73,11 @@ Voz (opcional): `docker compose --profile voice up -d`.
 Na máquina nova: clone o repo, copie o `.env` (apontando `MONGO_URI_HOST` /
 `RABBITMQ_URI_HOST` pro servidor) e rode `./tools/start-worker.sh`. O host
 aparece no painel assim que o primeiro heartbeat chega.
+
+## Versões
+
+Notas de cada versão em
+[Releases](https://github.com/daraujo85/sessionflow-release/releases).
 
 ## Atualização automática
 
