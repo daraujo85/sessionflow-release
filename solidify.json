@@ -1,0 +1,238 @@
+{
+  "schema_version": "1.0.0",
+  "project": {
+    "name": "sessionflow",
+    "default_base": "origin/main",
+    "artifact_dir": ".solidify",
+    "issue_key_patterns": [
+      "[A-Z][A-Z0-9]+-[0-9]+"
+    ]
+  },
+  "analysis": {
+    "default_profile": "quick",
+    "use_merge_base": true,
+    "context": {
+      "summary_max_chars": 20000,
+      "shard_max_chars": 60000,
+      "file_max_chars": 12000,
+      "max_context_expansions_per_changed_file": 8
+    },
+    "scheduler": {
+      "max_light_jobs": 4,
+      "max_heavy_jobs": 1,
+      "max_browser_jobs": 1,
+      "max_active_network_jobs": 1
+    }
+  },
+  "profiles": {
+    "contractual": {
+      "require_peer_a": true,
+      "require_peer_b": true,
+      "require_arbiter": true,
+      "require_distinct_external_models": true,
+      "generate_pdf": true,
+      "active_security": false,
+      "fail_on_required_analyzer_skip": true
+    },
+    "quick": {
+      "require_peer_a": true,
+      "require_peer_b": false,
+      "require_arbiter": false,
+      "generate_pdf": false,
+      "active_security": false
+    },
+    "release": {
+      "require_peer_a": true,
+      "require_peer_b": true,
+      "require_arbiter": true,
+      "generate_pdf": true,
+      "active_security": false
+    },
+    "strict-plus": {
+      "extends": "contractual",
+      "run_role_swap": true
+    }
+  },
+  "scoring": {
+    "weights": {
+      "solid": 50,
+      "static_quality": 15,
+      "security": 15,
+      "tests": 10,
+      "performance": 5,
+      "frontend": 5
+    },
+    "gate": {
+      "minimum_quality_score": 70,
+      "minimum_solid_score": 65,
+      "fail_on_new_security_severities": [
+        "critical",
+        "high"
+      ],
+      "fail_on_test_failure": true,
+      "fail_on_unacknowledged_critical_migration": true
+    }
+  },
+  "git": {
+    "rename_detection": true,
+    "copy_detection": true,
+    "diff_context_lines": 5
+  },
+  "detectors": {
+    "migration_paths": [
+      "db/migration",
+      "db/migrations",
+      "migrations",
+      "prisma/migrations"
+    ],
+    "env_documentation_files": [
+      ".env.example",
+      ".env.sample",
+      ".env.template"
+    ]
+  },
+  "runtime": {
+    "prepare_command": [],
+    "start_command": [],
+    "healthchecks": [],
+    "stop_command": [],
+    "database_reset_command": [],
+    "allow_database_reset": false
+  },
+  "targets": {
+    "frontend": [],
+    "api": []
+  },
+  "analyzers": {
+    "tests": {
+      "enabled": true,
+      "required_in_contractual": true,
+      "commands": []
+    },
+    "sonar": {
+      "enabled": true,
+      "required_in_contractual": false,
+      "base_url": "",
+      "token_env": "SONAR_TOKEN",
+      "project_key": ""
+    },
+    "security": {
+      "enabled": true,
+      "gitleaks": true,
+      "osv_scanner": true,
+      "semgrep": true,
+      "zap_baseline": true,
+      "zap_active": false,
+      "active_target_allowlist": [
+        "127.0.0.1",
+        "localhost",
+        "host.docker.internal"
+      ]
+    },
+    "lighthouse": {
+      "enabled": true,
+      "mode": "cli",
+      "categories": {
+        "performance": 50,
+        "accessibility": 25,
+        "best_practices": 25,
+        "seo": 0
+      }
+    },
+    "load": {
+      "enabled": true,
+      "default_mode": "smoke",
+      "mode": "binary",
+      "require_thresholds_for_score": true,
+      "vus": 10,
+      "duration_seconds": 30,
+      "threshold_p95_ms": 500,
+      "threshold_p99_ms": 1000,
+      "max_error_rate": 0.01,
+      "allow_prod": false
+    },
+    "coverage": {
+      "enabled": true,
+      "threshold": 70,
+      "format": "auto"
+    },
+    "jev_regression": {
+      "enabled": false,
+      "api_key_env": "JEV_API_KEY"
+    }
+  },
+  "ai": {
+    "peer_a": {
+      "source": "http-combo"
+    },
+    "external_provider": {
+      "type": "openai-compatible",
+      "preset": "9router",
+      "base_url_host": "http://127.0.0.1:20128",
+      "base_url_docker": "http://host.docker.internal:20128",
+      "api_key_env": "ANTHROPIC_AUTH_TOKEN",
+      "model_discovery": true,
+      "request_timeout_seconds": 180
+    },
+    "selection": {
+      "mode": "hybrid",
+      "peer_a": {
+        "preferred": [
+          "claude-coder"
+        ],
+        "exclude": []
+      },
+      "peer_b": {
+        "preferred": [],
+        "exclude": []
+      },
+      "arbiter": {
+        "preferred": [],
+        "exclude": [],
+        "must_differ_from_peer_b": true
+      },
+      "narrative": {
+        "preferred": [],
+        "exclude": []
+      },
+      "probe": {
+        "enabled": true,
+        "cache_hours": 168,
+        "require_json_compliance": true
+      }
+    },
+    "review": {
+      "peer_prompt_version": "peer-review-v1",
+      "arbiter_prompt_version": "arbiter-v1",
+      "temperature": 0,
+      "max_repair_attempts": 1
+    },
+    "peer_review": {}
+  },
+  "applicability": {
+    "llm": {
+      "enabled": false,
+      "mode": "advisory"
+    },
+    "jev": {
+      "enabled": false,
+      "api_key_env": "JEV_API_KEY",
+      "mode": "advisory"
+    }
+  },
+  "report": {
+    "language": "pt-BR",
+    "company_name": "",
+    "logo_path": "",
+    "pdf": {
+      "paper": "A4",
+      "browser_mode": "auto"
+    }
+  },
+  "privacy": {
+    "persist_full_diff": true,
+    "persist_model_requests": false,
+    "persist_model_responses": true,
+    "redact_secrets": true
+  }
+}

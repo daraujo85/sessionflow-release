@@ -34,3 +34,4 @@ data/uploads/*
 
 # Claude Code runtime (locks, agendamentos locais)
 .claude/
+.solidify/
