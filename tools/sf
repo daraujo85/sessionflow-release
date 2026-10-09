@@ -332,6 +332,7 @@ def resolve_host(workers, alias, allow_offline=False):
 
     Ambíguo, desconhecido ou offline → ValueError (o chamador faz `die`).
     """
+    local_id = local_host_id()
     alias_map = {
         "colab1-cpu": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
         "colab1-pro": "c775ad00-58bb-44ae-9781-7e7e23b5404e",
@@ -339,7 +340,14 @@ def resolve_host(workers, alias, allow_offline=False):
         "colab2-pro": "02151543-4ff8-44c2-b607-b1dfc8625067",
         "colab-worker": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
         "colab-pro": "02151543-4ff8-44c2-b607-b1dfc8625067",
+        "duck": "67122d03-0b03-4b80-9001-ba982603d0fb",
+        "deepin": "83f9a08a-8f6a-4445-bb17-704b0f7baa2b",
+        "hetzner": "9e29a449-4f77-4915-b50c-4b5c3c722565",
+        "heztner": "9e29a449-4f77-4915-b50c-4b5c3c722565",
     }
+    if local_id:
+        alias_map["local"] = local_id
+        alias_map["me"] = local_id
     resolved_alias = alias_map.get(alias.lower(), alias)
     known = [w for w in workers if w.get("host_id")]
     match = next((w for w in known if w["host_id"] == resolved_alias), None)
@@ -898,7 +906,9 @@ def cmd_delegate(args):
     host_id = None
     auto_info = None
     auto_host = None
-    if args.host and args.host.lower() == "auto":
+    effective_host = args.host or os.environ.get("SF_DEFAULT_HOST")
+
+    if effective_host and effective_host.lower() == "auto":
         env = resolve_env(args)
         token = login(env)
         base = api_base(env)
@@ -935,12 +945,12 @@ def cmd_delegate(args):
                 return delegate_remote(args, env, token, base, chosen, slugify_remote(name),
                                        effort, target=targets[host_id], auto_info=auto_info)
             args.dir = targets[host_id]["path"]
-    elif args.host:
+    elif effective_host:
         env = resolve_env(args)
         token = login(env)
         base = api_base(env)
         try:
-            host = resolve_host(fetch_workers(base, token), args.host)
+            host = resolve_host(fetch_workers(base, token), effective_host)
         except ValueError as exc:
             die(str(exc))
         host_id = host["host_id"]
@@ -1590,6 +1600,124 @@ def cmd_request_context(args):
 
 
 # --------------------------------------------------------------------------- #
+# comando: fetch (P2P host-to-host, sem sessão)
+# --------------------------------------------------------------------------- #
+# Limite do polling: requests pequenos, ~10 req/s. 30s cobre leitura de até
+# ~1 MiB em worker remoto (largura do fs_fetch é curta, 1 MiB de payload).
+_FETCH_POLL_TIMEOUT = 30.0
+_FETCH_POLL_INTERVAL = 0.25
+
+
+def _resolve_remote_host_id(args):
+    """Resolve alias/emoji/host_id pra um host_id REAL, usando ``sf hosts``.
+
+    Falha se o host não estiver cadastrado (worker nunca fez heartbeat) ou
+    se o alias for ambíguo. Aceita ``--remote`` igual aos outros comandos —
+    roteia contra uma instância SF de outro amigo/deploy.
+    """
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    status, body = _request("GET", f"{base}/workers", token=token, timeout=15)
+    if status != 200:
+        die(f"GET /workers falhou (HTTP {status}): {body}")
+    workers = body if isinstance(body, list) else []
+    try:
+        host = resolve_host(workers, args.target_host, allow_offline=False)
+    except ValueError as exc:
+        die(str(exc))
+    return host["host_id"]
+
+
+def cmd_fetch(args):
+    """Lê 1 arquivo de OUTRO host via SessionFlow (sem precisar de sessão).
+
+    Publica um comando ``fs_fetch`` na fila do worker do host alvo via API;
+    o worker grava o resultado em ``command_results``; este CLI faz polling
+    em ``GET /commands/{command_id}`` e imprime o conteúdo.
+
+    Saída:
+      - arquivo texto → imprime direto na stdout
+      - arquivo binário OU ``--out`` → escreve no destino (decodifica base64)
+      - erro → exit code 2 com mensagem
+    """
+    host_id = _resolve_remote_host_id(args)
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+
+    status, body = _request(
+        "POST",
+        f"{base}/hosts/{host_id}/fetch",
+        token=token,
+        body={"path": args.path},
+        timeout=15,
+    )
+    if status != 202 or "command_id" not in body:
+        die(f"fetch enfileirar falhou (HTTP {status}): {body}")
+    command_id = body["command_id"]
+
+    timeout = getattr(args, "timeout", None) or _FETCH_POLL_TIMEOUT
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(_FETCH_POLL_INTERVAL)
+        status, body = _request(
+            "GET", f"{base}/commands/{command_id}", token=token, timeout=10,
+        )
+        if status != 200:
+            die(f"polling /commands falhou (HTTP {status}): {body}")
+        st = body.get("status")
+        if st == "ok":
+            _emit_fetch_result(host_id, body.get("result") or {}, args)
+            return
+        if st == "error":
+            err = body.get("error") or "erro desconhecido"
+            die(f"fetch em {host_id} falhou: {err}", code=2)
+        # status == "pending" → continua polling
+    die(f"timeout aguardando fetch em {host_id} ({timeout:.0f}s)", code=2)
+
+
+def _emit_fetch_result(host_id: str, result: dict, args) -> None:
+    """Imprime texto na stdout OU grava binário em ``--out`` / base64 em stdout."""
+    out_path = getattr(args, "out", None)
+    truncated = result.get("truncated", False)
+    returned = result.get("returned_bytes", 0)
+    total = result.get("size_bytes", returned)
+    binary = result.get("binary", False)
+
+    if binary or out_path:
+        # binário OU --out: sempre grava arquivo. Sem --out usa /tmp/<cmd>-<id>.
+        import base64 as _b64
+        import uuid as _uuid
+        if binary:
+            payload = _b64.b64decode(result.get("content_b64", ""))
+        else:
+            payload = result.get("text", "").encode("utf-8")
+        target = out_path or f"/tmp/sf-fetch-{_uuid.uuid4().hex[:8]}"
+        Path(target).write_bytes(payload)
+        kind = "binário" if binary else "texto→arquivo"
+        print(
+            f"fetch ✅ <{host_id}> {result.get('path')} "
+            f"({returned}/{total} bytes, {kind}) → {target}"
+        )
+        if truncated:
+            print(f"  ⚠️  truncado em {returned} bytes (limite 1 MiB)")
+        return
+
+    # texto sem --out: imprime direto
+    text = result.get("text", "")
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    print(
+        f"-- ({returned}/{total} bytes de {result.get('path')} em {host_id})",
+        file=sys.stderr,
+    )
+    if truncated:
+        print("  ⚠️  truncado em 1 MiB", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- #
 # comando: share
 # --------------------------------------------------------------------------- #
 def cmd_share(args):
@@ -1800,6 +1928,27 @@ def build_parser():
                         "de onde o comando roda (detecta via $TMUX).")
     h.add_argument("--remote", default=None, help=_REMOTE_HELP)
     h.set_defaults(func=cmd_share)
+
+    f = sub.add_parser(
+        "fetch",
+        help="lê 1 arquivo de OUTRO host via SessionFlow (sem precisar de "
+             "sessão Claude rodando lá). Use pra puxar log/config/código de "
+             "uma máquina específica. Aceita host_id, nome, hostname, "
+             "emoji ou apelido (duck/deepin/mac/hetzner/colab1-cpu...).",
+        description="P2P host-to-host via relay do backend SF: publica um "
+                    "comando fs_fetch pro worker do host alvo, faz polling em "
+                    "/commands/{id} e imprime o conteúdo. Até 1 MiB por "
+                    "arquivo, read-only, só dentro de $HOME ou /tmp.",
+    )
+    f.add_argument("target_host", help="host alvo (alias/emoji/host_id).")
+    f.add_argument("path", help="path ABSOLUTO do arquivo no host remoto.")
+    f.add_argument("--out", default=None,
+                   help="grava num arquivo local (sempre usado pra binário; "
+                        "pra texto é opcional — sem --out vai pra stdout).")
+    f.add_argument("--timeout", type=float, default=_FETCH_POLL_TIMEOUT,
+                   help=f"timeout do polling (default {_FETCH_POLL_TIMEOUT:.0f}s).")
+    f.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    f.set_defaults(func=cmd_fetch)
     return p
 
 

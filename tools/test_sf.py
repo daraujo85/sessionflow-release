@@ -320,6 +320,12 @@ class LocalDelegateTests(SfApiTestCase):
         post = next(b for m, u, b in self.calls if m == "POST" and u.endswith("/sessions"))
         self.assertNotIn("host_id", post)
 
+    def test_default_host_env_var_used_when_host_omitted(self):
+        with mock.patch.dict(os.environ, {"SF_DEFAULT_HOST": "duck"}):
+            self.run_sf(*self.ARGS)
+        post = next(b for m, u, b in self.calls if m == "POST" and u.endswith("/sessions"))
+        self.assertEqual(post["host_id"], "duck-id")
+
 
 class RemoteDelegateTests(SfApiTestCase):
     ARGS = ("delegate", "--provider", "claude", "--host", "duck", "--dir", "sessionflow",

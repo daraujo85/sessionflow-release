@@ -28,6 +28,7 @@ from app.routers import demands as demands_router
 from app.routers import directories as directories_router
 from app.routers import events as events_router
 from app.routers import history as history_router
+from app.routers import host_commands as host_commands_router
 from app.routers import jarvis as jarvis_router
 from app.routers import models as models_router
 from app.routers import outputs as outputs_router
@@ -182,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(screen_router.router)
     app.include_router(history_router.router)
     app.include_router(events_router.router)
+    app.include_router(host_commands_router.router)
     app.include_router(worker_router.router)
     app.include_router(profile_router.router)
     app.include_router(push_router.router)

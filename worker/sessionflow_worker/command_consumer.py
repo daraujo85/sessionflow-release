@@ -44,6 +44,7 @@ Decisões de design
 from __future__ import annotations
 
 import asyncio
+import base64
 import glob
 import json
 import logging
@@ -133,6 +134,10 @@ _VALID_TYPES = frozenset(
         "git_checkout",
         "move_out",
         "move_in",
+        # P2P host-to-host (sem sessão): worker responde a pedido de leitura de
+        # arquivo publicado pela API. Resultado gravado em `command_results` pra
+        # o requester polling em GET /commands/{id}.
+        "fs_fetch",
     }
 )
 
@@ -643,7 +648,7 @@ class CommandConsumer:
             if ctype not in _VALID_TYPES:
                 raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
             payload = command.get("payload") or {}
-            result = await self._dispatch(ctype, payload)
+            result = await self._dispatch(ctype, payload, command_id)
             if command_id:
                 self._processed.add(command_id)
             return await self._emit(command_id, ctype, ok=True, **result)
@@ -663,7 +668,7 @@ class CommandConsumer:
             )
 
     async def _dispatch(
-        self, ctype: str, payload: dict[str, Any]
+        self, ctype: str, payload: dict[str, Any], command_id: str | None = None
     ) -> dict[str, Any]:
         if ctype == "create":
             return await self._handle_create(payload)
@@ -709,6 +714,8 @@ class CommandConsumer:
             return await self._handle_move_out(payload)
         if ctype == "move_in":
             return await self._handle_move_in(payload)
+        if ctype == "fs_fetch":
+            return await self._handle_fs_fetch(payload, command_id)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -2933,6 +2940,160 @@ class CommandConsumer:
             None, jarvis.dedup_text, text, model
         )
         return {"text": deduped, "dedup_stats": stats}
+
+    # -- P2P host-to-host: fs_fetch ---------------------------------------
+
+    # Limite duro do fs_fetch: arquivos maiores voltam truncados (não fragmenta,
+    # não faz streaming — P2P pra diagnóstico rápido, não pra mover dataset).
+    _FS_FETCH_MAX_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+    async def _handle_fs_fetch(
+        self, payload: dict[str, Any], command_id: str | None
+    ) -> dict[str, Any]:
+        """Lê 1 arquivo deste host e devolve o conteúdo.
+
+        Sem sessão Claude envolvida: a API publica ``fs_fetch`` via RabbitMQ
+        pro host alvo, o worker deste host executa e grava o resultado em
+        ``command_results`` (key=command_id), o requester faz polling em
+        ``GET /commands/{command_id}``.
+
+        Segurança: ``path`` precisa ser ABSOLUTO e estar dentro de ``$HOME``
+        ou ``/tmp``. Sem follow de symlink para fora dessa raiz. Sem escrita
+        (read-only). Sem exfiltração pra outros hosts (worker só lê LOCAL).
+
+        Todo erro (validação inclusa) também persiste — senão o requester
+        fica em polling até o timeout em vez de ver o motivo.
+        """
+        try:
+            result = await self._fs_fetch_read(payload)
+        except CommandError as exc:
+            if command_id:
+                await self._write_command_result(command_id, ok=False, error=str(exc))
+            raise
+        if command_id:
+            await self._write_command_result(command_id, ok=True, result=result)
+        return {
+            "note": "fetch ok",
+            "size_bytes": result["returned_bytes"],
+            "truncated": result["truncated"],
+        }
+
+    async def _fs_fetch_read(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Valida o path e lê o arquivo; erros viram ``CommandError``."""
+        raw_path = str(payload.get("path") or "").strip()
+        if not raw_path:
+            raise CommandError("fs_fetch requer 'path'")
+        try:
+            # expanduser resolve "~"; resolve(strict=False) torna absoluto
+            # SEM exigir que o path EXISTA (strict=True quebraria antes do guard
+            # de "fora de $HOME"). Path.relative_to() abaixo é a verificação real.
+            target = Path(raw_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise CommandError(f"path inválido: {exc}") from exc
+
+        home = Path(os.path.expanduser("~")).resolve()
+        tmp = Path("/tmp").resolve()
+        try:
+            target.relative_to(home)
+            in_safe = True
+        except ValueError:
+            try:
+                target.relative_to(tmp)
+                in_safe = True
+            except ValueError:
+                in_safe = False
+        if not in_safe:
+            raise CommandError(
+                f"fs_fetch recusado: path fora de $HOME ou /tmp ({raw_path})"
+            )
+
+        loop = asyncio.get_running_loop()
+        try:
+            stat = await loop.run_in_executor(None, target.stat)
+        except FileNotFoundError as exc:
+            raise CommandError(f"arquivo não encontrado: {raw_path}") from exc
+        except OSError as exc:
+            raise CommandError(f"stat falhou: {exc}") from exc
+
+        try:
+            data = await loop.run_in_executor(None, self._read_for_fetch, target)
+        except CommandError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - erro I/O inesperado
+            raise CommandError(f"leitura falhou: {exc}") from exc
+
+        # Detecta binário nos primeiros 8 KiB (heurística simples: byte NULO).
+        is_binary = b"\x00" in data[:8192]
+        truncated = len(data) > self._FS_FETCH_MAX_BYTES
+        if truncated:
+            data = data[: self._FS_FETCH_MAX_BYTES]
+
+        result: dict[str, Any] = {
+            "path": str(target),
+            "size_bytes": stat.st_size,
+            "returned_bytes": len(data),
+            "truncated": truncated,
+            "mtime": stat.st_mtime,
+            "binary": is_binary,
+        }
+        if is_binary:
+            result["content_b64"] = base64.b64encode(data).decode("ascii")
+        else:
+            try:
+                result["text"] = data.decode("utf-8")
+            except UnicodeDecodeError:
+                # UTF-8 falhou (ou truncagem cortou um multibyte) → base64 com aviso.
+                result["binary"] = True
+                result["content_b64"] = base64.b64encode(data).decode("ascii")
+                result["encoding_note"] = "not utf-8, returned as base64"
+        return result
+
+    async def _write_command_result(
+        self, command_id: str, *, ok: bool, result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Upsert do resultado de um comando P2P em ``command_results``.
+
+        O requester polling em ``GET /commands/{command_id}`` lê esta coleção.
+        Sempre grava ``host_id`` (de onde veio), ``type`` (``fs_fetch`` hoje)
+        e ``finished_at`` pra o cliente saber que terminou (vs ainda pendente).
+        """
+        doc: dict[str, Any] = {
+            "host_id": self._host_id,
+            "type": "fs_fetch",
+            "ok": ok,
+            "finished_at": datetime.now(timezone.utc),
+        }
+        if result is not None:
+            doc["result"] = result
+        if error is not None:
+            doc["error"] = error
+        await self._db["command_results"].update_one(
+            {"_id": command_id}, {"$set": doc}, upsert=True,
+        )
+
+    @staticmethod
+    def _read_for_fetch(target: Path) -> bytes:
+        """Lê bytes do arquivo em thread separada. Erros viram CommandError."""
+        try:
+            with target.open("rb") as fh:
+                # Lê em blocos até bater o limite + 1 pra detectar truncação.
+                cap = CommandConsumer._FS_FETCH_MAX_BYTES + 1
+                chunks: list[bytes] = []
+                total = 0
+                while total < cap:
+                    chunk = fh.read(cap - total)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                return b"".join(chunks)
+        except IsADirectoryError as exc:
+            raise CommandError("path é diretório, fs_fetch precisa de arquivo") from exc
+        except PermissionError as exc:
+            raise CommandError(f"sem permissão de leitura: {exc}") from exc
+        except OSError as exc:
+            raise CommandError(f"erro de I/O: {exc}") from exc
 
     # -- loop -------------------------------------------------------------
 
