@@ -104,6 +104,27 @@ o worktree remoto é removido com `git worktree remove --force` (descarta mudan�
 não commitadas). A branch `sf/<nome>` permanece no repositório. `--push` exige
 `--worktree` (sem worktree, o push iria pra branch atual do repo remoto).
 
+### Ler arquivo de outro host (`fetch`, P2P via API)
+
+Puxa 1 arquivo de qualquer host com worker online, sem SSH: a API publica
+`fs_fetch` na fila do host alvo (`POST /hosts/{id}/fetch`), o worker de lá lê e
+grava em `command_results`, e o `sf` faz polling em `GET /commands/{id}`.
+
+```bash
+./tools/sf fetch duck '~/logs/worker.log'                 # texto → stdout
+./tools/sf fetch deepin /tmp/saida.png --out /tmp/x.png   # binário exige --out
+./tools/sf fetch duck '~/proj/.sessionflow/handoff/x.md' --timeout 60
+```
+
+- Host: alias (`duck`, `deepin`, `hetzner`, `local`/`me`), emoji, nome ou host_id.
+- `~` **entre aspas** (senão o zsh expande pro home local).
+- Read-only, só dentro de `$HOME` ou `/tmp` do alvo (symlink/`..` pra fora é
+  recusado), até 1 MiB (acima volta truncado).
+- Host com heartbeat >5min → 409; erro do worker (path fora, inexistente,
+  diretório) volta como mensagem; sem resposta → timeout (default 30s).
+
+`SF_DEFAULT_HOST=<host>` no ambiente faz `sf delegate` sem `--host` ir pra esse host.
+
 ### Controlar a instância de OUTRO amigo (`--remote`)
 
 `check`/`list`/`send`/`share` aceitam `--remote <alias>` pra falar com uma

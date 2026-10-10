@@ -11,6 +11,7 @@ máquinas, de qualquer lugar (inclusive do celular).
 - Multi-host: Mac, Linux, Windows (WSL2) e até Google Colab, no mesmo painel
 - Painel de máquinas (CPU/RAM/GPU) e `sf delegate --host auto` escolhendo o host com mais folga
 - Mover sessão entre hosts (auto-clone do diretório no destino)
+- Ler arquivo de outro host sem SSH (`sf fetch duck '~/logs/x.log'`, via API)
 - Sessão rápida (efêmera, expira em 24h) e resposta rápida direto do card na tela inicial
 - Watchdog com auto-healing dos containers
 
