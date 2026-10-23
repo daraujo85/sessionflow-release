@@ -42,6 +42,8 @@ from sessionflow_worker.tmux_runtime import TmuxRuntime
 
 DEFAULT_COLLECTION = "session_output"
 DEFAULT_SCREEN_COLLECTION = "session_screen"
+# Linhas de histórico empurradas no espelho (scroll nativo no app).
+SCREEN_HISTORY_LINES = 2000
 DEFAULT_MAX_LINES = 2000
 # Mesma routing key dos eventos para chegar ao consumer SSE da API
 # (fila `sessionflow.sse` bindada a `sessionflow.events`). O frontend distingue
@@ -695,11 +697,10 @@ class OutputCapture:
 
         Persiste ``{tmux_name, text, scrollback, at}`` na coleção ``collection``
         (default ``session_screen``), substituindo o ``text`` a cada chamada
-        (espelho ao vivo). O ``scrollback`` (histórico mais profundo) é
-        capturado no MESMO ciclo (captura extra barata) e guardado no doc para
-        leitura SOB DEMANDA via HTTP — NÃO é empurrado por SSE/RabbitMQ (só o
-        ``text`` da tela visível continua sendo empurrado). Retorna o texto
-        capturado (tela visível).
+        (espelho ao vivo). Quando a tela muda, captura também o ``scrollback``
+        (histórico do tmux + tela) e é ELE que vai no push SSE — o app mostra
+        num único <pre> com scroll nativo, igual ao terminal real. Retorna o
+        texto capturado (tela visível).
         """
         text = self.capture_screen(tmux_name)
         # Gate por hash: se a tela NÃO mudou desde o último ciclo, não escreve no
@@ -712,27 +713,25 @@ class OutputCapture:
             return text
         self._screen_hash[tmux_name] = h
         now = _now()
-        # NÃO capturamos o scrollback (2000 linhas coloridas) a CADA ciclo: era um
-        # capture-pane pesado, síncrono, por sessão — atrasava o ciclo ao vivo (e o
-        # push SSE junto), deixando o espelho lento. O scrollback é útil só sob
-        # demanda (modo Histórico) e é inútil em TUIs alt-screen (o tmux não guarda
-        # histórico deles). Guardamos ``scrollback = text`` (barato); o Histórico
-        # cai no texto visível, que é o que já valia p/ esses agentes.
+        # Histórico (scrollback do tmux + tela) SÓ quando a tela mudou: é o que o
+        # app renderiza com scroll nativo, igual ao terminal real. ``text`` segue
+        # sendo a tela visível (discovery detecta prompt/ocioso nela).
+        scrollback = self.capture_scrollback(tmux_name, SCREEN_HISTORY_LINES) or text
         await self._db[collection].update_one(
             {"tmux_name": tmux_name},
             {
                 "$set": {
                     "tmux_name": tmux_name,
                     "text": text,
-                    "scrollback": text,
+                    "scrollback": scrollback,
                     "at": now,
                 }
             },
             upsert=True,
         )
-        # Push SSE do espelho: empurra a tela assim que captura (em vez do front
-        # pollar a cada ~1,2s), só quando MUDOU — feedback quase imediato.
-        await self._publish_screen(tmux_name, text, now)
+        # Push SSE do espelho: empurra o histórico assim que a tela muda (em vez
+        # do front pollar) — o app mostra tudo num <pre> com scroll nativo.
+        await self._publish_screen(tmux_name, scrollback, now)
         # Último ARTIFACT visto: o rodapé "⧉ <nome>" do Claude Code não expõe a
         # URL (o clique é tratado pelo TUI); persistimos a última URL de artifact
         # que passou pela tela p/ o app oferecer o botão "abrir artifact" mesmo

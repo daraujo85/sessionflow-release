@@ -71,9 +71,17 @@ from sessionflow_worker.events import emit_event
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
 from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
 from sessionflow_worker.state import SessionState
-from sessionflow_worker.tmux_runtime import TmuxRuntime, TmuxRuntimeError
+from sessionflow_worker.tmux_runtime import SESSION_ENV, TmuxRuntime, TmuxRuntimeError
 
 SESSIONS_COLLECTION = "sessions"
+
+
+def _with_session_env(launch_cmd: str) -> str:
+    """Prefixa ``SESSION_ENV`` na linha do agente. O env do ``new_session`` só
+    vale p/ pane NOVO; em restart/resume o shell do pane já existia."""
+    env = " ".join(f"{k}={shlex.quote(v)}" for k, v in SESSION_ENV.items())
+    return f"{env} {launch_cmd}" if env else launch_cmd
+
 #: ``.jsonl`` da conversa do claude em trânsito entre hosts (``move_out`` → ``move_in``).
 TRANSFERS_COLLECTION = "session_transfers"
 SESSION_ORIGIN = "sessionflow"
@@ -837,7 +845,7 @@ class CommandConsumer:
             _ensure_codex_trust(work_dir)  # evita o prompt de "confiar no diretório"
         elif agent_type is AgentType.CLAUDE:
             _ensure_claude_trust(work_dir)
-        self._send_keys(name, launch_cmd)
+        self._send_keys(name, _with_session_env(launch_cmd))
 
         now = _now()
         doc = await self._sessions.find_one_and_update(
@@ -1223,7 +1231,7 @@ class CommandConsumer:
             _ensure_codex_trust(work_dir)  # evita o prompt de "confiar no diretório"
         elif agent_type is AgentType.CLAUDE:
             _ensure_claude_trust(work_dir)
-        self._send_keys(name, launch_cmd)
+        self._send_keys(name, _with_session_env(launch_cmd))
         return tmux_id, launch_cmd
 
     # -- mover sessão entre hosts (move_out → move_in) ----------------------
@@ -1964,7 +1972,7 @@ class CommandConsumer:
                 _ensure_codex_trust(work_dir)
             elif agent_type is AgentType.CLAUDE:
                 _ensure_claude_trust(work_dir)
-            self._send_keys(name, launch_cmd)
+            self._send_keys(name, _with_session_env(launch_cmd))
 
             now = _now()
             update: dict[str, Any] = {
@@ -2340,11 +2348,16 @@ class CommandConsumer:
         if not raw_paths:
             raise CommandError("file requer 'path' ou 'paths'")
 
+        # Bytes inline (mesma ordem de ``paths``) p/ worker em outra máquina.
+        contents = payload.get("contents_b64")
+        if not isinstance(contents, list) or len(contents) != len(raw_paths):
+            contents = [None] * len(raw_paths)
+
         paths: list[str] = []
-        for raw in raw_paths:
+        for raw, content in zip(raw_paths, contents, strict=True):
             if not raw:
                 continue
-            resolved = self._resolve_upload_path(str(raw))
+            resolved = self._resolve_upload_path(str(raw), content)
             if not os.path.isfile(resolved):
                 raise CommandError(f"arquivo não encontrado: {resolved!r}")
             paths.append(resolved)
@@ -2411,7 +2424,7 @@ class CommandConsumer:
         path = payload.get("path")
         if not path:
             raise CommandError("audio requer 'path'")
-        path = self._resolve_upload_path(path)
+        path = self._resolve_upload_path(path, payload.get("content_b64"))
 
         # Força o idioma do app (default PT-BR) — o auto-detect do modelo às
         # vezes escorrega para inglês transcrevendo fala em português.
@@ -2824,13 +2837,17 @@ class CommandConsumer:
         except Exception as exc:  # noqa: BLE001 - best-effort
             raise CommandError(f"falha ao rolar: {exc}") from exc
 
-    def _resolve_upload_path(self, path: str) -> str:
+    def _resolve_upload_path(self, path: str, content_b64: str | None = None) -> str:
         """Resolve o path do upload de áudio para o filesystem do HOST.
 
         A API (no container) publica ``/data/uploads/<sid>/<file>``. Se esse
         path não existir aqui (worker no host), re-rooteia os 2 últimos
         componentes (``<sid>/<file>``) em :data:`HOST_UPLOADS_DIR`. Mantém o
         path original quando já é acessível (ex.: dev tudo no host).
+
+        Worker em OUTRA máquina (Duck, Deepin...) não enxerga o disco da API:
+        aí a API manda os bytes inline (``content_b64``) e gravamos em
+        ``HOST_UPLOADS_DIR/<sid>/<file>`` — sem isso o anexo sumia calado.
         """
         p = Path(path)
         if p.is_file():
@@ -2840,6 +2857,18 @@ class CommandConsumer:
             candidate = HOST_UPLOADS_DIR / parts[-2] / parts[-1]
             if candidate.is_file():
                 return str(candidate)
+            if content_b64:
+                # Só o NOME de cada componente (sem ``..``/barras) → não escapa
+                # do diretório de uploads mesmo com path forjado.
+                sid = Path(parts[-2]).name.strip(".") or "_"
+                fname = Path(parts[-1]).name.strip(".") or "arquivo"
+                target = HOST_UPLOADS_DIR / sid / fname
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(base64.b64decode(content_b64))
+                except (OSError, ValueError) as exc:
+                    raise CommandError(f"falha ao gravar upload no host: {exc}") from exc
+                return str(target)
         return path  # deixa o transcriber falhar com erro claro de arquivo
 
     def _active_pane(self, name: str) -> Any:

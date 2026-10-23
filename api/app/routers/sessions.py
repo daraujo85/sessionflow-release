@@ -10,6 +10,7 @@ Session documents are serialized from Mongo: ``_id`` (ObjectId) -> ``id``
 
 from __future__ import annotations
 
+import base64
 import re
 import unicodedata
 import uuid
@@ -870,7 +871,8 @@ async def upload_audio(
     target_dir = Path(settings.uploads_dir) / session_id
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / f"{uuid.uuid4().hex}.{ext}"
-    target_path.write_bytes(await file.read())
+    data = await file.read()
+    target_path.write_bytes(data)
     path_str = str(target_path)
 
     db = request.app.state.mongo_db
@@ -882,7 +884,13 @@ async def upload_audio(
     command_id = await publish_command(
         settings,
         type="audio",
-        payload={"name": tmux_name, "path": path_str, "upload_id": upload_id},
+        payload={
+            "name": tmux_name,
+            "path": path_str,
+            "upload_id": upload_id,
+            # Worker em OUTRA máquina não enxerga este disco — leva os bytes.
+            "content_b64": base64.b64encode(data).decode("ascii"),
+        },
         host_id=host_id,
     )
     return AudioUploadAccepted(
@@ -932,11 +940,14 @@ async def upload_file(
     paths: list[str] = []
     filenames: list[str] = []
     upload_ids: list[str] = []
+    contents_b64: list[str] = []
     for up in incoming:
         original = Path(up.filename or "").name or "arquivo"
         ext = Path(original).suffix.lstrip(".") or "bin"
         target_path = target_dir / f"{uuid.uuid4().hex}.{ext}"
-        target_path.write_bytes(await up.read())
+        data = await up.read()
+        target_path.write_bytes(data)
+        contents_b64.append(base64.b64encode(data).decode("ascii"))
         path_str = str(target_path)
         upload_id = await uploads_repo.create_upload(
             session_id=session_id, path=path_str, kind="file", status="received"
@@ -954,6 +965,8 @@ async def upload_file(
             # Formato novo (lista) + campos antigos (1º item) p/ retrocompat
             # com um worker ainda no formato velho durante o deploy.
             "paths": paths,
+            # Bytes de cada path (mesma ordem): worker remoto grava no seu disco.
+            "contents_b64": contents_b64,
             "filenames": filenames,
             "upload_ids": upload_ids,
             "path": paths[0],

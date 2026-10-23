@@ -23,6 +23,7 @@ stragglers on teardown.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import uuid
@@ -216,6 +217,8 @@ async def test_audio_upload_accepted(settings, drain_commands):
     assert msg["payload"]["name"] == name
     assert msg["payload"]["path"] == str(files[0])
     assert msg["payload"]["upload_id"] == body["upload_id"]
+    # Bytes inline: worker em outro host não enxerga o disco da API.
+    assert base64.b64decode(msg["payload"]["content_b64"]) == audio_bytes
 
 
 @pytest.mark.integration

@@ -1203,8 +1203,7 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
                   aria-label="Aumentar fonte" title="Aumentar fonte do terminal">A+</button>
         </div>
 
-        <!-- Rolagem do scrollback: manda ▲/▼ direto pro agente (roda do mouse
-             via tmux), que redesenha o próprio histórico interno. -->
+        <!-- ▲/▼: rolam o histórico NATIVO do terminal (meia tela por clique). -->
         <div class="term-scroll">
           <button type="button" class="term-scroll-btn" (click)="scrollTerm('up')"
                   aria-label="Rolar para cima" title="Subir (histórico do terminal)">
@@ -1238,32 +1237,14 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
       <!-- Terminal: espelho ao vivo da tela atual do agente. tabindex dá foco
            via clique — sem isso (keydown) nunca dispara num <div>. -->
       <div class="term mono" #term tabindex="0" aria-label="Tela do terminal" (scroll)="onTermScroll()"
-           (wheel)="onTermWheel($event)"
-           (touchstart)="onTermTouchStart($event)"
-           (touchmove)="onTermTouchMove($event)"
            (mouseup)="onTermSelect()"
            (touchend)="onTermSelect()"
            (keydown)="onTermKeydown($event)"
            [style.fontSize.px]="termFont()">
-        @if (bufMode()) {
-          <pre class="term-screen" [innerHTML]="bufHtml()"></pre>
-        } @else if (screen().length === 0) {
+        @if (screen().length === 0) {
           <div class="term-msg">Conectando ao terminal…</div>
         } @else {
           <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
-        }
-
-        <!-- Buffer de scrollback: indicador de "carregando histórico". -->
-        @if (bufMode()) {
-          <div class="buf-loading" role="status" aria-live="polite">
-            @if (bufLoading()) {
-              carregando histórico… ({{ bufCount() }})
-            } @else if (bufExhaustedUi()) {
-              início do histórico · {{ bufCount() }} linhas
-            } @else {
-              histórico · {{ bufCount() }} linhas · role p/ cima
-            }
-          </div>
         }
 
         <!-- Toast "Copiado": confirma a cópia da seleção pro clipboard. -->
@@ -1279,7 +1260,7 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
 
         <!-- Pill "↓ ao vivo": aparece no modo ao vivo quando o usuário rolou
              p/ cima; toca → snap pro fim e retoma o stick. -->
-        @if (bufMode() || showLivePill()) {
+        @if (showLivePill()) {
           <button type="button" class="live-pill" (click)="snapToLive()" aria-label="Ir para o fim (ao vivo)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -3358,31 +3339,11 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
         padding: 14px 16px;
         font-size: 12.5px;
         line-height: 1.7;
-        /* Scroll anchoring do browser tenta "preservar" a posição visível
-           quando o conteúdo acima muda de tamanho — mas ao entrar no buffer
-           o <pre> troca de vazio pra centenas de linhas, e o anchoring então
-           briga com o scrollTop que setamos via JS (loadMoreUp), te jogando
-           de volta pro topo. Desliga: quem controla a posição aqui é o JS. */
+        /* Scroll anchoring do browser briga com o scrollTop que setamos via
+           JS (grudar no fim) quando o histórico é substituído. Desliga. */
         overflow-anchor: none;
       }
       /* Toast "Copiado" — canto inferior ESQUERDO (não colide com a live-pill). */
-      .buf-loading {
-        position: sticky;
-        top: 6px;
-        z-index: 6;
-        display: block;
-        width: fit-content;
-        margin: 0 auto;
-        padding: 4px 12px;
-        border-radius: 999px;
-        background: rgba(20, 26, 24, 0.92);
-        border: 1px solid #263038;
-        color: #9fb0ad;
-        font-size: 11.5px;
-        font-weight: 600;
-        font-family: inherit;
-        pointer-events: none;
-      }
       .term-copied {
         position: sticky;
         bottom: 12px;
@@ -4960,10 +4921,6 @@ export class DetalheComponent implements AfterViewChecked {
     persistSplitSizes(sizes);
   }
 
-  /** Throttle do scroll-pro-agente (roda do mouse / toque) (ms). */
-  private lastWheelAt = 0;
-  /** Y inicial do toque no terminal (p/ medir arrasto no limite — tablet). */
-  private touchStartY = 0;
   /** Toast "Copiado" ao selecionar texto do terminal. */
   protected readonly copied = signal<boolean>(false);
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5185,44 +5142,6 @@ export class DetalheComponent implements AfterViewChecked {
   /** Câmera preferida: traseira por padrão (melhor p/ fotografar algo). */
   private camFacing: 'environment' | 'user' = 'environment';
 
-  /**
-   * Modo BUFFER: rolagem LISA do histórico. TUIs alt-screen (Claude Code)
-   * guardam o scrollback dentro do próprio agente — tmux não tem nada além da
-   * tela visível pra rolar (confirmado: `capture-pane -S` e sem histórico dão
-   * o MESMO conteúdo numa sessão alt-screen). Por isso o histórico vem da
-   * captura linear do worker (`pipe-pane` → `session_output`, via
-   * `GET /sessions/{id}/output`), paginada por `seq` (`tail` semeia, `before`
-   * busca mais antigo) — sem depender do redraw do agente. O usuário rola
-   * nativo dentro do buffer; só ao chegar perto do topo buscamos mais. Sai
-   * pela pill "↓ ao vivo".
-   */
-  protected readonly bufMode = signal<boolean>(false);
-  /** Texto acumulado (colorido) do buffer de scrollback. */
-  protected readonly bufText = signal<string>('');
-  protected readonly bufHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(
-      ansiToHtml(trimBlankEdges(this.bufText())),
-    ),
-  );
-  /** True enquanto busca a próxima leva de histórico (mostra "carregando…"). */
-  protected readonly bufLoading = signal<boolean>(false);
-  /** Nº de linhas no buffer (diagnóstico visível no indicador). */
-  protected readonly bufCount = signal<number>(0);
-  /** Espelho de {@link bufExhausted} p/ o template (topo do histórico atingido). */
-  protected readonly bufExhaustedUi = signal<boolean>(false);
-  /** Linhas acumuladas (mais antigas no topo). */
-  private bufLines: string[] = [];
-  /** Menor `seq` já carregado do `session_output` — cursor p/ pedir história
-   * mais antiga (`before`). `null` até a 1ª leva (tail) resolver. */
-  private bufMinSeq: number | null = null;
-  /** Guard: uma busca de "mais histórico" em andamento. */
-  private bufBusy = false;
-  /** True quando não há mais histórico a revelar (chegou no início da captura). */
-  private bufExhausted = false;
-  /** True enquanto ajustamos scrollTop programaticamente (ignora onTermScroll). */
-  private bufAdjusting = false;
-  /** Teto de linhas no buffer (evita crescer sem limite). */
-  private static readonly BUF_MAX_LINES = 30000;
 
   protected readonly canSend = computed(
     () =>
@@ -5318,9 +5237,6 @@ export class DetalheComponent implements AfterViewChecked {
         this.screen.set('');
         this.tasks.set([]);
         this.seenArtifactUrl.set(null);
-        this.bufMode.set(false);
-        this.bufLines = [];
-        this.bufText.set('');
         this.lastScreenPushAt = ''; // sessão nova → não herda o gate do push anterior
         // Chip de erro (actionHintKind === 'error') sobrevive à troca de sessão
         // se não for limpo aqui — o guard de clearHint() só deixa dispensar via
@@ -5380,11 +5296,6 @@ export class DetalheComponent implements AfterViewChecked {
         return;
       }
       const scr = this.sse.screens()[tn];
-      // No modo buffer o terminal fica congelado — não aplicamos frames novos
-      // (mas continuamos lendo o signal p/ não desinscrever o effect).
-      if (this.bufMode()) {
-        return;
-      }
       // Só aplica quando o worker EMPURROU um frame novo (``at`` mudou). Comparar
       // por texto != screen() faria o effect brigar com o poll de 4s e reverter a
       // tela nova do doc para um frame de SSE defasado — o que congelava o "ao
@@ -5405,10 +5316,7 @@ export class DetalheComponent implements AfterViewChecked {
     // Fallback: se o SSE cair, um poll lento (4s) garante que a tela não trava.
     // Aproveita p/ atualizar as tarefas (worker sincroniza ~6s).
     const poll = setInterval(() => {
-      // No modo buffer o terminal está congelado — só atualiza tarefas.
-      if (!this.bufMode()) {
-        this.refreshScreen();
-      }
+      this.refreshScreen();
       this.loadTasks();
       // Re-busca o DOC da sessão também (status/métricas/artifacts mudam no
       // worker sem evento) — antes só atualizava em ações pontuais.
@@ -5461,9 +5369,6 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   ngAfterViewChecked(): void {
-    if (this.bufMode()) {
-      return; // buffer controla o próprio scroll (não gruda no fim)
-    }
     const text = this.screen();
     if (text !== this.lastRenderedScreen) {
       this.lastRenderedScreen = text;
@@ -6633,10 +6538,16 @@ export class DetalheComponent implements AfterViewChecked {
     if (!id) {
       return;
     }
-    // Scroll não é resposta; as demais teclas (enter/setas num prompt) são.
-    if (key !== 'scroll-up' && key !== 'scroll-down') {
-      this.markWorkingLocal();
+    // Scroll é LOCAL (histórico nativo do espelho), não vai pro agente.
+    if (key === 'scroll-up' || key === 'scroll-down') {
+      this.scrollTerm(key === 'scroll-up' ? 'up' : 'down');
+      return;
     }
+    if (key === 'scroll-bottom') {
+      this.snapToLive();
+      return;
+    }
+    this.markWorkingLocal();
     // Fire-and-forget: NÃO bloqueia os botões durante o round-trip (no celular
     // ele tem centenas de ms via túnel). Bloquear deixava o keypad "morto" e
     // só piscando. Teclas são baratas/idempotentes → pode disparar à vontade.
@@ -6797,7 +6708,9 @@ export class DetalheComponent implements AfterViewChecked {
         next: (resp) => {
           // Captura ANTES do update: o usuário estava colado no fim? (forceBottom
           // ignora isso — ex.: ao voltar do histórico, sempre desce pro fim.)
-          const next = resp.text ?? '';
+          // ``scrollback`` = histórico do tmux + tela (scroll nativo); docs
+          // antigos sem ele caem na tela visível.
+          const next = resp.scrollback || resp.text || '';
           if (next !== this.screen()) {
             this.clearHint(); // conteúdo chegou via poll → some o aviso
           }
@@ -6851,7 +6764,7 @@ export class DetalheComponent implements AfterViewChecked {
   private syncTermSize(): void {
     const el = this.termEl()?.nativeElement;
     const id = this.id();
-    if (!el || !id || this.bufMode()) {
+    if (!el || !id) {
       return;
     }
     const cw = this.measureCharWidth();
@@ -6926,83 +6839,6 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   /**
-   * Scroll do mouse/touchpad SOBRE o terminal: enquanto o container pode rolar
-   * localmente naquela direção, deixa a rolagem nativa. Ao bater no LIMITE
-   * (topo/fim), manda o scroll pro AGENTE (igual aos botões ▲▼) — dá a sensação
-   * de scroll infinito, como num terminal de verdade. Throttle p/ não floodar.
-   */
-  protected onTermWheel(ev: WheelEvent): void {
-    const el = this.termEl()?.nativeElement;
-    if (!el || Math.abs(ev.deltaY) < 1) {
-      return;
-    }
-    const up = ev.deltaY < 0;
-    const canScrollUp = el.scrollTop > 0;
-    const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
-    if ((up && canScrollUp) || (!up && canScrollDown)) {
-      return; // ainda dá pra rolar dentro do container → nativo
-    }
-    // No limite: manda o scroll pro agente (ele guarda o próprio scrollback).
-    this.agentScroll(up ? 'up' : 'down');
-  }
-
-  /** Início do toque no terminal — guarda o Y p/ medir o arrasto (tablet). */
-  protected onTermTouchStart(ev: TouchEvent): void {
-    this.touchStartY = ev.touches[0]?.clientY ?? 0;
-  }
-
-  /**
-   * Arrasto de toque NO LIMITE do terminal (tablet/celular): no topo arrastando
-   * pra baixo → traz conteúdo anterior (igual ▲); no fim arrastando pra cima →
-   * mais recente (▼). Como o `wheel` não dispara no toque, replicamos aqui.
-   */
-  protected onTermTouchMove(ev: TouchEvent): void {
-    const el = this.termEl()?.nativeElement;
-    if (!el) {
-      return;
-    }
-    const y = ev.touches[0]?.clientY ?? 0;
-    const dy = y - this.touchStartY; // >0 = dedo descendo (revela conteúdo acima)
-    const atTop = el.scrollTop <= 0;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    if (atTop && dy > 24) {
-      this.touchStartY = y;
-      this.agentScroll('up');
-    } else if (atBottom && dy < -24) {
-      this.touchStartY = y;
-      this.agentScroll('down');
-    }
-  }
-
-  /** Manda o scroll pro agente (▲/▼) com throttle — compartilhado por wheel e toque. */
-  private agentScroll(dir: 'up' | 'down'): void {
-    const now = Date.now();
-    // Throttle folgado (150ms): a roda dispara MUITOS eventos por gesto; junto do
-    // burst de 2 notches por comando no worker, um flickzinho pulava dezenas de
-    // linhas no agente. Espaçar mais os comandos dá controle fino do histórico.
-    if (now - this.lastWheelAt < 150) {
-      return;
-    }
-    this.lastWheelAt = now;
-    if (dir === 'up') {
-      this.showLivePill.set(true); // rolou o agente p/ cima → oferece "↓ ao vivo"
-    }
-    this.scrollTerm(dir);
-  }
-
-  /** Manda o agente pular pro FIM (Ctrl+End) — ele guarda o próprio scroll. */
-  private jumpAgentToBottom(): void {
-    const id = this.id();
-    if (!id) {
-      return;
-    }
-    this.api
-      .sendKey(id, 'scroll-bottom')
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: () => this.refreshScreen(true), error: () => {} });
-  }
-
-  /**
    * Selecionou texto no terminal → copia pro clipboard e avisa ("Copiado").
    * Disparado no fim da seleção (mouseup/touchend). Ignora seleção vazia ou
    * fora do terminal. Best-effort (clipboard exige contexto seguro + gesto).
@@ -7034,25 +6870,14 @@ export class DetalheComponent implements AfterViewChecked {
     this.copyTimer = setTimeout(() => this.copied.set(false), 1500);
   }
 
-  /**
-   * Botões ▲/▼: mandam evento de RODA DO MOUSE pro AGENTE, que redesenha o
-   * próprio histórico interno — igual ao touchpad no Mac. (TUIs de tela
-   * alternada, ex.: Claude Code, guardam o scrollback dentro de si, não no
-   * tmux; por isso não dá pra rolar via tmux, só mandando o evento direto.)
-   */
+  /** Botões ▲/▼: rolam o histórico NATIVO do terminal (meia tela por clique). */
   protected scrollTerm(dir: 'up' | 'down'): void {
-    const id = this.id();
-    if (!id) {
+    const el = this.termEl()?.nativeElement;
+    if (!el) {
       return;
     }
-    this.api
-      .sendKey(id, dir === 'up' ? 'scroll-up' : 'scroll-down')
-      // O agente NÃO redesenha na hora que o comando chega — leva algumas dezenas
-      // de ms. Um único refresh imediato pega a tela ANTIGA, e o próximo update só
-      // viria no push do worker (a cada ~1s), dando a sensação de "travado". Por
-      // isso disparamos um BURST curto de refreshes pra capturar o redraw cedo.
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: () => this.refreshBurst(), error: () => {} });
+    const step = Math.max(40, el.clientHeight * 0.5);
+    el.scrollBy({ top: dir === 'up' ? -step : step, behavior: 'smooth' });
   }
 
   /** Timers do burst de refresh pós-scroll — cancelados a cada novo scroll. */
@@ -7076,159 +6901,16 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
   protected snapToLive(): void {
-    if (this.bufMode()) {
-      this.exitBuffer(); // sai do buffer de scrollback e volta ao espelho ao vivo
-      return;
-    }
     this.stickToBottom = true;
     this.scrollToBottom();
     this.showLivePill.set(false);
-    this.jumpAgentToBottom(); // o agente pode estar rolado p/ cima → traz pro fim
   }
 
-  /**
-   * ENTRA no buffer de scrollback: semeia com a tela ao vivo, congela e busca a
-   * primeira página pra cima. A partir daí a rolagem é NATIVA (lisa) e só pede
-   * mais história ao chegar no topo. Sai pela pill "↓ ao vivo" ({@link snapToLive}).
-   */
-  private enterBuffer(): void {
-    const id = this.id();
-    if (!id || this.bufMode()) {
-      return;
-    }
-    this.bufLines = [];
-    this.bufMinSeq = null;
-    this.bufText.set('');
-    this.bufCount.set(0);
-    this.bufExhausted = false;
-    this.bufExhaustedUi.set(false);
-    this.bufBusy = false;
-    this.bufMode.set(true);
-    this.showLivePill.set(true);
-    this.loadMoreUp(true); // 1ª leva: tail da captura persistida (session_output)
-  }
-
-  /**
-   * Busca a próxima "página" de história do `session_output` (via
-   * `GET /sessions/{id}/output`). 1ª leva (`initial`) pede o TAIL (últimas
-   * linhas capturadas, semeia o buffer); demais levas pedem `before:
-   * bufMinSeq`. Paginação por `seq` é exata — sem overlap a costurar, sem
-   * polling: a resposta do Mongo já é definitiva.
-   */
-  private loadMoreUp(initial = false): void {
-    const id = this.id();
-    if (this.bufBusy || this.bufExhausted || !this.bufMode() || !id) {
-      return;
-    }
-    if (this.bufLines.length >= DetalheComponent.BUF_MAX_LINES) {
-      this.bufExhausted = true;
-      return;
-    }
-    this.bufBusy = true;
-    this.bufLoading.set(true);
-    const el = this.termEl()?.nativeElement;
-    const beforeH = el?.scrollHeight ?? 0;
-    const beforeTop = el?.scrollTop ?? 0;
-    const before = initial ? undefined : (this.bufMinSeq ?? undefined);
-    this.api
-      .getOutput(id, undefined, before, initial, 200)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (items) => {
-          this.bufBusy = false;
-          this.bufLoading.set(false);
-          if (!items.length) {
-            // Início real da captura (ou sessão sem histórico ainda) — não há
-            // mais o que carregar antes disso.
-            this.bufExhausted = true;
-            this.bufExhaustedUi.set(true);
-            return;
-          }
-          this.bufMinSeq = items[0].seq;
-          this.bufLines = [...items.map((it) => it.text), ...this.bufLines];
-          if (this.bufLines.length > DetalheComponent.BUF_MAX_LINES) {
-            this.bufLines = this.bufLines.slice(0, DetalheComponent.BUF_MAX_LINES);
-          }
-          this.bufText.set(this.bufLines.join('\n'));
-          this.bufCount.set(this.bufLines.length);
-          this.bufAdjusting = true;
-          // rAF (não queueMicrotask): o [innerHTML]=bufHtml() precisa do ciclo
-          // de change detection do Angular já APLICADO no DOM antes de ler
-          // scrollHeight — um microtask pode disparar antes desse flush (CD
-          // costuma coalescer via seu próprio microtask, e a ordem entre os
-          // dois não é garantida), lendo scrollHeight do <pre> ainda vazio/
-          // antigo e jogando o scroll pro topo assim que o conteúdo real
-          // aparecer no frame seguinte. rAF só roda depois do layout do frame.
-          requestAnimationFrame(() => {
-            const el2 = this.termEl()?.nativeElement;
-            if (el2) {
-              // 1ª leva: desce pro fim (contínuo com o ao vivo, tail é o mais
-              // recente). Demais levas: preserva a posição (cresceu no topo).
-              el2.scrollTop = initial
-                ? el2.scrollHeight
-                : beforeTop + (el2.scrollHeight - beforeH);
-            }
-            this.bufAdjusting = false;
-          });
-        },
-        error: () => {
-          this.bufBusy = false;
-          this.bufLoading.set(false);
-        },
-      });
-  }
-
-  /** SAI do buffer: volta ao espelho ao vivo e manda o agente pro fim. */
-  private exitBuffer(): void {
-    this.bufMode.set(false);
-    this.bufLines = [];
-    this.bufMinSeq = null;
-    this.bufText.set('');
-    this.bufCount.set(0);
-    this.bufExhausted = false;
-    this.bufExhaustedUi.set(false);
-    this.bufBusy = false;
-    this.bufLoading.set(false);
-    this.showLivePill.set(false);
-    this.stickToBottom = true;
-    // Desce o scroll JÁ (antes do roundtrip de jumpAgentToBottom): a troca
-    // bufHtml() -> screenHtml() reaproveita o mesmo <pre>, então o scrollTop
-    // fica onde estava lá no histórico (perto do topo). Se sobrar <=40,
-    // onTermScroll() lê isso como "rolou pro topo do espelho ao vivo" e chama
-    // enterBuffer() de novo — te jogando de volta pro histórico antigo bem na
-    // hora que clicou "ao vivo". queueMicrotask espera o Angular aplicar o
-    // @else (screenHtml) antes de mexer no scrollTop desse mesmo elemento.
-    queueMicrotask(() => this.scrollToBottom());
-    this.jumpAgentToBottom(); // Ctrl+End no agente + refreshScreen(true) (recoloca certo quando a resposta chegar)
-  }
-
-  /** Atualiza a pill ↓ ao vivo conforme o usuário rola (só no modo ao vivo). */
+  /** Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim. */
   protected onTermScroll(): void {
-    if (this.bufMode()) {
-      // Rolagem nativa dentro do buffer: perto do topo, busca mais histórico.
-      if (this.bufAdjusting) {
-        return; // ajuste programático de scrollTop — não dispara load
-      }
-      const el = this.termEl()?.nativeElement;
-      if (el && el.scrollTop <= 40) {
-        this.loadMoreUp();
-      }
-      return;
-    }
-    // Fora do buffer: chegar perto do topo do mirror ao vivo (com conteúdo
-    // scrollável de verdade) sinaliza que o usuário quer ver histórico —
-    // congela a tela (para de sofrer replace por poll/SSE) e entra no buffer.
-    // O espelho ao vivo é só a TELA atual do tmux (sem scrollback próprio) —
-    // padding/line-height do .term já bastam pra "scrollHeight > clientHeight"
-    // por uns pixels, então QUALQUER toque de scroll batia o antigo threshold
-    // e entrava no histórico sem o usuário ter rolado de verdade. Exige folga
-    // real (>40px) antes de interpretar "perto do topo" como intenção.
-    const el = this.termEl()?.nativeElement;
-    if (el && el.scrollTop <= 40 && el.scrollHeight - el.clientHeight > 40) {
-      this.enterBuffer();
-      return;
-    }
-    this.showLivePill.set(!this.isAtBottom());
+    const atBottom = this.isAtBottom();
+    this.stickToBottom = atBottom;
+    this.showLivePill.set(!atBottom);
   }
 
   /** True se a viewport do terminal está (quase) no fim — tolerância de 48px. */

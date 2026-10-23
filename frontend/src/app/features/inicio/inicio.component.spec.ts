@@ -230,3 +230,61 @@ describe('InicioComponent — resposta rápida no hover', () => {
     expect(event.stopPropagation).toHaveBeenCalled();
   });
 });
+
+describe('InicioComponent — top 3 tarefas + infinite scroll', () => {
+  let component: InicioComponent;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [InicioComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: API_BASE_URL, useValue: BASE },
+        { provide: Router, useValue: { navigate: vi.fn() } },
+        { provide: SseService, useValue: { connected: () => true, connect: vi.fn(), events: () => [], notifications: () => [], taskDoneFlash: () => null, taskDoneToast: () => null } },
+        { provide: SessionCloneService, useValue: { clone: vi.fn() } },
+        { provide: JarvisAudioService, useValue: { speakingSessionId: () => null } },
+        { provide: WorkersStore, useValue: { hasMultipleHosts: () => false, hostname: () => null, emoji: () => null } },
+        { provide: AuthService, useValue: { email: () => null } },
+        {
+          provide: ApiService,
+          useValue: {
+            listSessions: () => of([]),
+            getTasks: () => of([]),
+            listRemoteSessions: () => of([]),
+          },
+        },
+      ],
+    });
+    component = TestBed.createComponent(InicioComponent).componentInstance;
+  });
+
+  function seed(n: number): void {
+    const items = Array.from({ length: n }, (_, i) => ({
+      id: `t${i}`,
+      title: `tarefa ${i}`,
+      state: 'todo',
+      session_id: 's1',
+      updated_at: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+    }));
+    (component as any).tasks.set(items);
+  }
+
+  it('mostra só as 3 mais recentes de cara', () => {
+    seed(20);
+    const shown = component.recentTasks();
+    expect(shown.length).toBe(3);
+    expect(shown[0].id).toBe('t19');
+    expect(component.remainingTasks()).toBe(17);
+  });
+
+  it('cada avanço do scroll carrega o próximo lote até esgotar', () => {
+    seed(20);
+    component.showMoreTasks();
+    expect(component.recentTasks().length).toBe(13);
+    component.showMoreTasks();
+    expect(component.recentTasks().length).toBe(20);
+    expect(component.remainingTasks()).toBe(0);
+  });
+});

@@ -248,7 +248,7 @@ describe('DetalheComponent — refreshBurst', () => {
   });
 });
 
-describe('DetalheComponent — entra em modo buffer ao rolar pro topo', () => {
+describe('DetalheComponent — scroll nativo do histórico', () => {
   let fixture: ReturnType<typeof TestBed.createComponent<DetalheComponent>>;
   let component: DetalheComponent;
   let httpMock: HttpTestingController;
@@ -284,36 +284,44 @@ describe('DetalheComponent — entra em modo buffer ao rolar pro topo', () => {
   });
 
   afterEach(() => {
-    // enterBuffer() dispara getOutput (tail) — a chamada HTTP fica pendente
-    // até o teste síncrono terminar; drena antes de verify().
     for (const req of httpMock.match(() => true)) {
       req.flush({});
     }
     httpMock.verify();
   });
 
-  it('congela o mirror (bufMode) quando o usuário rola pro topo de conteúdo scrollável', () => {
+  it('rolar pro topo só mostra a pill "ao vivo" — sem buscar histórico nem congelar', () => {
     (component as any).screen.set('linha1\nlinha2\nlinha3');
     const el = (component as any).termEl()!.nativeElement as HTMLElement;
     Object.defineProperty(el, 'scrollHeight', { value: 500, configurable: true });
-    Object.defineProperty(el, 'clientHeight', { value: 100, configurable: true });
-    el.scrollTop = 10;
-
-    (component as any).onTermScroll();
-
-    expect((component as any).bufMode()).toBe(true);
-  });
-
-  it('não entra em modo buffer se o conteúdo não é scrollável (nada a paginar)', () => {
-    (component as any).screen.set('linha1');
-    const el = (component as any).termEl()!.nativeElement as HTMLElement;
-    Object.defineProperty(el, 'scrollHeight', { value: 100, configurable: true });
     Object.defineProperty(el, 'clientHeight', { value: 100, configurable: true });
     el.scrollTop = 0;
 
     (component as any).onTermScroll();
 
-    expect((component as any).bufMode()).toBe(false);
+    expect((component as any).showLivePill()).toBe(true);
+    expect((component as any).stickToBottom).toBe(false);
+    expect(httpMock.match((r) => r.url.includes('/output')).length).toBe(0);
+  });
+
+  it('▲ rola o container localmente (não manda tecla pro agente)', () => {
+    const el = (component as any).termEl()!.nativeElement as HTMLElement;
+    Object.defineProperty(el, 'clientHeight', { value: 200, configurable: true });
+    const calls: ScrollToOptions[] = [];
+    el.scrollBy = ((opts: ScrollToOptions) => calls.push(opts)) as any;
+
+    (component as any).scrollTerm('up');
+
+    expect(calls[0].top).toBe(-100);
+    expect(httpMock.match((r) => r.url.endsWith('/key')).length).toBe(0);
+  });
+
+  it('refreshScreen usa o scrollback (histórico) quando vem no doc', () => {
+    (component as any).refreshScreen();
+    const req = httpMock.expectOne(`${BASE}/sessions/sess-1/screen`);
+    req.flush({ text: 'tela', scrollback: 'antiga\ntela', at: null });
+
+    expect((component as any).screen()).toBe('antiga\ntela');
   });
 });
 

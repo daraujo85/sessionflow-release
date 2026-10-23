@@ -2,11 +2,13 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  ElementRef,
   OnInit,
   computed,
   effect,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { Router } from '@angular/router';
@@ -491,10 +493,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
             </div>
             </div>
           }
+          <!-- Sentinela do infinite scroll: ao entrar na viewport, carrega mais. -->
           @if (remainingTasks() > 0) {
-            <button type="button" class="sf-task-more" (click)="showMoreTasks()">
-              Ver mais {{ remainingTasks() }}
-            </button>
+            <div #taskSentinel class="sf-task-sentinel" aria-hidden="true"></div>
           }
         </div>
       } @else {
@@ -1795,23 +1796,8 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         margin: 0;
         padding: 4px 2px;
       }
-      .sf-task-more {
-        display: block;
-        width: fit-content;
-        margin: 12px auto 2px;
-        padding: 8px 18px;
-        background: transparent;
-        border: 1px solid #263038;
-        border-radius: 999px;
-        color: #9fb0ad;
-        font: inherit;
-        font-size: 12.5px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      .sf-task-more:hover {
-        color: #e7eae9;
-        border-color: #37464f;
+      .sf-task-sentinel {
+        height: 1px;
       }
 
       /* Respect reduced-motion: disable entrance + press feedback. */
@@ -2411,10 +2397,14 @@ export class InicioComponent implements OnInit {
     return [...set].sort();
   });
 
+  /** Quantas tarefas a Home mostra de cara (o resto vem por infinite scroll). */
+  private static readonly TASKS_TOP = 3;
   /** Tamanho do "lote" carregado a cada avanço do infinite scroll. */
   private static readonly TASKS_PAGE = 10;
-  /** Limite atual; null = mostrar só as de HOJE (default). */
-  readonly taskLimit = signal<number | null>(null);
+  /** Limite atual de tarefas visíveis. */
+  readonly taskLimit = signal<number>(InicioComponent.TASKS_TOP);
+  /** Sentinela no fim da lista (só existe enquanto há mais a carregar). */
+  private readonly taskSentinel = viewChild<ElementRef<HTMLElement>>('taskSentinel');
 
   /** Tarefas filtradas (status/sessão) e ordenadas por mais recentes primeiro. */
   readonly filteredTasks = computed(() => {
@@ -2430,42 +2420,35 @@ export class InicioComponent implements OnInit {
   });
 
   /**
-   * Tarefas exibidas: por padrão só as de HOJE; se não houver nenhuma hoje,
-   * mostra um primeiro lote (p/ não ficar vazio). Ao rolar/"ver mais", o
-   * {@link taskLimit} cresce e passa a incluir as mais antigas.
+   * Tarefas exibidas: as {@link TASKS_TOP} mais recentes; ao rolar até o fim
+   * da lista o {@link taskLimit} cresce e entram as mais antigas.
    */
-  readonly recentTasks = computed(() => {
-    const all = this.filteredTasks();
-    const limit = this.taskLimit();
-    if (limit === null) {
-      const today = all.filter((t) => isToday(t.updated_at));
-      return today.length > 0 ? today : all.slice(0, InicioComponent.TASKS_PAGE);
-    }
-    return all.slice(0, limit);
-  });
+  readonly recentTasks = computed(() => this.filteredTasks().slice(0, this.taskLimit()));
 
   /** Quantas tarefas ainda faltam além das visíveis (0 = tudo à mostra). */
   readonly remainingTasks = computed(() =>
     Math.max(0, this.filteredTasks().length - this.recentTasks().length),
   );
 
-  /** Carrega o próximo lote (botão "Ver mais" / infinite scroll). */
+  /**
+   * Infinite scroll: só reage a ROLAGEM do usuário (a Home abre com o top 3
+   * mesmo se a lista couber na tela). Carrega mais quando o sentinela do fim
+   * chega a 240px da viewport. Escuta em capture → pega o scroll de qualquer
+   * container (window ou shell do app).
+   */
+  onTasksScroll(): void {
+    const el = this.taskSentinel()?.nativeElement;
+    if (el && el.getBoundingClientRect().top < window.innerHeight + 240) {
+      this.showMoreTasks();
+    }
+  }
+
+  /** Carrega o próximo lote (infinite scroll). */
   showMoreTasks(): void {
     if (this.remainingTasks() === 0) {
       return;
     }
     this.taskLimit.set(this.recentTasks().length + InicioComponent.TASKS_PAGE);
-  }
-
-  /** Ao rolar a página perto do fim da lista, carrega mais (infinite scroll). */
-  onTasksScroll(): void {
-    if (this.remainingTasks() === 0) {
-      return;
-    }
-    const doc = document.documentElement;
-    if (doc.scrollHeight - doc.scrollTop - doc.clientHeight < 240) {
-      this.showMoreTasks();
-    }
   }
 
   /** Tracks how many SSE events we have already reacted to. */
@@ -2533,11 +2516,11 @@ export class InicioComponent implements OnInit {
         this.loadRemoteSessions();
       }
     });
-    // Trocar filtro/sessão volta a mostrar só as de hoje (reseta a paginação).
+    // Trocar filtro/sessão volta ao top 3 (reseta a paginação).
     effect(() => {
       this.taskStatus();
       this.taskSession();
-      this.taskLimit.set(null);
+      this.taskLimit.set(InicioComponent.TASKS_TOP);
     });
   }
 
@@ -2568,15 +2551,14 @@ export class InicioComponent implements OnInit {
       this.reloadTasks();
       this.loadRemoteSessions();
     }, InicioComponent.POLL_MS);
-    // Infinite scroll da lista de tarefas: carrega mais ao chegar perto do fim.
     const onScroll = () => this.onTasksScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     this.destroyRef.onDestroy(() => {
       if (this.pollHandle !== null) {
         clearInterval(this.pollHandle);
         this.pollHandle = null;
       }
-      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('scroll', onScroll, { capture: true });
     });
   }
 
@@ -3054,19 +3036,3 @@ export class InicioComponent implements OnInit {
   }
 }
 
-/** True se o ISO cai no dia de HOJE (fuso local). Sem data → false. */
-function isToday(iso: string | null | undefined): boolean {
-  if (!iso) {
-    return false;
-  }
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) {
-    return false;
-  }
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}

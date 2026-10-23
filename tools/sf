@@ -427,7 +427,7 @@ def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
         if not w.get("online"):
             return "offline"
         if need_remote and w.get("host_id") == local_id:
-            return "--worktree/--push exigem host remoto"
+            return "host local excluído (auto-remote/--worktree/--push)"
         if cpu is None or mem is None:
             return "sem métricas (worker desatualizado?)"
         if not (w.get("agents") or {}).get(provider):
@@ -908,12 +908,13 @@ def cmd_delegate(args):
     auto_host = None
     effective_host = args.host or os.environ.get("SF_DEFAULT_HOST")
 
-    if effective_host and effective_host.lower() == "auto":
+    if effective_host and effective_host.lower() in ("auto", "auto-remote"):
         env = resolve_env(args)
         token = login(env)
         base = api_base(env)
         local_id = local_host_id()
-        need_remote = bool(args.worktree or args.push)
+        # auto-remote: mesmos critérios, mas nunca o host que dispara (nem fallback local).
+        need_remote = bool(args.worktree or args.push) or effective_host.lower() == "auto-remote"
         dir_ok, targets = auto_dir_checker(base, token, local_id, args.dir)
         chosen, ranked, rejected, local_serves = pick_host(fetch_workers(base, token), provider,
                                                           local_id, dir_ok, need_remote)
@@ -1805,7 +1806,8 @@ def build_parser():
                    help="nome do worker (default: slug da tarefa + sufixo).")
     d.add_argument("--host", default=None,
                    help="host de destino (host_id, nome, hostname, emoji ou trecho) "
-                        "ou 'auto' (escolhe o mais livre com o provider e a pasta). "
+                        "ou 'auto' (escolhe o mais livre com o provider e a pasta) "
+                        "ou 'auto-remote' (igual auto, mas nunca o host que dispara). "
                         "Remoto: --dir é caminho/nome NAQUELE host (veja 'sf dirs').")
     d.add_argument("--worktree", action="store_true",
                    help="(remoto) roda num worktree novo na branch sf/<nome>.")

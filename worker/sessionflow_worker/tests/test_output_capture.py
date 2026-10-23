@@ -449,3 +449,42 @@ async def _poll_until(cap: OutputCapture, name: str, minimum: int, timeout: floa
             return collected
         await asyncio.sleep(0.3)
     return collected
+
+
+async def test_snapshot_screen_pushes_history_keeps_visible_in_text(monkeypatch) -> None:
+    """SSE leva o HISTÓRICO (scroll nativo no app); doc ``text`` segue sendo a
+    tela visível (discovery detecta idle/prompt nela) e ``scrollback`` o
+    histórico. Tela sem mudança => nada é escrito/publicado."""
+    published: list[dict] = []
+
+    async def fake_publish(channel, routing_key, payload):
+        published.append(payload)
+
+    monkeypatch.setattr("sessionflow_worker.output_capture.publish", fake_publish)
+
+    class _Coll:
+        def __init__(self) -> None:
+            self.sets: list[dict] = []
+
+        async def update_one(self, flt, upd, upsert=False):
+            self.sets.append(upd["$set"])
+
+    coll = _Coll()
+
+    class _Db:
+        def __getitem__(self, name):
+            return coll
+
+    cap = OutputCapture(runtime=None, db=_Db(), channel=_FakeChannel(), collection="unused")
+    monkeypatch.setattr(cap, "capture_screen", lambda name: "prompt >")
+    monkeypatch.setattr(cap, "capture_scrollback", lambda name, lines=0: "old 1\nold 2\nprompt >")
+
+    out = await cap.snapshot_screen("s1", collection="scr")
+    assert out == "prompt >"
+    assert coll.sets[-1]["text"] == "prompt >"
+    assert coll.sets[-1]["scrollback"] == "old 1\nold 2\nprompt >"
+    assert published[-1]["text"] == "old 1\nold 2\nprompt >"
+
+    await cap.snapshot_screen("s1", collection="scr")
+    assert len(published) == 1
+    assert len(coll.sets) == 1

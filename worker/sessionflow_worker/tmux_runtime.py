@@ -38,6 +38,13 @@ logger = logging.getLogger("sessionflow_worker.tmux_runtime")
 _FORBIDDEN_NAME_CHARS = (".", ":")
 
 
+# Env de toda sessão criada pelo SessionFlow. Sem alt-screen o Claude Code
+# escreve no scrollback normal do tmux (com alt-screen o pane tem
+# history_size=1 e o app não tem o que rolar) — é o que dá scroll nativo,
+# igual ao terminal real, no espelho do app.
+SESSION_ENV: dict[str, str] = {"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"}
+
+
 class TmuxRuntimeError(RuntimeError):
     """Erro genérico de runtime tmux."""
 
@@ -302,6 +309,7 @@ class TmuxRuntime:
                 session_name=valid_name,
                 start_directory=str(path),
                 detach=True,
+                environment=dict(SESSION_ENV),
             )
         except Exception as exc:  # noqa: BLE001
             raise TmuxRuntimeError(

@@ -273,23 +273,7 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
 
       <div class="term" #termEl tabindex="0" (scroll)="onScroll()" (mouseup)="onTermSelect()"
            (keydown)="onTermKeydown($event)">
-        @if (bufMode()) {
-          <pre class="term-screen" [innerHTML]="bufHtml()"></pre>
-        } @else {
-          <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
-        }
-
-        @if (bufMode()) {
-          <div class="buf-loading" role="status" aria-live="polite">
-            @if (bufLoading()) {
-              carregando histórico… ({{ bufCount() }})
-            } @else if (bufExhaustedUi()) {
-              início do histórico · {{ bufCount() }} linhas
-            } @else {
-              histórico · {{ bufCount() }} linhas · role p/ cima
-            }
-          </div>
-        }
+        <pre class="term-screen" [innerHTML]="screenHtml()"></pre>
 
         @if (copied()) {
           <div class="term-copied" role="status" aria-live="polite">
@@ -301,7 +285,7 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           </div>
         }
 
-        @if (bufMode() || showLivePill()) {
+        @if (showLivePill()) {
           <button type="button" class="live-pill" (click)="snapToLive()" aria-label="Ir para o fim (ao vivo)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -878,23 +862,6 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
           transform: none;
         }
       }
-      .buf-loading {
-        position: sticky;
-        top: 6px;
-        z-index: 6;
-        display: block;
-        width: fit-content;
-        margin: 0 auto;
-        padding: 4px 12px;
-        border-radius: 999px;
-        background: rgba(20, 26, 24, 0.92);
-        border: 1px solid #263038;
-        color: #9fb0ad;
-        font-size: 11.5px;
-        font-weight: 600;
-        font-family: inherit;
-        pointer-events: none;
-      }
       .live-pill {
         position: sticky;
         bottom: 12px;
@@ -1266,27 +1233,11 @@ export class SessionPanelComponent {
     this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(trimBlankEdges(this.screen()))),
   );
 
-  /** Modo BUFFER (histórico): mesmo mecanismo da tela cheia — scroll nativo
-   * sobre a captura linear persistida (`session_output`, via `GET
-   * /sessions/{id}/output`), paginada por `seq`. Ver detalhe.component.ts
-   * (bufMode) pro raciocínio completo; aqui é a versão enxuta do painel. */
-  protected readonly bufMode = signal<boolean>(false);
-  protected readonly bufText = signal<string>('');
-  protected readonly bufHtml = computed<SafeHtml>(() =>
-    this.sanitizer.bypassSecurityTrustHtml(ansiToHtml(trimBlankEdges(this.bufText()))),
-  );
-  protected readonly bufLoading = signal<boolean>(false);
-  protected readonly bufCount = signal<number>(0);
-  protected readonly bufExhaustedUi = signal<boolean>(false);
   /** Pill "↓ ao vivo": aparece quando o usuário rolou p/ cima (buffer ou
    * espelho ao vivo com conteúdo scrollável). */
   protected readonly showLivePill = signal<boolean>(false);
-  private bufLines: string[] = [];
-  private bufMinSeq: number | null = null;
-  private bufBusy = false;
-  private bufExhausted = false;
-  private bufAdjusting = false;
-  private static readonly BUF_MAX_LINES = 30000;
+  /** Gruda no fim a cada frame novo enquanto o usuário não rolou p/ cima. */
+  private stickToBottom = true;
 
   protected readonly statusColor = computed(() => {
     const s = this.session();
@@ -1312,16 +1263,7 @@ export class SessionPanelComponent {
       this.lastScreenPushAt = '';
       this.lastCols = 0;
       this.lastRows = 0;
-      // Troca de painel/sessão: histórico da sessão anterior não vale mais.
-      this.bufMode.set(false);
-      this.bufLines = [];
-      this.bufMinSeq = null;
-      this.bufText.set('');
-      this.bufCount.set(0);
-      this.bufExhausted = false;
-      this.bufExhaustedUi.set(false);
-      this.bufBusy = false;
-      this.bufLoading.set(false);
+      this.stickToBottom = true;
       this.showLivePill.set(false);
       if (id) {
         this.loadSession(id);
@@ -1342,9 +1284,7 @@ export class SessionPanelComponent {
       const at = scr?.at ?? '';
       if (scr && at !== this.lastScreenPushAt) {
         this.lastScreenPushAt = at;
-        if (scr.text !== this.screen()) {
-          this.screen.set(scr.text);
-        }
+        this.setScreen(scr.text);
       }
     });
 
@@ -1388,9 +1328,21 @@ export class SessionPanelComponent {
       .getScreen(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (r) => this.screen.set(r.text ?? ''),
+        // ``scrollback`` = histórico do tmux + tela (scroll nativo).
+        next: (r) => this.setScreen(r.scrollback || r.text || ''),
         error: () => {},
       });
+  }
+
+  /** Troca o texto do espelho e, se o usuário estava no fim, desce junto. */
+  private setScreen(text: string): void {
+    if (text === this.screen()) {
+      return;
+    }
+    this.screen.set(text);
+    if (this.stickToBottom) {
+      requestAnimationFrame(() => this.scrollToBottom());
+    }
   }
 
   private startPolling(id: string): void {
@@ -1676,122 +1628,28 @@ export class SessionPanelComponent {
       .subscribe({ next: () => this.closeRequested.emit(), error: () => {} });
   }
 
-  /** Atualiza a pill ↓ ao vivo / decide se entra no buffer conforme o scroll. */
+  /** Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim. */
   protected onScroll(): void {
-    if (this.bufMode()) {
-      if (this.bufAdjusting) {
-        return; // ajuste programático de scrollTop — não dispara load
-      }
-      const el = this.termEl()?.nativeElement;
-      if (el && el.scrollTop <= 40) {
-        this.loadMoreUp();
-      }
-      return;
-    }
-    // Espelho ao vivo é só a TELA atual (sem scrollback próprio) — exige
-    // folga real (>40px) antes de interpretar "quase no topo" como intenção
-    // de ver histórico (padding do .term já basta pra sobrar alguns px).
-    const el = this.termEl()?.nativeElement;
-    if (el && el.scrollTop <= 40 && el.scrollHeight - el.clientHeight > 40) {
-      this.enterBuffer();
-      return;
-    }
-    this.showLivePill.set(!this.isAtBottom());
+    const atBottom = this.isAtBottom();
+    this.stickToBottom = atBottom;
+    this.showLivePill.set(!atBottom);
   }
 
-  /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
+  /** Snap pro fim e retoma o "grudar no fim" (pill ↓). */
   protected snapToLive(): void {
-    if (this.bufMode()) {
-      this.exitBuffer();
-      return;
-    }
+    this.stickToBottom = true;
     this.scrollToBottom();
     this.showLivePill.set(false);
-    this.jumpAgentToBottom();
   }
 
-  private enterBuffer(): void {
-    const id = this.sessionId();
-    if (!id || this.bufMode()) {
-      return;
-    }
-    this.bufLines = [];
-    this.bufMinSeq = null;
-    this.bufText.set('');
-    this.bufCount.set(0);
-    this.bufExhausted = false;
-    this.bufExhaustedUi.set(false);
-    this.bufBusy = false;
-    this.bufMode.set(true);
-    this.showLivePill.set(true);
-    this.loadMoreUp(true); // 1ª leva: tail da captura persistida (session_output)
-  }
-
-  private loadMoreUp(initial = false): void {
-    const id = this.sessionId();
-    if (this.bufBusy || this.bufExhausted || !this.bufMode() || !id) {
-      return;
-    }
-    if (this.bufLines.length >= SessionPanelComponent.BUF_MAX_LINES) {
-      this.bufExhausted = true;
-      return;
-    }
-    this.bufBusy = true;
-    this.bufLoading.set(true);
+  /** PageUp/PageDown: rolam o histórico local (meia tela). */
+  private scrollTerm(dir: 'up' | 'down'): void {
     const el = this.termEl()?.nativeElement;
-    const beforeH = el?.scrollHeight ?? 0;
-    const beforeTop = el?.scrollTop ?? 0;
-    const before = initial ? undefined : (this.bufMinSeq ?? undefined);
-    this.api
-      .getOutput(id, undefined, before, initial, 200)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (items) => {
-          this.bufBusy = false;
-          this.bufLoading.set(false);
-          if (!items.length) {
-            this.bufExhausted = true;
-            this.bufExhaustedUi.set(true);
-            return;
-          }
-          this.bufMinSeq = items[0].seq;
-          this.bufLines = [...items.map((it) => it.text), ...this.bufLines];
-          if (this.bufLines.length > SessionPanelComponent.BUF_MAX_LINES) {
-            this.bufLines = this.bufLines.slice(0, SessionPanelComponent.BUF_MAX_LINES);
-          }
-          this.bufText.set(this.bufLines.join('\n'));
-          this.bufCount.set(this.bufLines.length);
-          this.bufAdjusting = true;
-          // rAF: espera o [innerHTML]=bufHtml() já refletido no DOM antes de
-          // ler scrollHeight (ver mesma nota em detalhe.component.ts).
-          requestAnimationFrame(() => {
-            const el2 = this.termEl()?.nativeElement;
-            if (el2) {
-              el2.scrollTop = initial ? el2.scrollHeight : beforeTop + (el2.scrollHeight - beforeH);
-            }
-            this.bufAdjusting = false;
-          });
-        },
-        error: () => {
-          this.bufBusy = false;
-          this.bufLoading.set(false);
-        },
-      });
-  }
-
-  private exitBuffer(): void {
-    this.bufMode.set(false);
-    this.bufLines = [];
-    this.bufMinSeq = null;
-    this.bufText.set('');
-    this.bufCount.set(0);
-    this.bufExhausted = false;
-    this.bufExhaustedUi.set(false);
-    this.bufBusy = false;
-    this.bufLoading.set(false);
-    this.showLivePill.set(false);
-    queueMicrotask(() => this.scrollToBottom());
-    this.jumpAgentToBottom();
+    if (!el) {
+      return;
+    }
+    const step = Math.max(40, el.clientHeight * 0.5);
+    el.scrollBy({ top: dir === 'up' ? -step : step, behavior: 'smooth' });
   }
 
   /** True se a viewport do terminal está (quase) no fim — tolerância de 48px. */
@@ -1808,18 +1666,6 @@ export class SessionPanelComponent {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }
-
-  /** Manda o agente pular pro FIM (Ctrl+End) — ele guarda o próprio scroll. */
-  private jumpAgentToBottom(): void {
-    const id = this.sessionId();
-    if (!id) {
-      return;
-    }
-    this.api
-      .sendKey(id, 'scroll-bottom')
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: () => this.refreshScreen(id), error: () => {} });
   }
 
   /** Selecionou texto no terminal → copia pro clipboard e avisa ("Copiado"). */
@@ -1869,7 +1715,14 @@ export class SessionPanelComponent {
     const key = keyToTerminalKey(ev);
     if (key) {
       ev.preventDefault(); // senão Tab troca de foco e seta/espaço rolam a página
-      this.sendKey(key as TerminalKey);
+      // Scroll é LOCAL (histórico nativo do espelho), não vai pro agente.
+      if (key === 'scroll-up' || key === 'scroll-down') {
+        this.scrollTerm(key === 'scroll-up' ? 'up' : 'down');
+      } else if (key === 'scroll-bottom') {
+        this.snapToLive();
+      } else {
+        this.sendKey(key as TerminalKey);
+      }
       return;
     }
     if (ev.key.length !== 1 || ev.ctrlKey || ev.metaKey || ev.altKey) {

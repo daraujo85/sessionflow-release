@@ -706,6 +706,22 @@ class AutoDelegateTests(SfApiTestCase):
         self.assertFalse(sf._local_serves(_w("mac", metrics=False)))    # sem metrics
         self.assertFalse(sf._local_serves(None))                       # sem worker
 
+    def test_auto_remote_skips_local_even_when_freest(self):
+        """--host auto-remote: mesmo ranking, mas nunca cai no host que dispara."""
+        self.workers[1]["metrics"] = {"cpu_pct": 1.0, "mem_avail_gb": 30.0}
+        args = list(self.ARGS); args[args.index("auto")] = "auto-remote"
+        out = self.run_sf(*args)
+        self.assertEqual(self._post()["host_id"], "duck-id")
+        self.assertIn("host auto → 🦆 Duck Server", out)
+
+    def test_auto_remote_dies_instead_of_local_fallback(self):
+        self.workers[0]["agents"] = {"claude": False}
+        self.workers[1]["metrics"] = {"cpu_pct": 10.0, "mem_avail_gb": 8.0}
+        args = list(self.ARGS); args[args.index("auto")] = "AUTO-REMOTE"
+        out = self.run_sf_error(*args)
+        self.assertIn("nenhum host remoto serve", out)
+        self.assertFalse([c for c in self.calls if c[0] == "POST" and c[1].endswith("/sessions")])
+
     def test_auto_picks_local_when_freest(self):
         self.workers[1]["metrics"] = {"cpu_pct": 1.0, "mem_avail_gb": 30.0}
         out = self.run_sf(*self.ARGS)

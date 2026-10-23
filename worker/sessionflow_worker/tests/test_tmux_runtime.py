@@ -214,3 +214,14 @@ def test_operations_on_missing_session_raise(runtime: TmuxRuntime) -> None:
         runtime.is_attached(ghost)
     with pytest.raises(TmuxSessionNotFoundError):
         runtime.rename_session(ghost, f"{_PREFIX}whatever")
+
+def test_new_session_disables_claude_alt_screen(
+    runtime: TmuxRuntime, make_name: Callable[[], str], tmp_path
+) -> None:
+    """Scroll nativo: sem alt-screen o Claude Code escreve no scrollback do
+    tmux (alt-screen => history_size=1, nada pra rolar no app)."""
+    name = make_name()
+    runtime.new_session(name, tmp_path)
+    session = runtime.server.sessions.get(session_name=name)
+    env = session.show_environment()
+    assert env.get("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN") == "1"
