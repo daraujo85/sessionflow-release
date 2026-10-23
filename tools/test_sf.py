@@ -188,6 +188,11 @@ class SfApiTestCase(unittest.TestCase):
         patcher = mock.patch.object(sf.time, "sleep", lambda s: None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Shell do dev pode exportar SF_DEFAULT_HOST=auto; teste não herda.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("SF_DEFAULT_HOST", None)
 
     def run_sf(self, *argv):
         args = sf.build_parser().parse_args(list(argv))
