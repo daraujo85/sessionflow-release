@@ -40,22 +40,32 @@ def test_passes_colab_config() -> None:
     assert out.colab_authuser == "2"
 
 
-def test_explicit_online_flag() -> None:
-    # online=True recente (POST /start, Colab subindo) → online
-    out_true = _to_worker_out({"_id": "h_cloud", "online": True, "updated_at": datetime.now(UTC)})
-    assert out_true.online is True
+def test_online_is_heartbeat_only() -> None:
+    """Só heartbeat recente conta; flag `online` legada do /start é ignorada."""
+    now = datetime.now(UTC)
+    old = now - timedelta(minutes=5)
+    assert _to_worker_out({"_id": "h", "updated_at": now}).online is True
+    # /start antigo gravava online=True sem worker vivo → era 🟢 falso.
+    assert _to_worker_out({"_id": "h", "online": True, "updated_at": old}).online is False
+    assert _to_worker_out({"_id": "h", "online": True}).online is False
+    # /stop antigo gravava online=False e o heartbeat nunca limpava → host vivo ficava 🔴.
+    assert _to_worker_out({"_id": "h", "online": False, "updated_at": now}).online is True
 
-    # Quando online é explicitamente False, deve ser offline
-    out_false = _to_worker_out({"_id": "h_cloud", "online": False, "updated_at": datetime.now(UTC)})
-    assert out_false.online is False
 
-
-def test_stale_online_true_is_offline() -> None:
-    """online=True sem heartbeat há dias (Colab morto após /start) → offline.
-    Antes ficava 🟢 pra sempre e o --host auto mandava sessão pra máquina inexistente."""
-    old = datetime.now(UTC) - timedelta(days=2)
-    assert _to_worker_out({"_id": "h_colab", "online": True, "updated_at": old}).online is False
-    assert _to_worker_out({"_id": "h_colab", "online": True}).online is False
+def test_starting_is_separate_from_online() -> None:
+    """POST /start recente sem heartbeat → starting (🟡), NÃO online."""
+    now = datetime.now(UTC)
+    old = now - timedelta(minutes=5)
+    out = _to_worker_out({"_id": "h_colab", "starting_at": now, "updated_at": old})
+    assert out.online is False
+    assert out.starting is True
+    # Grace vencido → nem online nem starting.
+    stale = _to_worker_out({"_id": "h_colab", "starting_at": now - timedelta(hours=1), "updated_at": old})
+    assert stale.starting is False
+    # Heartbeat chegou → online, starting some.
+    up = _to_worker_out({"_id": "h_colab", "starting_at": now, "updated_at": now})
+    assert up.online is True
+    assert up.starting is False
 
 
 # --- build_colab_url ---------------------------------------------------------

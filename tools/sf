@@ -322,7 +322,7 @@ def local_host_id(path=None):
 
 
 def _host_label(w):
-    state = "online" if w.get("online") else "offline"
+    state = "online" if w.get("online") else ("ligando" if w.get("starting") else "offline")
     shown = w.get("display_name") or w.get("hostname") or "?"
     return f"{w.get('emoji') or ''} {shown} ({w.get('hostname') or '-'}) {w.get('host_id')} {state}".strip()
 
@@ -1367,7 +1367,7 @@ def cmd_hosts(args):
         print("(nenhum worker registrado)")
         return
     for w in workers:
-        online = "🟢" if w.get("online") else "🔴"
+        online = "🟢" if w.get("online") else ("🟡" if w.get("starting") else "🔴")
         label = _host_label(w)
         host_id = w.get("host_id") or "-"
         caps = (w.get("capabilities") or {})

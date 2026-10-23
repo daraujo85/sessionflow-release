@@ -767,6 +767,13 @@ class HostsCommandTests(SfApiTestCase):
         self.assertIn("15.6/16.0G uso (0.4G livre)", out)
         self.assertIn("agents=claude,gemini", out)
 
+    def test_hosts_starting_is_yellow_not_online(self):
+        self.workers = [{**WORKERS[0], "online": False, "starting": True, "capabilities": {}}]
+        out = self.run_sf("hosts")
+        self.assertIn("🟡", out)
+        self.assertIn("ligando", out)
+        self.assertNotIn("🟢", out)
+
     def test_hosts_old_worker_without_metrics(self):
         self.workers = [{**WORKERS[0], "capabilities": {}}]
         out = self.run_sf("hosts")

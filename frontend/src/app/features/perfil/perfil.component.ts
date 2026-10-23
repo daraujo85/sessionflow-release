@@ -218,9 +218,9 @@ const BAND_COLORS: Record<LoadBand, string> = {
                         class="sf-colab-btn sf-colab-play"
                         [disabled]="actionLoadingHostId() === w.host_id"
                         (click)="startColab(w, $event)"
-                        title="Ligar máquina no Google Colab"
+                        [title]="w.starting ? 'Ligando: aguardando o 1º heartbeat do worker (clique p/ reabrir o notebook)' : 'Ligar máquina no Google Colab'"
                       >
-                        {{ actionLoadingHostId() === w.host_id ? '⏳' : '▶' }} Ligar
+                        {{ actionLoadingHostId() === w.host_id ? '⏳' : w.starting ? '🟡' : '▶' }} {{ w.starting ? 'Ligando…' : 'Ligar' }}
                       </button>
                     } @else {
                       <button

@@ -28,7 +28,8 @@ HOST_USAGE_KEY = "host"
 # HEARTBEAT_INTERVAL do worker (30s): o ciclo gasta tempo coletando métricas
 # antes do sleep, então janela == intervalo fazia host carregado piscar offline.
 ONLINE_WINDOW_SECONDS = 90.0
-# Janela em que o online=True gravado por POST /start vale sem heartbeat (boot do Colab).
+# Janela em que o POST /start (``starting_at``) mostra o host como "ligando"
+# até o 1º heartbeat. NUNCA vira online: online só com worker vivo.
 START_GRACE_SECONDS = 600.0
 
 # Notebook Colab padrão — usado quando o `worker_status` não tem
@@ -43,6 +44,8 @@ class WorkerOut(BaseModel):
     """Status de UM Worker/host para o card do Perfil."""
 
     online: bool = False
+    # Ligando (POST /start recente) sem heartbeat ainda — 🟡, não recebe sessão.
+    starting: bool = False
     hostname: str | None = None
     # Nome de EXIBIÇÃO do host (editável via PUT /workers/{host_id}/display-name),
     # ex. "Notebook do Diego" em vez de "DESKTOP-ASCBQRT". None = usa o
@@ -129,18 +132,20 @@ def _to_worker_out(doc: dict) -> WorkerOut:
     updated = _aware(doc.get("updated_at"))
     started = _aware(doc.get("started_at"))
     age = (now - updated).total_seconds() if updated is not None else None
-    if doc.get("online") is False:
-        online = False
-    elif doc.get("online") is True:
-        # `start` grava online=True + updated_at=agora pro Colab que está subindo.
-        # Vale só durante o boot; depois disso manda o heartbeat — senão host
-        # morto fica 🟢 pra sempre e o --host auto manda sessão pra ele.
-        online = age is not None and age < START_GRACE_SECONDS
-    else:
-        online = age is not None and age < ONLINE_WINDOW_SECONDS
+    # Só heartbeat conta. A flag `online` (legada, gravada pelo /start/stop
+    # antigos) é ignorada: /start marcava 🟢 sem worker vivo e o --host auto
+    # mandava sessão pra fila sem consumer.
+    online = age is not None and age < ONLINE_WINDOW_SECONDS
+    starting_at = _aware(doc.get("starting_at"))
+    starting = (
+        not online
+        and starting_at is not None
+        and (now - starting_at).total_seconds() < START_GRACE_SECONDS
+    )
     uptime = (now - started).total_seconds() if (online and started) else None
     return WorkerOut(
         online=online,
+        starting=starting,
         hostname=doc.get("hostname"),
         display_name=doc.get("display_name"),
         emoji=doc.get("emoji"),
@@ -284,7 +289,7 @@ async def stop_worker(request: Request, host_id: str) -> WorkerOut:
     epoch_zero = datetime(1970, 1, 1, tzinfo=timezone.utc)
     doc = await coll.find_one_and_update(
         {"_id": host_id},
-        {"$set": {"online": False, "updated_at": epoch_zero}},
+        {"$set": {"updated_at": epoch_zero}, "$unset": {"online": "", "starting_at": ""}},
         return_document=True,
     )
     if not doc:
@@ -300,7 +305,7 @@ async def start_worker(request: Request, host_id: str) -> dict:
     now = datetime.now(timezone.utc)
     doc = await coll.find_one_and_update(
         {"_id": host_id},
-        {"$set": {"online": True, "updated_at": now}},
+        {"$set": {"starting_at": now}, "$unset": {"online": ""}},
         return_document=True,
     )
     if not doc:
