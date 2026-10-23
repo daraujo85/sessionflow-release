@@ -292,7 +292,10 @@ def _ensure_claude_trust(work_dir: str) -> None:
         data: dict[str, Any] = {}
         if os.path.exists(cfg):
             with open(cfg, encoding="utf-8") as f:
-                data = json.load(f)
+                raw = f.read()
+            # Vazio (ex.: `touch` no bootstrap) = config nova; ilegível de verdade
+            # continua estourando e fica intocado.
+            data = json.loads(raw) if raw.strip() else {}
         projects = data.setdefault("projects", {})
         proj = projects.setdefault(path, {})
         if proj.get("hasTrustDialogAccepted") is True:

@@ -56,6 +56,17 @@ def test_creates_file_when_missing(home: Path) -> None:
     assert _read(home)["projects"][str(work)]["hasTrustDialogAccepted"] is True
 
 
+def test_empty_file_is_treated_as_new_config(home: Path) -> None:
+    # bootstrap do Colab faz `touch ~/.claude.json`: vazio vira JSON válido.
+    (home / ".claude.json").write_text("", encoding="utf-8")
+    work = home / "w6"
+    work.mkdir()
+
+    _ensure_claude_trust(str(work))
+
+    assert _read(home)["projects"][str(work)]["hasTrustDialogAccepted"] is True
+
+
 def test_already_trusted_does_not_rewrite(home: Path) -> None:
     work = home / "w4"
     work.mkdir()
