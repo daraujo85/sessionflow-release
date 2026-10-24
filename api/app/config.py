@@ -100,6 +100,38 @@ class Settings(BaseSettings):
     # ``routers/remote_sessions.py``) — {label, url, created_at}.
     remote_sessions_collection: str = "remote_sessions"
 
+    # Catálogo de skills (docs/skills-distribution-contract.md): 1 doc por
+    # skill_id + 1 doc por (skill_id, version_id). Configuráveis pra tests.
+    skills_collection: str = "skills"
+    skill_versions_collection: str = "skill_versions"
+
+    # Storage dos pacotes de skill. Com as 3 credenciais Google → Drive
+    # (pasta SKILLS_DRIVE_FOLDER_ID; vazio = acha/cria "sessionflow-skills").
+    # Sem elas → LocalStorage em ``skills_local_dir`` (default
+    # ``<uploads_dir>/skills``), pra dev/testes.
+    google_client_id: str = Field(
+        default="", validation_alias=AliasChoices("GOOGLE_CLIENT_ID", "google_client_id")
+    )
+    google_client_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_CLIENT_SECRET", "google_client_secret"),
+    )
+    google_refresh_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_REFRESH_TOKEN", "google_refresh_token"),
+    )
+    skills_drive_folder_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("SKILLS_DRIVE_FOLDER_ID", "skills_drive_folder_id"),
+    )
+    skills_local_dir: str = ""
+
+    @property
+    def google_drive_configured(self) -> bool:
+        return bool(
+            self.google_client_id and self.google_client_secret and self.google_refresh_token
+        )
+
     # When true, prefer the *_HOST URIs (used by tests on the host).
     use_host_uris: bool = False
 

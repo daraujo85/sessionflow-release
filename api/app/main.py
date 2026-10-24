@@ -40,9 +40,11 @@ from app.routers import screen as screen_router
 from app.routers import sessions as sessions_router
 from app.routers import settings as settings_router
 from app.routers import shared_files as shared_files_router
+from app.routers import skills as skills_router
 from app.routers import voice as voice_router
 from app.routers import worker as worker_router
 from app.scheduler import run_scheduler_forever
+from app.skill_storage import build_skill_storage
 
 
 @asynccontextmanager
@@ -90,6 +92,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="SessionFlow API", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.voice_tickets = {}
+    # Pacotes de skill: Google Drive com as envs GOOGLE_*, senão LocalStorage.
+    app.state.skill_storage = build_skill_storage(settings)
 
     # NOTE: middleware order — Starlette runs the LAST-added middleware
     # OUTERMOST. We add CORS last so it wraps the auth middleware: that way
@@ -191,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jarvis_router.router)
     app.include_router(schedules_router.router)
     app.include_router(shared_files_router.router)
+    app.include_router(skills_router.router)
     app.include_router(voice_router.router)
     app.include_router(remote_sessions_router.router)
 

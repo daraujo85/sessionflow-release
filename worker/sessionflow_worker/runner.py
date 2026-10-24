@@ -52,6 +52,7 @@ from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
 from sessionflow_worker.events import emit_event
 from sessionflow_worker.handoff_notify import handoff_notify_loop
+from sessionflow_worker.idle_watchdog import idle_watchdog_loop
 from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id
 from sessionflow_worker.host_metrics import fetch_ollama_models, installed_agents, sample_load
 from sessionflow_worker.model_discovery import (
@@ -655,6 +656,10 @@ async def _build_and_run(stop: asyncio.Event) -> None:
                 has_session=runtime.has_session,
             ),
             name="handoff_notify",
+        ),
+        asyncio.create_task(
+            idle_watchdog_loop(db, lambda rk, body: publish(channel, rk, body), host_id),
+            name="idle_watchdog",
         ),
         asyncio.create_task(consumer_watchdog(host_id), name="consumer_watchdog"),
         asyncio.create_task(jarvis.ollama_keepalive_loop(), name="ollama_keepalive"),
