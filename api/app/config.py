@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # Intervalo (s) do loop que varre comandos programados vencidos.
     scheduler_poll_seconds: int = 60
 
+    # TTL (s) ocioso da PONTE DE COMANDO (sessão ``agent_type="command"``).
+    # A ponte é uma sessão "comando" por host-alvo: morre sozinha depois deste
+    # tempo sem uso (nenhum input, nenhuma tela nova). Também morre em
+    # cascata quando a sessão dona dela acaba.
+    command_bridge_ttl_seconds: int = 1800  # 30min
+
     # Intervalo (s) entre revisões automáticas de milestones por sessão ativa.
     # Mecanismo PRÓPRIO e independente de `scheduled_commands` (não aparece no
     # painel "Comandos programados" do usuário nem compete por essa coleção).
@@ -166,9 +172,17 @@ class Settings(BaseSettings):
     webauthn_collection: str = "webauthn_credentials"
 
     # Web Push (VAPID). A API serve a chave PÚBLICA (browser subscribe) e guarda
-    # as subscrições; quem ASSINA/envia o push é o Worker (tem a privada).
+    # as subscrições; o Worker envia os avisos de atenção das sessões e a API
+    # envia os avisos avulsos de ``POST /push/notify`` (mesmo .env, mesma privada).
     vapid_public: str = Field(
         default="", validation_alias=AliasChoices("SESSIONFLOW_VAPID_PUBLIC", "vapid_public")
+    )
+    vapid_private: str = Field(
+        default="", validation_alias=AliasChoices("SESSIONFLOW_VAPID_PRIVATE", "vapid_private")
+    )
+    vapid_subject: str = Field(
+        default="mailto:admin@example.com",
+        validation_alias=AliasChoices("SESSIONFLOW_VAPID_SUBJECT", "vapid_subject"),
     )
     push_subscriptions_collection: str = "push_subscriptions"
     # Config geral do app (single-user), ex.: auto-instruir marcos nas sessões.

@@ -73,10 +73,21 @@ externas.
 ./tools/sf send <nome-ou-id> "texto da mensagem"
 # opções: --no-enter (não aperta Enter automático depois do texto)
 
+# Rodar comando num shell de OUTRO host, SEM agente no meio (custo zero de LLM)
+./tools/sf command mac "ls ~/Documents"
+# opções: --name (sessão nomeada/persistente), --dir, --timeout, --no-wait, --tail
+
 # Compartilhar um arquivo gerado (imagem/PDF/relatório) de volta com o usuário
 ./tools/sf share <caminho-do-arquivo>
 # opções: --to <nome-ou-id> (default: a própria sessão, via $TMUX)
 ```
+
+### Todos os subcomandos
+
+`delegate`, `check`, `request-context`, `metrics`, `dirs`, `list`, `hosts`,
+`start`, `stop`, `send`, `command`, `notify`, `move`, `share`, `fetch`, `gpu`.
+Rode `./tools/sf --help` e `./tools/sf <comando> --help` pra referência exata.
+A skill `~/.claude/skills/sf-delegate/SKILL.md` traz o guia completo.
 
 ### Delegar para OUTRO host (`--host`, ex.: Duck Server 🦆)
 
@@ -104,6 +115,45 @@ o worktree remoto é removido com `git worktree remove --force` (descarta mudan�
 não commitadas). A branch `sf/<nome>` permanece no repositório. `--push` exige
 `--worktree` (sem worktree, o push iria pra branch atual do repo remoto).
 
+### Rodar comando em OUTRO host sem gastar LLM (`command`)
+
+Abre/usa um pane tmux com o **shell** do host alvo (`agent_type="command"`) —
+sem Claude, sem modelo, sem custo de LLM — roda o comando e devolve a saída +
+exit code.
+
+```bash
+./tools/sf command mac "ls ~/Documents"          # one-shot (a ponte do Mac, reusada)
+./tools/sf command mac --name lab-mac "cd repo"  # apelido da ponte (p/ `sf send`)
+./tools/sf command duck "screencapture -x /tmp/s.png"
+cat script.sh | ./tools/sf command mac -          # stdin: conteúdo EXECUTADO
+                                               # como script shell no host
+```
+
+- Opções: `--name`, `--dir`, `--timeout` (default 120s), `--no-wait` (injeta e
+  sai), `--tail` (só imprime a tela), `--tail-lines`, `--color`, `--keep-alive`.
+- O worker só expõe a TELA do pane; o CLI injeta o comando entre marcadores com
+  nonce (`SF_BEGIN_<nonce>` … `SF_END_<nonce> rc=N`) e faz polling em
+  `GET /sessions/{id}/screen` até o marcador de fim. O texto entre os marcadores
+  É o output; o `rc` vira o exit code do `sf`. Timeout → exit 2 + dump da tela
+  (o comando NÃO é cancelado).
+- O comando roda num **sub-shell**: `exit N` (ou um `source` que termine em
+  exit) NÃO mata o shell do pane — o rc volta e a sessão nomeada sobrevive.
+  O `cd` dentro do comando PERSISTE na sessão (o cwd volta pro shell pai).
+- **A ponte é identificada pelo HOST alvo, não pelo nome**: `sf command mac`
+  reusa SEMPRE a mesma sessão do Mac (uma por host). O `--name` vira APELIDO
+  (dá pra dirigir com `sf send <apelido>`) e não cria outra sessão.
+- **A ponte é VOLÁTIL**: morre sozinha depois de 30 min sem uso
+  (`COMMAND_BRIDGE_TTL_SECONDS`), morre em cascata quando a sessão dona dela
+  acaba, e nunca passa de uma por host.
+- **A API recusa a 2ª ponte do mesmo host** (`POST /sessions` → 409
+  `command_bridge_exists`): quem quiser um shell reaproveita a ponte que já
+  existe. No app, isso **abre** a ponte existente em vez de mostrar erro.
+- `--keep-alive` marca uma ponte de **SERVIÇO** (ex.: relay): fica fora do
+  TTL/cascata/dedupe e **não** é a ponte do host (o shell de um serviço não
+  recebe comando alheio). Serviço = slot próprio, com nome próprio.
+- CUIDADO: executa arbitrário no host, como o dono do tmux — sem camada de
+  julgamento de agente.
+
 ### Ler arquivo de outro host (`fetch`, P2P via API)
 
 Puxa 1 arquivo de qualquer host com worker online, sem SSH: a API publica
@@ -125,12 +175,51 @@ grava em `command_results`, e o `sf` faz polling em `GET /commands/{id}`.
 
 `SF_DEFAULT_HOST=<host>` no ambiente faz `sf delegate` sem `--host` ir pra esse host.
 
+### Serviços de GPU sob demanda (`gpu`)
+
+Os serviços de GPU do host (xtts, omnivoice, nemotron-asr) são pesados: ficam de
+pé queimando VRAM sem ninguém falando com eles. O worker **liga sob demanda**
+(quando o JARVIS vai sintetizar, p.ex.) e **desliga sozinho** quando ficam
+ociosos. Este comando é o controle manual pela frente do backend:
+
+```bash
+./tools/sf gpu duck status          # todos os serviços (vem do heartbeat)
+./tools/sf gpu duck status xtts     # estado do xtts (consulta o worker ao vivo)
+./tools/sf gpu duck start xtts      # liga o xtts
+./tools/sf gpu duck stop xtts       # desliga o xtts
+```
+
+- Publica um comando `gpu_service` na fila do worker do host alvo (mesmo
+  mecanismo do `fetch`); o worker roda o `systemctl` e devolve o estado.
+- `status` **sem nome** mostra todos os serviços (vem do `worker_status.gpu_services`
+  do heartbeat — instantâneo, não acorda nada). Com nome, vai como comando
+  (estado real do systemd).
+- O worker só aceita serviço que esteja no **catálogo** dele
+  (`SESSIONFLOW_GPU_SERVICES`); nome fora do catálogo é recusado.
+- No host, o catálogo é quem sabe o que existe — este comando não valida o
+  nome contra nada além do formato.
+
+Catálogo (no host, env do worker):
+
+```bash
+# JSON (formato preferido)
+SESSIONFLOW_GPU_SERVICES='{"xtts":{"unit":"xtts.service","scope":"system","port":5111}}'
+# formato simples: nome:unit:scope:porto
+SESSIONFLOW_GPU_SERVICES="xtts:xtts.service:system:5111 omnivoice:omnivoice.service:user:8790"
+# segundos ocioso antes do auto-stop (0 = desliga o auto-stop)
+SESSIONFLOW_GPU_IDLE_MIN=20
+```
+
+Escopo `system` usa `sudo -n systemctl start|stop <unit>` (o sudoers do host
+libera só as units do catálogo); escopo `user` usa `systemctl --user`.
+
 ### Controlar a instância de OUTRO amigo (`--remote`)
 
-`check`/`list`/`send`/`share` aceitam `--remote <alias>` pra falar com uma
-instância SessionFlow de outro amigo/deploy (não a local) — útil quando uma
-sessão sua quer acompanhar/mandar mensagem pra sessão de alguém em outra
-instalação (ex.: a `pvax` do Heverton). Credenciais ficam FORA do git, em
+`check`/`list`/`send`/`share` e os demais aceitam `--remote <alias>` pra falar
+com uma instância SessionFlow de outro amigo/deploy (não a local) — útil quando
+uma sessão sua quer acompanhar/mandar mensagem pra sessão de alguém em outra
+instalação (ex.: a `pvax` do Heverton). Todos os subcomandos **menos `metrics`**
+aceitam `--remote`. Credenciais ficam FORA do git, em
 `~/.claude/secrets/sf-remotes.env`, no formato `<ALIAS>_BASE_URL`/`_EMAIL`/
 `_PASSWORD` (alias em maiúsculas)::
 
@@ -165,7 +254,7 @@ externas). O app expõe um botão de arquivos na tela da sessão com link de
 download/preview (`GET /shared-files/{id}/download`, `Content-Disposition:
 inline` — abre a imagem/PDF direto no navegador). Sessão-alvo por `--to` ou,
 por padrão, a própria sessão de onde `share` roda (detecta via `$TMUX`).
-Teto de 50MB por arquivo.
+Teto de 200MB por arquivo.
 
 ### Instalação como skill
 

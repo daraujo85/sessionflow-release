@@ -16,7 +16,9 @@ Formato esperado do arquivo::
     }
 
 ``status`` ∈ todo|doing|blocked|done (sinônimos: in_progress→doing). Marcos
-sem ``id`` usam o título como chave. Arquivo ausente/ inválido = no-op.
+sem ``id`` usam o título como chave. ``epic: true`` (opcional) marca um marco
+grande (feature/entrega inteira) — o app destaca o épico concluído com cor
+própria. Arquivo ausente/ inválido = no-op.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ _STATE_ALIASES = {
 }
 
 
-def _parse_file(path: Path) -> list[dict[str, str]] | None:
+def _parse_file(path: Path) -> list[dict[str, Any]] | None:
     """Parseia um arquivo de marcos. None se ausente/inválido (nunca levanta)."""
     try:
         if not path.is_file():
@@ -62,7 +64,7 @@ def _parse_file(path: Path) -> list[dict[str, str]] | None:
     if not isinstance(items, list):
         return None
 
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for m in items:
         if not isinstance(m, dict):
             continue
@@ -74,7 +76,8 @@ def _parse_file(path: Path) -> list[dict[str, str]] | None:
         state = _STATE_ALIASES.get(raw_state, raw_state)
         if state not in _VALID_STATES:
             state = "todo"
-        out.append({"mid": mid, "title": title[:240], "state": state})
+        epic = m.get("epic") is True
+        out.append({"mid": mid, "title": title[:240], "state": state, "epic": epic})
     return out
 
 
@@ -116,7 +119,7 @@ def read_description(
 
 def read_milestones(
     work_dir: str, session_name: str, allow_shared: bool = True
-) -> list[dict[str, str]] | None:
+) -> list[dict[str, Any]] | None:
     """Lê os marcos da sessão, com namespacing por sessão.
 
     Prioriza ``.sessionflow/milestones.<session_name>.json`` (evita colisão
@@ -188,6 +191,11 @@ def remove_milestone(work_dir: str, session_name: str, milestone_id: str) -> boo
     return True
 
 
+def all_done(items: list[dict[str, Any]]) -> bool:
+    """Lista não-vazia com TODOS os marcos em "done"."""
+    return bool(items) and all(m["state"] == "done" for m in items)
+
+
 async def sync_session(
     db: AsyncIOMotorDatabase,
     session_id: str,
@@ -195,7 +203,7 @@ async def sync_session(
     session_name: str | None = None,
     allow_shared: bool = True,
     collection: str = TASKS_COLLECTION,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], bool]:
     """Reflete os marcos da sessão na coleção ``tasks``.
 
     Lê o arquivo namespaced ``.sessionflow/milestones.<session_name>.json``
@@ -207,6 +215,10 @@ async def sync_session(
     que existiam antes num estado diferente) — o caller usa p/ emitir o evento de
     "tarefa concluída" (som de vitória + destaque). Não dispara na 1ª aparição
     já-done (evita falsa vitória ao importar o arquivo).
+
+    O 2º valor é True quando esta passada FECHOU a lista: algum marco acabou de
+    virar "done" e agora todos estão "done" (fanfarra de lista concluída). Não
+    precisa de estado extra — só dispara na transição, nunca em ciclo repetido.
     """
     items = read_milestones(work_dir, session_name or session_id, allow_shared)
     # Arquivo ausente → trata como vazio p/ PODAR tasks órfãs desta sessão.
@@ -234,11 +246,12 @@ async def sync_session(
     for m in items:
         seen.append(m["mid"])
         key = {"session_id": session_id, "milestone_id": m["mid"], "source": MILESTONE_SOURCE}
-        existing = await coll.find_one(key, projection={"title": 1, "state": 1})
+        existing = await coll.find_one(key, projection={"title": 1, "state": 1, "epic": 1})
         changed = (
             existing is None
             or existing.get("title") != m["title"]
             or existing.get("state") != m["state"]
+            or bool(existing.get("epic")) != m["epic"]
         )
         if (
             existing is not None
@@ -246,7 +259,9 @@ async def sync_session(
             and m["state"] == "done"
         ):
             newly_done.append({"mid": m["mid"], "title": m["title"]})
-        set_fields: dict[str, Any] = {**key, "title": m["title"], "state": m["state"]}
+        set_fields: dict[str, Any] = {
+            **key, "title": m["title"], "state": m["state"], "epic": m["epic"],
+        }
         if changed:
             set_fields["updated_at"] = now
         await coll.update_one(key, {"$set": set_fields}, upsert=True)
@@ -259,4 +274,4 @@ async def sync_session(
             "milestone_id": {"$nin": seen},
         }
     )
-    return newly_done
+    return newly_done, bool(newly_done) and all_done(items)

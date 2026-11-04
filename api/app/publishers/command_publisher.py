@@ -54,6 +54,20 @@ async def _get_connection(settings: Settings) -> aio_pika.abc.AbstractRobustConn
         return _connection
 
 
+async def close_connection() -> None:
+    """Fecha (e limpa) a conexão AMQP cacheada no processo.
+
+    Chamada no shutdown da API: a conexão é amarrada ao event loop que a
+    criou — sem fechar, um app novo no mesmo processo (testes, reload)
+    publica numa conexão morta ("Event loop is closed").
+    """
+    global _connection
+    async with _connection_lock:
+        stale, _connection = _connection, None
+    if stale is not None and not stale.is_closed:
+        await stale.close()
+
+
 async def publish_command(
     settings: Settings, type: str, payload: dict, host_id: str | None = None
 ) -> str:

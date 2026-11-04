@@ -72,7 +72,7 @@ from typing import Any
 import aio_pika
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import rabbit
+from sessionflow_worker import gpu_services, rabbit
 from sessionflow_worker.mongo import SESSIONS_COLLECTION
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,12 @@ SAY_RATE = os.environ.get("SESSIONFLOW_JARVIS_RATE", "190")
 # Servidor xtts local (mesmo que o JARVIS usa); retorna {path} de um WAV.
 XTTS_URL = os.environ.get("SESSIONFLOW_JARVIS_XTTS", "http://127.0.0.1:5111").rstrip("/")
 XTTS_LANG = os.environ.get("SESSIONFLOW_JARVIS_LANG", "pt")
+#: Nome do serviço do xtts no catálogo de GPU (``SESSIONFLOW_GPU_SERVICES``).
+#: Se não estiver lá, o xtts NÃO é gerenciado pelo SessionFlow (fica como
+#: hoje: servidor externo, liga/desliga por fora).
+XTTS_SERVICE = os.environ.get("SESSIONFLOW_GPU_XTTS_SERVICE", "xtts")
+#: Quanto tempo esperar o xtts subir (modelo na GPU leva alguns minutos).
+XTTS_START_TIMEOUT_S = float(os.environ.get("SESSIONFLOW_GPU_XTTS_TIMEOUT", "60"))
 OLLAMA_BASE = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA", "http://localhost:11434").rstrip("/")
 # Modelo do Ollama p/ o resumo. Default = o que JÁ está instalado nesta máquina
 # (qwen3:8b) — `llama3.1:8b` NÃO está instalado nos hosts atuais, o que fazia
@@ -157,6 +163,12 @@ def _summary_sys(owner: str) -> str:
 
 
 _URL_RE = re.compile(r"https?://\S+")
+# Emojis/pictogramas (e seletores de variação/ZWJ): o TTS lê "emoji emoji…"
+# ou o nome do símbolo. O prompt já proíbe, mas modelo pequeno ignora.
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF"
+    "\U0000FE00-\U0000FE0F\U0000200D\U000020E3]"
+)
 # Símbolos/marcação que um TTS leria em voz alta: markdown, box-drawing (TUI),
 # marcadores, setas. Trocados por espaço antes da síntese.
 _DROP_RE = re.compile(
@@ -172,6 +184,7 @@ def _clean_for_speech(text: str) -> str:
     sintetizador não fala "ponto"/"asterisco" do nada.
     """
     t = _URL_RE.sub("", text or "")
+    t = _EMOJI_RE.sub(" ", t)
     # Reticências UNICODE (… ‥) viram um ponto ANTES do colapso — o caractere
     # único escapava do tratamento de "..." e o XTTS lia "ponto ponto (ponto)".
     t = t.replace("…", ". ").replace("‥", ". ")
@@ -478,12 +491,42 @@ def _synth_say_sync(text: str) -> tuple[str, str] | None:
                 pass
 
 
+def _ensure_xtts_running() -> bool:
+    """Garante o xtts de pé (sob demanda) e registra o uso.
+
+    Só age se o xtts estiver no CATÁLOGO de serviços de GPU do host
+    (``SESSIONFLOW_GPU_SERVICES``) — fora do catálogo, não mexe em nada (o
+    servidor é gerenciado por fora do SessionFlow). Best-effort: qualquer
+    falha aqui é engolida — o ``_synth_xtts_sync`` vai falhar no POST e o
+    chamador cai pro ``say`` (fallback gracioso de sempre).
+    """
+    try:
+        ready = gpu_services.ensure_started(
+            XTTS_SERVICE,
+            health_url=f"{XTTS_URL}/health",
+            timeout=XTTS_START_TIMEOUT_S,
+        )
+        if ready:
+            gpu_services.mark_used(XTTS_SERVICE)
+        return ready
+    except Exception:  # noqa: BLE001 - best-effort: nunca derruba a síntese
+        logger.debug("jarvis: não conseguiu ligar o %s", XTTS_SERVICE, exc_info=True)
+        return False
+
+
 def _synth_xtts_sync(text: str) -> tuple[str, str] | None:
     """Servidor xtts local → WAV → ffmpeg ogg/opus → (base64, mime). Voz boa.
 
     Reusa o MESMO servidor xtts que o JARVIS usa (já carregado na RAM do Mac),
     então não adiciona modelo/memória ao nosso stack.
+
+    **Sob demanda**: se o xtts está no catálogo de serviços de GPU
+    (``SESSIONFLOW_GPU_SERVICES``) e está parado, ele é LIGADO aqui e a
+    função espera o health check ficar verde antes de sintetizar. Se não
+    estiver no catálogo (ou falhar ao subir), o fluxo segue como sempre — o
+    POST falha e o chamador cai pro ``say``.
     """
+    _ensure_xtts_running()
     resp = _post_json(f"{XTTS_URL}/synth", {"text": text, "lang": XTTS_LANG}, timeout=120)
     wav = resp.get("path")
     if not wav or not os.path.exists(wav):

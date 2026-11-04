@@ -569,6 +569,34 @@ async def test_rename_preserves_id(
     assert renamed["display_name"] == new
     assert await db[coll_name].find_one({"tmux_name": old}) is None
 
+async def test_rename_keeps_custom_display_name(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Nome falado CUSTOMIZADO não é sobrescrito pelo rename técnico.
+
+    O ``display_name`` tem edição própria (endpoint próprio). O rename só
+    leva o display junto quando ele ainda é a cópia do nome técnico — senão o
+    app mostraria o nome antigo pra sempre.
+    """
+    old = make_name()
+    new = make_name()
+    await consumer.handle(
+        _cmd(
+            "create",
+            {"name": old, "agent_type": "claude", "work_dir": str(tmp_path)},
+        )
+    )
+    await db[coll_name].update_one(
+        {"tmux_name": old}, {"$set": {"display_name": "Meu Projeto Falado"}}
+    )
+
+    event = await consumer.handle(_cmd("rename", {"old": old, "new": new}))
+    assert event["ok"] is True
+
+    renamed = await db[coll_name].find_one({"tmux_name": new})
+    assert renamed is not None
+    assert renamed["display_name"] == "Meu Projeto Falado"
+
 
 async def test_resume_nonexistent_errors(
     consumer, db, runtime, coll_name, make_name
@@ -632,6 +660,111 @@ async def test_resume_relaunches_when_pane_alive_but_agent_dead(
 
     doc = await db[coll_name].find_one({"tmux_name": name})
     assert doc["status"] == SessionState.RUNNING.value
+
+
+async def test_create_command_session_does_not_launch_agent(
+    consumer, channel, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Sessão "Comando": o pane É o shell — nenhum agente é lançado.
+
+    Sem isso, o worker digitaria a CLI do agente no shell e a sessão gastaria
+    um turno de LLM pra executar o que já é um comando de shell.
+    """
+    name = make_name()
+    command = _cmd(
+        "create",
+        {
+            "name": name,
+            "agent_type": "command",
+            "work_dir": str(tmp_path),
+            "model": None,
+            "effort": None,
+        },
+    )
+
+    event = await consumer.handle(command)
+    assert event["ok"] is True
+
+    # Pane tmux existe (é o shell).
+    assert runtime.has_session(name) is True
+
+    # NENHUM build_launch_cmd foi chamado (logo, nada foi digitado no pane).
+    assert patch_launch == []
+
+    # Doc: running, agent_type=command, sem model/effort/conversa.
+    doc = await db[coll_name].find_one({"tmux_name": name})
+    assert doc is not None
+    assert doc["status"] == SessionState.RUNNING.value
+    assert doc["agent_type"] == "command"
+    assert doc["model"] is None
+    assert doc["effort"] is None
+    assert doc["claude_session_id"] is None
+
+    emitted = await _drain_event(channel, command["command_id"])
+    assert emitted["ok"] is True
+
+
+async def test_create_command_session_defaults_work_dir_to_home(
+    consumer, db, runtime, coll_name, make_name, patch_launch
+) -> None:
+    """``sf command <host> "ls"`` sem --dir: abre no HOME do host.
+
+    O work_dir é obrigatório pra sessão COM AGENTE (o pane precisa de uma
+    pasta), mas pra sessão de comando o HOME é o default natural — o usuário
+    faz ``cd`` depois se quiser.
+    """
+    name = make_name()
+    event = await consumer.handle(
+        _cmd("create", {"name": name, "agent_type": "command"})
+    )
+    assert event["ok"] is True
+    assert runtime.has_session(name) is True
+    doc = await db[coll_name].find_one({"tmux_name": name})
+    assert doc is not None
+    assert doc["work_dir"] == str(Path.home())
+
+
+async def test_create_command_session_input_reaches_shell(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Comando injetado na sessão "Comando" roda no shell do pane."""
+    name = make_name()
+    await consumer.handle(
+        _cmd(
+            "create",
+            {"name": name, "agent_type": "command", "work_dir": str(tmp_path)},
+        )
+    )
+    event = await consumer.handle(
+        _cmd("input", {"name": name, "text": "echo sf-command-probe"})
+    )
+    assert event["ok"] is True
+    # O comando NÃO pode ter disparado build_launch_cmd.
+    assert patch_launch == []
+
+
+async def test_resume_command_session_recreates_pane_without_launch(
+    consumer, db, runtime, coll_name, make_name, patch_launch, tmp_path
+) -> None:
+    """Retomar sessão "Comando": recria o pane, mas não lança agente.
+
+    O shell do pane novo já nasce pronto — esperar o "agente subir" (20s) só
+    atrasaria a injeção do comando.
+    """
+    name = make_name()
+    await consumer.handle(
+        _cmd(
+            "create",
+            {"name": name, "agent_type": "command", "work_dir": str(tmp_path)},
+        )
+    )
+    runtime.kill_session(name)
+    assert runtime.has_session(name) is False
+
+    event = await consumer.handle(_cmd("resume", {"name": name}))
+    assert event["ok"] is True
+    assert runtime.has_session(name) is True
+    assert patch_launch == []
 
 
 async def test_dedupe_by_command_id(

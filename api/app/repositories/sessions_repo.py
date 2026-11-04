@@ -7,6 +7,7 @@ can inject an isolated collection within the ``sessionflow`` database.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from bson import ObjectId
@@ -140,6 +141,8 @@ class SessionsRepository:
             # revisar, e isso evita competir por input com um scheduled_command
             # que possa estar disparando ao mesmo tempo pra essa mesma sessão.
             "milestones_instructed_at": {"$exists": True},
+            # Sessão "Comando" é só shell (sem agente) — nunca revisa milestones.
+            "agent_type": {"$ne": "command"},
             "$or": [
                 {"milestones_refreshed_at": {"$exists": False}},
                 {"milestones_refreshed_at": {"$lt": cutoff}},
@@ -173,6 +176,125 @@ class SessionsRepository:
         await self._collection.update_one(
             {"_id": oid}, {"$set": {"milestones_refreshed_at": when}}
         )
+
+    # ------------------------------------------------------------------ #
+    # PONTE DE COMANDO (``agent_type="command"``)
+    # ------------------------------------------------------------------ #
+
+    async def set_bridge(
+        self,
+        session_id: str,
+        owner: str | None = None,
+        keep_alive: bool | None = None,
+        alias: str | None = None,
+        now: Any = None,
+    ) -> bool:
+        """Grava a DONA da ponte de comando + zera o relógio de atividade.
+
+        ``owner`` = tmux_name da sessão que está usando a ponte (cascata:
+        quando a dona morre, a ponte morre junto). É SEMPRE gravado — ``None``
+        significa "ninguém é dona" e LIMPA uma dona antiga (a ponte pode ter
+        sido recriada com o mesmo nome de uma vida velha).
+        ``keep_alive`` marca serviço de longa duração (ex.: relay) — fora de
+        TTL/cascata/dedupe; só muda quando informado (None = não mexe).
+        ``alias`` = nome alternativo pelo qual a ponte pode ser endereçada
+        (``sf send <alias>``).
+
+        Grava também ``last_activity_at``: é o heartbeat que segura a ponte
+        viva enquanto o comando está rodando.
+        """
+        try:
+            oid = ObjectId(session_id)
+        except (InvalidId, TypeError):
+            return False
+        fields: dict[str, Any] = {
+            "last_activity_at": now or datetime.now(UTC),
+            "owner": owner,
+        }
+        if keep_alive is not None:
+            fields["keep_alive"] = keep_alive
+        update: dict[str, Any] = {"$set": fields}
+        if alias:
+            update["$addToSet"] = {"aliases": alias}
+        res = await self._collection.update_one({"_id": oid}, update)
+        return res.matched_count > 0
+
+    async def command_bridges(self) -> list[dict[str, Any]]:
+        """Sessões "comando" — as pontes. Inclui as ``keep_alive`` (serviços).
+
+        Ordena pela última atividade (mais recente primeiro): é a ordem em que
+        o CLI escolhe qual ponte reusar e qual sobreviver ao dedupe.
+        """
+        cursor = self._collection.find({"agent_type": "command"}).sort(
+            "last_activity_at", -1
+        )
+        return [doc async for doc in cursor]
+
+    async def live_command_bridge(self, host_id: str) -> dict[str, Any] | None:
+        """A ponte de comando VIVA de um host (a que ``sf command`` reusa).
+
+        ``keep_alive`` (serviço de longa duração) NÃO ocupa o slot: o shell de
+        um serviço não é o shell-ponte do host.
+        """
+        return await self._collection.find_one(
+            {
+                "agent_type": "command",
+                "host_id": host_id,
+                "status": {"$in": ["running", "waiting_input"]},
+                "keep_alive": {"$ne": True},
+            },
+            sort=[("last_activity_at", -1)],
+        )
+
+    async def reset_bridge_state(self, tmux_name: str) -> bool:
+        """Limpa dona/keep_alive de uma ponte que vai RECOMEÇAR (mesmo nome).
+
+        O worker faz upsert pelo ``tmux_name``: uma ponte nova com o mesmo
+        nome de uma vida velha HERDA o ``owner`` (dona já morta) e o
+        ``keep_alive``. Sem esta limpeza a ponte nasce com uma dona que não
+        existe mais e é morta em cascata no tick seguinte.
+        """
+        res = await self._collection.update_one(
+            {"tmux_name": tmux_name, "agent_type": "command"},
+            {"$set": {"owner": None, "keep_alive": False}},
+        )
+        return res.matched_count > 0
+
+    async def due_command_bridges(self, cutoff: Any) -> list[dict[str, Any]]:
+        """Pontes ociosas há mais de ``cutoff`` (sem uso, sem tela nova).
+
+        ``keep_alive`` (serviço de longa duração) fica de fora — é a ponte que
+        o usuário QUER que fique aberta.
+        """
+        query: dict[str, Any] = {
+            "agent_type": "command",
+            "keep_alive": {"$ne": True},
+            "$or": [
+                {"last_activity_at": {"$exists": False}},
+                {"last_activity_at": {"$lt": cutoff}},
+            ],
+        }
+        return [doc async for doc in self._collection.find(query)]
+
+    async def owned_command_bridges(self) -> list[dict[str, Any]]:
+        """Pontes COM dona (``owner`` setado) — candidatas à cascata."""
+        query: dict[str, Any] = {
+            "agent_type": "command",
+            "keep_alive": {"$ne": True},
+            "owner": {"$nin": [None, ""]},
+        }
+        return [doc async for doc in self._collection.find(query)]
+
+    async def alive_session_names(self, statuses: list[str]) -> set[str]:
+        """tmux_name das sessões vivas (nos status dados).
+
+        Usado na cascata: se o nome da dona não está aqui, a dona acabou e a
+        ponte dela morre junto.
+        """
+        cursor = self._collection.find(
+            {"status": {"$in": statuses}}, {"tmux_name": 1}
+        )
+        return {doc["tmux_name"] async for doc in cursor if doc.get("tmux_name")}
 
     async def list_active(self) -> list[dict[str, Any]]:
         """Sessões atualmente ativas: ``running`` ou ``waiting_input``.

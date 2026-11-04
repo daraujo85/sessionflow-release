@@ -20,6 +20,9 @@ export type AgentType =
   | 'codex'
   | 'gemini'
   | 'opencode'
+  // Sessão "Comando": pane tmux com o shell do host, sem agente LLM. Recebe
+  // comandos por input (sf command / sf send). Sem model/effort/métricas.
+  | 'command'
   | 'desconhecido';
 
 /** Tokens/custo somados dentro de uma janela de período (ver {@link SessionMetrics.tokens_periods}). */
@@ -135,6 +138,11 @@ export interface Session {
   /** Host (worker) dono desta sessão — multi-host (AD-011). Sessões antigas
    * (pré-migração) sempre têm o campo, já backfilled pelo worker no boot. */
   host_id?: string | null;
+  /** Ponte de comando de SERVIÇO (`agent_type="command"`): fica fora do
+   * TTL/cascata/dedupe e não ocupa o slot de ponte do host. */
+  keep_alive?: boolean;
+  /** Nomes alternativos da ponte de comando (`sf send <apelido>`). */
+  aliases?: string[];
   /** Worktree isolada (`<repo>-clones/…`) — sessão nela não pode mudar de host. */
   worktree_path?: string | null;
   /** Transferência para outro host em andamento (ou que falhou). Ausente =
@@ -197,6 +205,8 @@ export interface Task {
   session_id: string;
   title: string;
   state: TaskState;
+  /** Marco grande (feature/entrega inteira) — "épico" concluído ganha destaque. */
+  epic?: boolean;
   /** ISO da última mudança do marco (para ordenar/filtrar "do dia"). */
   updated_at?: string | null;
 }

@@ -15,8 +15,10 @@ import { WorkersStore } from '../../core/workers-store';
 type Effort = 'Baixo' | 'Médio' | 'Alto' | 'Máximo';
 const EFFORTS: Effort[] = ['Baixo', 'Médio', 'Alto', 'Máximo'];
 
-/** Selectable agents shown in the 2x2 grid (excludes "desconhecido"). */
-const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
+/** Selectable agents shown in the 2x2 grid (excludes "desconhecido").
+ * "command" entra como 5º card (full-width): não é um agente LLM, é o shell
+ * do host — usado p/ rodar comandos em outra máquina sem gastar turno. */
+const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode', 'command'];
 
 @Component({
   selector: 'sf-criar',
@@ -130,6 +132,7 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
                 type="button"
                 class="agent-card"
                 [class.selected]="agent() === a"
+                [class.wide]="a === 'command'"
                 [style.--c]="meta(a).color"
                 (click)="selectAgent(a)"
               >
@@ -141,9 +144,21 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
               </button>
             }
           </div>
+          @if (agent() === 'command') {
+            <span class="hint">
+              Sessão <strong>Comando</strong>: um shell no host escolhido, sem
+              Claude/agente no meio. Você manda comandos por
+              <span class="mono">sf command &lt;host&gt; "…"</span> ou pelo
+              terminal do app.
+            </span>
+          }
         </div>
 
-        <!-- Modelo -->
+        <!-- Modelo (só p/ agentes com modelo; a sessão "Comando" não tem).
+             A condição inclui 'rapida' porque o body do modo Rápida é
+             renderizado DENTRO da cadeia @else deste bloco (estrutura
+             pré-existente do template). -->
+        @if (agent() !== 'command' || mode() === 'rapida') {
         <div class="field">
           <span class="label">Modelo</span>
           @if (modelsLoading()) {
@@ -247,9 +262,10 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
             </span>
           }
         </div>
+        }
 
-        <!-- Esforço de raciocínio (oculto p/ gemini) -->
-        @if (agent() !== 'gemini') {
+        <!-- Esforço de raciocínio (oculto p/ gemini e p/ command) -->
+        @if (agent() !== 'gemini' && agent() !== 'command') {
           <div class="field">
             <span class="label">Esforço de raciocínio</span>
             <div class="chips">
@@ -485,6 +501,10 @@ const AGENTS: AgentType[] = ['claude', 'codex', 'gemini', 'opencode'];
       .agent-card.selected {
         border-color: var(--c);
         background: var(--surface-raised);
+      }
+      /* Card "Comando": 5º item do grid 2x2 → ocupa a linha inteira. */
+      .agent-card.wide {
+        grid-column: 1 / -1;
       }
       .agent-short {
         flex: 0 0 auto;
@@ -767,7 +787,11 @@ export class CriarComponent {
 
   /** Whether the form is ready to submit (slug must be non-empty). */
   readonly canSubmit = computed(
-    () => this.slug().length > 0 && this.workDir().trim().length > 0,
+    // Sessão "Comando": work_dir é OPCIONAL (vazio = HOME do host). Os demais
+    // agentes exigem um diretório (o worker não tem onde abrir o pane).
+    () =>
+      this.slug().length > 0 &&
+      (this.agent() === 'command' || this.workDir().trim().length > 0),
   );
 
   /**
@@ -827,6 +851,16 @@ export class CriarComponent {
     // Gemini has no reasoning-effort concept.
     if (a === 'gemini') {
       this.effort.set(null);
+    }
+    // Sessão "Comando": sem agente => sem modelo e sem esforço. Não busca a
+    // lista de modelos (o endpoint é por-agente e "command" não tem).
+    if (a === 'command') {
+      this.effort.set(null);
+      this.models.set([]);
+      this.modelsLoading.set(false);
+      this.model.set('');
+      this.freeModel.set('');
+      return;
     }
     this.loadModels(a);
   }
@@ -903,6 +937,7 @@ export class CriarComponent {
     this.submitting.set(true);
 
     const isGemini = this.agent() === 'gemini';
+    const isCommand = this.agent() === 'command';
     // When the agent has predefined models use the selected id; otherwise the
     // free-text field. Empty in either case means null.
     const hasModelList = this.models().length > 0;
@@ -913,9 +948,11 @@ export class CriarComponent {
       display_name: this.name().trim(),
       agent_type: this.agent(),
       work_dir: this.workDir().trim(),
-      model: modelValue || null,
+      // Sessão "Comando": sem agente => sem model. O work_dir vazio significa
+      // "HOME do host" (o worker aplica esse default).
+      model: isCommand ? null : (modelValue || null),
       // effort is null for gemini or when nothing is selected.
-      effort: isGemini ? null : (this.effort() ?? null),
+      effort: isGemini || isCommand ? null : (this.effort() ?? null),
       host_id: this.hostId(),
     };
 
@@ -926,12 +963,25 @@ export class CriarComponent {
       },
       error: (err: HttpErrorResponse) => {
         this.submitting.set(false);
+        const detail = err.error && err.error.detail;
+        // Ponte de comando: UMA por host. A API recusa a 2ª → em vez de erro,
+        // ABRE a ponte que já existe (o usuário só queria um shell).
+        if (
+          err.status === 409 &&
+          detail &&
+          typeof detail === 'object' &&
+          detail.code === 'command_bridge_exists'
+        ) {
+          this.errorMsg.set(`${detail.message} Abrindo a ponte existente…`);
+          this.router.navigate(['/sessao', detail.session_id]);
+          return;
+        }
         if (err.status === 409) {
           this.errorMsg.set('Já existe uma sessão com esse nome. Escolha outro.');
         } else {
-          const detail =
+          const msg =
             (err.error && (err.error.detail || err.error.message)) || err.message;
-          this.errorMsg.set(`Falha ao criar a sessão: ${detail ?? 'erro desconhecido'}`);
+          this.errorMsg.set(`Falha ao criar a sessão: ${msg ?? 'erro desconhecido'}`);
         }
       },
     });

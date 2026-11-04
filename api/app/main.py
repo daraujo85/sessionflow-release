@@ -22,6 +22,7 @@ from app import share
 from app.auth import decode_token, extract_token
 from app.config import Settings, get_settings
 from app.events_broker import EventsBroker
+from app.publishers.command_publisher import close_connection as close_publisher_connection
 from app.repositories.sessions_repo import SessionsRepository
 from app.routers import auth as auth_router
 from app.routers import demands as demands_router
@@ -83,6 +84,10 @@ async def lifespan(app: FastAPI):
         await events_broker.stop()
         if rabbit_connection is not None:
             await rabbit_connection.close()
+        # A conexão AMQP do publisher é cacheada no processo e amarrada ao
+        # event loop — sem fechar aqui, o próximo app no mesmo processo
+        # (teste, reload) publica numa conexão morta.
+        await close_publisher_connection()
         mongo_client.close()
 
 

@@ -125,7 +125,9 @@ export class SseService {
    * na Home/Sessões por alguns segundos. Limpo por timer. */
   readonly taskDoneFlash = signal<string | null>(null);
   /** Toast de "tarefa concluída" (título + sessão) p/ a Home. Limpo por timer. */
-  readonly taskDoneToast = signal<{ title: string; session: string } | null>(null);
+  readonly taskDoneToast = signal<{ title: string; session: string; allDone?: boolean } | null>(
+    null,
+  );
   private taskFlashTimer: ReturnType<typeof setTimeout> | null = null;
   /** tmux_name da sessão sendo vista AGORA (Detalhe registra) — suprime o
    * {@link globalToast} pra ela, o usuário já está olhando. */
@@ -358,11 +360,14 @@ export class SseService {
     // Structured event.
     this.events.update((list) => push(list, frame));
     // Tarefa concluída → destaca o card da sessão + toast na Home.
-    if (frame.type === 'task_done' && frame.session_id) {
+    const allDone = frame.type === 'milestones_all_done';
+    if ((frame.type === 'task_done' || allDone) && frame.session_id) {
       this.taskDoneFlash.set(frame.session_id);
       // Título do marco (tira o prefixo "Tarefa concluída: " do título do evento).
-      const t = (frame.title || 'Tarefa concluída').replace(/^Tarefa conclu[ií]da:\s*/i, '');
-      this.taskDoneToast.set({ title: t, session: frame.session_id });
+      const t = allDone
+        ? 'Lista de tarefas fechada'
+        : (frame.title || 'Tarefa concluída').replace(/^Tarefa conclu[ií]da:\s*/i, '');
+      this.taskDoneToast.set({ title: t, session: frame.session_id, allDone });
       if (this.taskFlashTimer) {
         clearTimeout(this.taskFlashTimer);
       }

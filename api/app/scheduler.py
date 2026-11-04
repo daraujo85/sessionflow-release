@@ -4,7 +4,7 @@ Roda dentro do processo da API (ver lifespan em ``app.main``), reaproveitando
 o mesmo ``publish_command`` do ``POST /sessions/{id}/input`` manual — pro
 worker/tmux não há diferença entre uma instrução digitada e uma programada.
 
-Esse arquivo tem TRÊS mecanismos independentes que só compartilham o loop:
+Esse arquivo tem QUATRO mecanismos independentes que só compartilham o loop:
 - ``_tick``: comandos programados que o USUÁRIO cria (coleção
   ``scheduled_commands`` — painel "Comandos programados" por sessão).
 - ``_milestones_tick``: revisão automática de milestones a cada
@@ -14,6 +14,13 @@ Esse arquivo tem TRÊS mecanismos independentes que só compartilham o loop:
 - ``_ephemeral_tick``: apaga sessões efêmeras (UI "Rápida") há mais de 24h
   sem atividade (delega pro mesmo endpoint ``DELETE /sessions/{id}/purge``,
   que mata tmux, apaga doc e a pasta scratch no host).
+- ``_orphan_tasks_tick``: apaga marcos (tasks ``source=milestone``) cuja
+  sessão não existe mais — o worker só sincroniza sessões vivas, então essas
+  ficavam "presas" pra sempre na Home.
+- ``_command_bridges_tick``: mata as PONTES DE COMANDO mortas — a sessão
+  "comando" que faz a ponte com um host (`sf command <host>`). Voltaátil:
+  morre por TTL ocioso, em cascata quando a sessão dona acaba, e nunca passa
+  de uma por host.
 """
 
 from __future__ import annotations
@@ -65,6 +72,14 @@ async def run_scheduler_forever(
             await _ephemeral_tick(db, sessions_repo, settings)
         except Exception:  # noqa: BLE001 - loop de background não pode morrer
             logger.exception("scheduler: ephemeral tick falhou")
+        try:
+            await _command_bridges_tick(db, sessions_repo, settings)
+        except Exception:  # noqa: BLE001 - loop de background não pode morrer
+            logger.exception("scheduler: command bridges tick falhou")
+        try:
+            await _orphan_tasks_tick(db, settings)
+        except Exception:  # noqa: BLE001 - loop de background não pode morrer
+            logger.exception("scheduler: orphan tasks tick falhou")
         await asyncio.sleep(interval)
 
 
@@ -177,3 +192,93 @@ async def _ephemeral_tick(
             continue
     if purged:
         logger.info("scheduler: %d sessão(ões) efêmera(s) purgadas", purged)
+
+
+async def _command_bridges_tick(
+    db: AsyncIOMotorDatabase,
+    sessions_repo: SessionsRepository,
+    settings: Settings,
+) -> None:
+    """Mata as PONTES DE COMANDO mortas.
+
+    A ponte é a sessão "comando" de um host-alvo: ``sf command <host>`` reusa
+    sempre a mesma (uma por host, não uma por invocação). Ela é VOLÁTIL:
+
+    - **TTL ocioso**: ninguém usa há ``command_bridge_ttl_seconds`` → morre.
+    - **Cascata**: a sessão DONA da ponte acabou → a ponte morre junto.
+    - **Dedupe**: mais de uma ponte viva no mesmo host → as menos ativas morrem.
+
+    ``keep_alive`` (serviço de longa duração, ex.: relay) fica de fora das
+    três regras e nunca é reusada como ponte pelo CLI.
+
+    Purge = apaga o doc + publica ``delete`` pro host. ⚠️ O payload NÃO leva
+    ``ephemeral``/``work_dir``: o ``work_dir`` da ponte é o HOME do host e o
+    worker removeria a pasta inteira (``shutil.rmtree``) — só manda quando a
+    sessão é efêmera de verdade.
+    """
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=settings.command_bridge_ttl_seconds)
+
+    # 1) TTL ocioso.
+    due: list[dict[str, Any]] = await sessions_repo.due_command_bridges(cutoff)
+
+    # 2) Cascata: dona que não está mais viva (doc sumiu ou status final).
+    alive = await sessions_repo.alive_session_names(ACTIVE_STATUSES)
+    for doc in await sessions_repo.owned_command_bridges():
+        if doc.get("owner") not in alive:
+            due.append(doc)
+
+    # 3) Dedupe: uma ponte por host. `command_bridges` vem da mais recente pra
+    # mais antiga — a mais recente sobrevive, as outras morrem.
+    seen_hosts: set[str] = set()
+    for doc in await sessions_repo.command_bridges():
+        if doc.get("keep_alive"):
+            continue
+        if doc.get("status") not in ACTIVE_STATUSES:
+            continue
+        host = str(doc.get("host_id") or "")
+        if host in seen_hosts:
+            due.append(doc)
+        else:
+            seen_hosts.add(host)
+
+    purged = 0
+    seen_ids: set[str] = set()
+    for doc in due:
+        session_id = str(doc["_id"])
+        if session_id in seen_ids:
+            continue
+        seen_ids.add(session_id)
+        tmux_name = doc.get("tmux_name") or ""
+        try:
+            await sessions_repo.delete_session(session_id)
+            await publish_command(
+                settings,
+                type="delete",
+                payload={"name": tmux_name},
+                host_id=doc.get("host_id"),
+            )
+            purged += 1
+        except Exception as exc:  # noqa: BLE001 - registra e segue as demais
+            logger.warning("scheduler: purge de ponte %s falhou: %s", tmux_name, exc)
+    if purged:
+        logger.info("scheduler: %d ponte(s) de comando purgada(s)", purged)
+
+
+async def _orphan_tasks_tick(db: AsyncIOMotorDatabase, settings: Settings) -> None:
+    """Apaga marcos cuja sessão dona sumiu (``tasks.session_id`` = ``tmux_name``).
+
+    Só toca ``source=milestone`` (as tasks espelhadas do arquivo do agente) —
+    sem sessão, nenhum worker volta a sincronizá-las, então nunca sairiam do
+    painel. Sessão parada (doc ainda existe) NÃO entra: o arquivo pode voltar a
+    ser sincronizado se ela for retomada.
+    """
+    alive = await db[settings.sessions_collection].distinct("tmux_name")
+    if not alive:
+        # Coleção vazia/indisponível: não arrisca apagar o painel inteiro.
+        return
+    res = await db[settings.tasks_collection].delete_many(
+        {"source": "milestone", "session_id": {"$nin": alive}}
+    )
+    if res.deleted_count:
+        logger.info("scheduler: %d marco(s) órfão(s) apagados", res.deleted_count)

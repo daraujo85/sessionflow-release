@@ -17,6 +17,7 @@ dependencies = [
     "webrtcvad>=2.0.10",
     "httpx>=0.28.1",
     "setuptools<81",
+    "pywebpush>=2.5.0",
 ]
 
 [dependency-groups]

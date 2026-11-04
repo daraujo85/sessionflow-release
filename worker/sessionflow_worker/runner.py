@@ -11,6 +11,8 @@ Este módulo amarra todos os componentes do Worker num único processo headless:
 - **Loop de captura de output**: para cada sessão **ativa** (inclusive externas
   reais do usuário), garante o ``pipe-pane`` e faz o poll incremental das linhas
   novas.
+- **Auto-stop de GPU** (``gpu_idle_watchdog_loop``): desliga os serviços de GPU
+  (xtts, omnivoice, nemotron-asr) que ficaram ociosos, liberando a VRAM.
 
 Captura de todas as sessões
 ---------------------------
@@ -47,10 +49,11 @@ from dotenv import load_dotenv
 from libtmux.exc import LibTmuxException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import dir_scanner, jarvis
+from sessionflow_worker import dir_scanner, gpu_services, jarvis
 from sessionflow_worker.command_consumer import CommandConsumer
 from sessionflow_worker.discovery import Discovery
 from sessionflow_worker.events import emit_event
+from sessionflow_worker.push_sender import send_to_all
 from sessionflow_worker.handoff_notify import handoff_notify_loop
 from sessionflow_worker.idle_watchdog import idle_watchdog_loop
 from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id
@@ -489,7 +492,7 @@ async def milestones_loop(
                 sid = s.get("tmux_name") or str(s.get("_id"))
                 wd = s.get("work_dir", "")
                 try:
-                    newly_done = await sync_session(
+                    newly_done, closed_all = await sync_session(
                         db, sid, wd, session_name=sid, allow_shared=wd_counts.get(wd, 0) <= 1
                     )
                     # Tarefa(s) recém-concluída(s) → evento "task_done" (som de
@@ -497,6 +500,27 @@ async def milestones_loop(
                     # sessão (jarvis) p/ o cliente decidir tocar o som.
                     if newly_done and channel is not None:
                         jv = await jarvis.is_enabled(db, sid)
+                        if closed_all:
+                            # Fechou a lista inteira: UM evento de fanfarra no
+                            # lugar dos task_done desta passada (não empilha
+                            # arpejo + fanfarra) + Web Push pro celular.
+                            title = f"Todas as tarefas concluídas: {sid}"
+                            desc = f"A sessão {sid} fechou a lista de tarefas."
+                            await emit_event(
+                                db,
+                                type="milestones_all_done",
+                                kind="success",
+                                session_id=sid,
+                                title=title,
+                                desc=desc,
+                                channel=channel,
+                                extra={"jarvis": jv, "task": True},
+                            )
+                            try:
+                                await send_to_all(db, title, desc, url=f"/sessao/{sid}")
+                            except Exception:  # noqa: BLE001 - push nunca derruba o loop
+                                logger.debug("web push all_done falhou p/ %r", sid, exc_info=True)
+                            newly_done = []
                         for mdone in newly_done:
                             await emit_event(
                                 db,
@@ -573,6 +597,10 @@ async def heartbeat_loop(
         # Carga + CLIs instaladas: base do `sf delegate --host auto`.
         metrics = sample_load()
         agents = installed_agents()
+        # Serviços de GPU sob demanda: estado de cada unit do catálogo
+        # ({nome: {active, last_used_at, unit, port}}) — o app/CLI mostra o que
+        # está de pé e o watchdog usa o mesmo estado pra desligar o ocioso.
+        gpu_state = await asyncio.to_thread(gpu_services.status_snapshot)
         await coll.update_one(
             {"_id": host_id},
             {
@@ -588,10 +616,79 @@ async def heartbeat_loop(
                     "ollama_models": ollama_models,
                     "metrics": metrics,
                     "agents": agents,
+                    "gpu_services": gpu_state,
                 }
             },
             upsert=True,
         )
+        await asyncio.sleep(interval)
+
+
+# --- Auto-stop dos serviços de GPU ociosos ----------------------------------
+#
+# Os serviços de GPU (xtts, omnivoice, nemotron-asr) são pesados: ficam de pé
+# queimando VRAM sem ninguém falando com eles. Este watchdog desliga os que
+# estão ociosos há mais de ``SESSIONFLOW_GPU_IDLE_MIN`` MINUTOS (default 20;
+# 0 = desliga o auto-stop). "Em uso" = tem conexão TCP ESTABLISHED no porto
+# do serviço — enquanto houver uma, o serviço fica de pé.
+
+GPU_IDLE_WATCHDOG_INTERVAL = 15.0
+
+
+async def gpu_idle_watchdog_once(
+    now: datetime | None = None,
+) -> list[str]:
+    """Uma passada do auto-stop. Devolve os serviços que foram desligados.
+
+    Best-effort por serviço: um serviço quebrado (systemctl falha, porto
+    inválido) não derruba a passada nem o loop.
+    """
+    catalog = gpu_services.load_catalog()
+    if not catalog:
+        return []
+    idle_s = gpu_services.idle_seconds()
+    if idle_s <= 0:
+        return []
+    now = now or datetime.now(timezone.utc)
+    stopped: list[str] = []
+    for name, svc in catalog.items():
+        try:
+            if not gpu_services.is_active(name, catalog):
+                continue
+            conns = gpu_services.get_tcp_connections(svc.port or 0)
+            if conns > 0:
+                # Em uso — zera o relógio de ociosidade.
+                gpu_services.mark_used(name, now)
+                continue
+            last = gpu_services.last_used_at(name)
+            if last is None:
+                # Primeira observação: dá a janela de carência antes de
+                # desligar (serviço ligado fora do SessionFlow não cai de
+                # surpresa no primeiro tick).
+                gpu_services.mark_used(name, now)
+                continue
+            if gpu_services.decide_auto_stop(last, now, idle_s, conns):
+                gpu_services.stop_service(name, catalog)
+                stopped.append(name)
+                logger.info(
+                    "gpu_service %s idle > %ds, stopping", name, int(idle_s)
+                )
+        except gpu_services.GpuServiceError:
+            logger.debug("gpu_idle_watchdog: %s indisponível", name, exc_info=True)
+        except Exception:  # noqa: BLE001 - watchdog nunca derruba o daemon
+            logger.debug("gpu_idle_watchdog: falha em %s", name, exc_info=True)
+    return stopped
+
+
+async def gpu_idle_watchdog_loop(
+    interval: float = GPU_IDLE_WATCHDOG_INTERVAL,
+) -> None:
+    """Loop do auto-stop de GPU (loop simples, sem estado no Mongo)."""
+    while True:
+        try:
+            await gpu_idle_watchdog_once()
+        except Exception:  # noqa: BLE001 - watchdog nunca derruba o daemon
+            logger.debug("gpu_idle_watchdog ciclo falhou", exc_info=True)
         await asyncio.sleep(interval)
 
 
@@ -661,6 +758,7 @@ async def _build_and_run(stop: asyncio.Event) -> None:
             idle_watchdog_loop(db, lambda rk, body: publish(channel, rk, body), host_id),
             name="idle_watchdog",
         ),
+        asyncio.create_task(gpu_idle_watchdog_loop(), name="gpu_idle_watchdog"),
         asyncio.create_task(consumer_watchdog(host_id), name="consumer_watchdog"),
         asyncio.create_task(jarvis.ollama_keepalive_loop(), name="ollama_keepalive"),
         asyncio.create_task(_stopper(), name="stopper"),

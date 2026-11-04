@@ -41,6 +41,8 @@ EVENT_TYPES = frozenset(
         "attention",
         # Uma TAREFA (marco) da sessão passou pra "done" — vitória: som + destaque.
         "task_done",
+        # A ÚLTIMA tarefa aberta virou "done": lista inteira concluída — fanfarra.
+        "milestones_all_done",
     }
 )
 

@@ -9,11 +9,17 @@ um resumo objetivo num arquivo de HANDOFF. O chefe lê só esse arquivo.
 
 Comandos:
   sf delegate --provider gemini|codex|opencode|claude [--model M] [--effort E] \
-              [--dir DIR] --task "TEXTO" [--name NOME]
+              [--dir DIR] --task "TEXTO" [--name NOME] \
+              [--host <alias|auto|auto-remote>] [--gpu]
   sf check <name-ou-id> [--dir DIR]
   sf list
   sf send <nome-ou-id> "TEXTO" [--no-enter]
+  sf command <host> "COMANDO" [--name N] [--dir D]   # shell remoto, sem agente
   sf move <nome-ou-id> --host <alias|auto>
+
+`--host auto` prioriza os Colabs (crédito Google). `--gpu` (sozinho ou com
+auto/auto-remote) só aceita hosts com GPU: GPU estável não-Colab primeiro
+(Duck), Colab GPU online como overflow; Colab offline nunca é ligado (captcha).
 
 Sem dependências externas (usa só a stdlib: urllib). Lê email/senha/porta do
 .env do SessionFlow.
@@ -299,6 +305,11 @@ def resolve_session(sessions, target):
     for s in sessions:
         if s.get("tmux_name") == target or s.get("display_name") == target:
             return s
+    # Ponte de comando: apelido dado no `--name` (`sf command mac --name lab-mac`
+    # cria a ponte com outro nome mas ela continua endereçável por "lab-mac").
+    for s in sessions:
+        if target in (s.get("aliases") or []):
+            return s
     needle = target.lower()
     matches = [
         s for s in sessions
@@ -381,6 +392,7 @@ AUTO_TIE_PCT = 0.05      # scores a ≤5% do maior empatam → prefere o local
 
 AUTO_DEFAULT_CORES = 4   # worker antigo sem hardware.cpu_cores
 AUTO_GPU_BONUS = 1.2     # GPU dedicada pesa como +20% de poder
+AUTO_GPU_MIN_VRAM_GB = float(os.environ.get("SF_GPU_MIN_VRAM_GB", 2.0))  # --gpu: VRAM livre mínima
 
 # Hosts PRIORITÁRIOS (tentados primeiro, em ordem, antes do ranking por score).
 # Se o host estiver online, passar nos filtros (CPU/RAM/agent/dir) e não estar
@@ -410,7 +422,79 @@ def host_score(w):
     return score
 
 
-def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
+def is_colab(w):
+    """True se o worker é um Google Colab — mesmo critério de `_colab_info`
+    ("colab" em display_name/hostname/host_id) + os host_ids conhecidos de
+    AUTO_PRIORITY_HOSTS (hostname de Colab é um id de container sem "colab")."""
+    label = f"{w.get('display_name') or ''} {w.get('hostname') or ''} {w.get('host_id') or ''}".lower()
+    return "colab" in label or w.get("host_id") in AUTO_PRIORITY_HOSTS
+
+
+def _prefer_local(ranked, local_id):
+    """Local a ≤AUTO_TIE_PCT do melhor score sobe pro topo (in place)."""
+    best = host_score(ranked[0])
+    local = next((w for w in ranked if w.get("host_id") == local_id), None)
+    if local and best - host_score(local) <= best * AUTO_TIE_PCT:
+        ranked.remove(local)
+        ranked.insert(0, local)
+
+
+def _vram_short(w):
+    """Motivo se a VRAM livre < AUTO_GPU_MIN_VRAM_GB; None se cabe ou se o
+    worker não reporta VRAM (sem nvidia-smi — não dá pra saber, não barra)."""
+    m = w.get("metrics") or {}
+    total, used = m.get("vram_total_gb"), m.get("vram_used_gb")
+    if total is None or used is None:
+        return None
+    free = total - used
+    if free < AUTO_GPU_MIN_VRAM_GB:
+        return f"vram livre {free:.1f}G < {AUTO_GPU_MIN_VRAM_GB:.1f}G"
+    return None
+
+
+def _pick_gpu_host(workers, local_id, dir_ok, passes):
+    """`--gpu`: só hosts com hardware.gpu. GPU estável (não-Colab, ex.: Duck)
+    primeiro, por score; Colab só como OVERFLOW e só se já estiver online —
+    Colab grátis pede captcha humano pra ligar e hiberna, então nunca é
+    ligado aqui. GPU com VRAM livre < SF_GPU_MIN_VRAM_GB é rejeitada (ex.:
+    Duck com o 9router/whisper ocupando 10.8/12G). Sem GPU que sirva → None,
+    sem fallback local."""
+    rejected, stable, colab = [], [], []
+    for w in workers:
+        if not (w.get("hardware") or {}).get("gpu"):
+            rejected.append((w, "sem GPU"))
+            continue
+        reason = passes(w) or _vram_short(w)
+        if reason:
+            rejected.append((w, f"colab = overflow: {reason}" if is_colab(w) else reason))
+        else:
+            (colab if is_colab(w) else stable).append(w)
+
+    ranked = []
+    for w in sorted(stable, key=host_score, reverse=True):
+        reason = dir_ok(w)
+        if reason:
+            rejected.append((w, reason))
+        else:
+            ranked.append(w)
+    if ranked:
+        _prefer_local(ranked, local_id)
+        rejected.extend((w, "colab = overflow (há GPU estável livre)") for w in colab)
+        return ranked[0], ranked, rejected, True
+
+    # Overflow: Colab GPU online, na ordem de AUTO_PRIORITY_HOSTS, depois score.
+    order = {hid: i for i, hid in enumerate(AUTO_PRIORITY_HOSTS)}
+    colab.sort(key=lambda w: (order.get(w["host_id"], len(order)), -host_score(w)))
+    for w in colab:
+        reason = dir_ok(w)
+        if reason:
+            rejected.append((w, f"colab = overflow: {reason}"))
+            continue
+        return w, [w], rejected, True
+    return None, [], rejected, False
+
+
+def pick_host(workers, provider, local_id, dir_ok, need_remote=False, gpu=False):
     """Escolhe o host p/ `--host auto`. Pura: rede só via `dir_ok` (injetado).
 
     Filtros baratos primeiro (online, métricas, agent, piso); `dir_ok(w)` —
@@ -418,6 +502,7 @@ def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
     Hosts em AUTO_PRIORITY_HOSTS são tentados PRIMEIRO (em ordem), antes do
     ranking por score. Se todos os prioritários falharem (offline/ocupado/sem
     provider), o ranking normal por CPU+RAM toma conta.
+    `gpu=True` troca tudo isso por `_pick_gpu_host` (GPU estável > Colab online).
     Retorna (escolhido|None, aprovados ordenados, [(host, motivo)], local_serve).
     """
     def _passes_filters(w):
@@ -437,6 +522,9 @@ def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
         if mem < AUTO_MIN_MEM_GB:
             return f"ram livre {mem:.1f}G < {AUTO_MIN_MEM_GB:.0f}G"
         return None
+
+    if gpu:
+        return _pick_gpu_host(workers, local_id, dir_ok, _passes_filters)
 
     rejected, pool = [], []
     by_id = {w["host_id"]: w for w in workers}
@@ -483,11 +571,7 @@ def pick_host(workers, provider, local_id, dir_ok, need_remote=False):
         # quem chama decide entre fallback silencioso e abortar com erro.
         local_worker = next((w for w in workers if w.get("host_id") == local_id), None)
         return None, [], rejected, _local_serves(local_worker)
-    best = host_score(ranked[0])
-    local = next((w for w in ranked if w.get("host_id") == local_id), None)
-    if local and best - host_score(local) <= best * AUTO_TIE_PCT:
-        ranked.remove(local)
-        ranked.insert(0, local)
+    _prefer_local(ranked, local_id)
     return ranked[0], ranked, rejected, True
 
 
@@ -907,6 +991,9 @@ def cmd_delegate(args):
     auto_info = None
     auto_host = None
     effective_host = args.host or os.environ.get("SF_DEFAULT_HOST")
+    gpu = getattr(args, "gpu", False)
+    if gpu and not args.host and (effective_host or "").lower() not in ("auto", "auto-remote"):
+        effective_host = "auto"  # --gpu sozinho = auto restrito a GPU
 
     if effective_host and effective_host.lower() in ("auto", "auto-remote"):
         env = resolve_env(args)
@@ -917,9 +1004,13 @@ def cmd_delegate(args):
         need_remote = bool(args.worktree or args.push) or effective_host.lower() == "auto-remote"
         dir_ok, targets = auto_dir_checker(base, token, local_id, args.dir)
         chosen, ranked, rejected, local_serves = pick_host(fetch_workers(base, token), provider,
-                                                          local_id, dir_ok, need_remote)
+                                                          local_id, dir_ok, need_remote, gpu=gpu)
         summary = _auto_summary(chosen, rejected)
         if chosen is None:
+            if gpu:
+                # Sem fallback local: rodar sem GPU não é o que foi pedido.
+                die("--gpu: nenhum host com GPU serve (GPU estável ocupada/offline e "
+                    "nenhum Colab GPU online — Colab offline não é ligado). " + " ".join(summary))
             if need_remote:
                 die("--host auto: nenhum host remoto serve. " + " ".join(summary))
             if not local_serves:
@@ -954,6 +1045,8 @@ def cmd_delegate(args):
             host = resolve_host(fetch_workers(base, token), effective_host)
         except ValueError as exc:
             die(str(exc))
+        if gpu and not (host.get("hardware") or {}).get("gpu"):
+            die(f"--gpu: host {_host_label(host)} sem GPU; use --gpu sem --host (ou --host auto)")
         host_id = host["host_id"]
         if host_id != local_host_id():
             # worker slugifica pasta/tmux; usa o mesmo slug p/ branch/registry/handoff
@@ -1333,6 +1426,10 @@ def cmd_dirs(args):
 # --------------------------------------------------------------------------- #
 # comando: list
 # --------------------------------------------------------------------------- #
+#: Rótulo PT por tipo de agente no ``sf list`` (o resto fica cru).
+_AGENT_LABELS = {"command": "Comando"}
+
+
 def cmd_list(args):
     env = resolve_env(args)
     token = login(env)
@@ -1343,7 +1440,8 @@ def cmd_list(args):
     for s in sessions:
         name = s.get("tmux_name") or s.get("display_name") or s.get("id")
         status = s.get("status") or "?"
-        agent = s.get("agent_type") or "?"
+        raw_agent = s.get("agent_type") or "?"
+        agent = _AGENT_LABELS.get(raw_agent, raw_agent)
         host = s.get("host_id") or "-"
         print(f"{name}\tagent={agent}\tstatus={status}\thost={host}\tid={s.get('id')}")
 
@@ -1420,7 +1518,7 @@ def _colab_info(w):
     alias = "colab2-pro" if (is_colab2 and is_gpu) else ("colab2-cpu" if is_colab2 else ("colab1-pro" if is_gpu else "colab1-cpu"))
     url = f"https://colab.research.google.com/drive/1MLzqvoeSg_JeMywj4HzvyRKTmssieZH5?authuser={authuser}"
     return {
-        "is_colab": "colab" in label,
+        "is_colab": is_colab(w),
         "authuser": authuser,
         "is_gpu": bool(is_gpu),
         "alias": alias,
@@ -1511,6 +1609,385 @@ def cmd_send(args):
         die(f"envio falhou (HTTP {status}): {body}")
 
     print(f"enviado ✅ -> [{name}] (id={session_id})")
+
+
+# --------------------------------------------------------------------------- #
+# comando: command (sessão "Comando" — shell remoto SEM agente LLM)
+# --------------------------------------------------------------------------- #
+#: Polling da tela: o worker faz ``capture-pane`` a cada CAPTURE_INTERVAL (1s)
+#: e upserta ``session_screen`` — 0,8s aqui acompanha esse ritmo sem martelar.
+_CMD_POLL_INTERVAL = 0.8
+_CMD_TIMEOUT = 120.0
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _strip_ansi(s):
+    return _ANSI_RE.sub("", s or "")
+
+
+def _exact_session(sessions, name):
+    """Match EXATO por id/tmux_name/display_name (sem substring).
+
+    ``sf command`` precisa ser determinístico: resolver por substring poderia
+    injetar um comando numa sessão Claude de outro trabalho (e aí o "shell
+    remoto" vira prompt de agente). Vazio = não existe.
+    """
+    for s in sessions:
+        if s.get("id") == name or s.get("tmux_name") == name \
+                or s.get("display_name") == name:
+            return s
+    return None
+
+
+def _screen_text(base, token, session_id):
+    """``(text, scrollback)`` da tela atual da sessão (GET /sessions/{id}/screen).
+
+    ``scrollback`` é o histórico do tmux + tela (2000 linhas); ``text`` é só a
+    tela visível. Preferimos o scrollback pra não perder output que rolou.
+    """
+    status, body = _request("GET", f"{base}/sessions/{session_id}/screen",
+                            token=token, timeout=15)
+    if status != 200 or not isinstance(body, dict):
+        return "", ""
+    return body.get("text") or "", body.get("scrollback") or ""
+
+
+def _extract_marked(screen, begin, end):
+    """Isola o output ENTRE os marcadores; devolve ``(lines, rc|None, done)``.
+
+    Por que marcadores (e não "diff da tela antes/depois"): a tela é um
+    snapshot que rola e é re-desenhada, então um diff de prefixo quebra assim
+    que o scrollback descarta linhas. O par BEGIN/END é único por nonce e
+    sobrevive a qualquer redraw.
+
+    Pega a ÚLTIMA ocorrência de cada marcador porque o texto colado aparece
+    Ecoado no terminal ANTES de executar (o echo tem aspas/``printf`` em volta,
+    então nunca é igual à linha de output — mas usar a última ocorrência torna
+    a busca à prova de qualquer eco).
+    """
+    lines = screen.split("\n")
+    end_idx = None
+    rc = None
+    for i in range(len(lines) - 1, -1, -1):
+        raw = _strip_ansi(lines[i]).strip()
+        if raw.startswith(end):
+            end_idx = i
+            m = re.search(r"rc=(-?\d+)", raw)
+            rc = int(m.group(1)) if m else None
+            break
+    if end_idx is None:
+        return [], None, False
+    begin_idx = None
+    for i in range(end_idx - 1, -1, -1):
+        if _strip_ansi(lines[i]).strip() == begin:
+            begin_idx = i
+            break
+    out = lines[begin_idx + 1:end_idx] if begin_idx is not None else lines[:end_idx]
+    return [ln.rstrip("\r") for ln in out], rc, True
+
+
+#: Heartbeat da ponte de comando: durante o polling, o CLI re-registra o
+#: vínculo a cada N segundos — isso zera ``last_activity_at`` e segura a ponte
+#: viva enquanto um comando longo roda (o TTL ocioso não mata o meio do comando).
+_BRIDGE_BEAT_SECONDS = 60
+
+
+def _ts(value):
+    """Epoch de um timestamp ISO (str) — 0 se ausente/inválido."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _find_command_bridge(sessions, host_id):
+    """Ponte de comando VIVA do host — a sessão "comando" que faz a ponte.
+
+    A identidade da ponte é o HOST, não o nome: ``sf command mac`` reusa
+    sempre a mesma sessão do Mac (antes cada ``--name`` criava uma sessão
+    nova — era a pilha de shells órfãos). ``keep_alive`` (serviço de longa
+    duração) NÃO conta como ponte: injetar comando no shell de um serviço
+    derrubaria o serviço.
+    """
+    candidates = [
+        s for s in sessions
+        if s.get("agent_type") == "command"
+        and s.get("host_id") == host_id
+        and s.get("status") in ("running", "waiting_input")
+        and not s.get("keep_alive")
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda s: _ts(s.get("last_activity_at")), reverse=True)
+    return candidates[0]
+
+
+def _claim_bridge(base, token, session_id, owner=None, keep_alive=None, alias=None):
+    """Liga a sessão à ponte de comando: DONA, keep_alive e apelido.
+
+    Também é o HEARTBEAT — o endpoint zera ``last_activity_at``, que é o
+    relógio do TTL ocioso (a ponte morre sozinha depois de um tempo sem uso).
+    Sempre manda o PUT: mesmo sem dona/apelido, é o "uso" que renova a ponte.
+    A dona vai SEMPRE (mesmo None): None = "ninguém é dona" e limpa uma dona
+    antiga — a ponte pode ter sido recriada com o mesmo nome.
+    """
+    body: dict[str, Any] = {"owner": owner}
+    if keep_alive is not None:
+        body["keep_alive"] = keep_alive
+    if alias:
+        body["alias"] = alias
+    status, resp = _request("PUT", f"{base}/sessions/{session_id}/bridge",
+                             token=token, body=body)
+    if status != 200:
+        print(f"aviso: vínculo da ponte não registrado (HTTP {status}): {resp}",
+              file=sys.stderr)
+
+
+def _free_bridge_name(sessions, base, host_id):
+    """Nome de ponte LIVRE no host: ``base``, ou ``base-2``, ``base-3``…
+
+    O worker recusa criar uma sessão com o nome de um pane tmux VIVO (o tmux
+    já existe). Um doc PARADO (pane morto) NÃO bloqueia o nome: o worker faz
+    upsert no mesmo doc e a ponte renasce. Sem isto, `sf command mac` depois
+    de `sf command mac --keep-alive` morria com "sessão tmux já existe".
+    """
+    used = {
+        s.get("tmux_name")
+        for s in sessions
+        if s.get("host_id") in (None, host_id)
+        and s.get("status") in ("running", "waiting_input")
+    }
+    if base not in used:
+        return base
+    for i in range(2, 50):
+        candidate = f"{base}-{i}"
+        if candidate not in used:
+            return candidate
+    return f"{base}-{uuid.uuid4().hex[:6]}"
+
+
+def _create_command_session(env, token, base, host, name, work_dir, keep_alive=False):
+    """Cria a sessão ``agent_type="command"`` no host e espera ficar running.
+
+    O worker NÃO lança agente nenhum: o pane já é o shell do host (ver
+    ``command_consumer._handle_create``). Sem ``--dir``, abre no HOME do host.
+    """
+    payload = {
+        "name": name,
+        "display_name": name,
+        "agent_type": "command",
+        "host_id": host["host_id"],
+        "keep_alive": bool(keep_alive),
+    }
+    if work_dir:
+        payload["work_dir"] = work_dir
+    status, body = _request("POST", f"{base}/sessions", token=token, body=payload)
+    if status == 409:
+        # Corrida: a ponte do MESMO host nasceu entre a listagem e o POST (a
+        # API recusa 2ª ponte por host) → REAPROVEITA a que existe em vez de
+        # die(). Uma ponte de outro host não conta.
+        existing = _find_command_bridge(list_sessions(env, token), host["host_id"])
+        if existing is not None:
+            return existing
+        die(f"já existe uma sessão ativa chamada '{name}'. Use --name outro.")
+    if status != 202:
+        die(f"criação da sessão de comando falhou (HTTP {status}): {body}")
+    session = wait_running(env, token, name)
+    if session is None:
+        die(f"a sessão '{name}' não subiu em {CREATE_TIMEOUT_SECONDS}s. "
+            f"Confira 'sf check {name}' ou o worker do host.")
+    return session
+
+
+def cmd_command(args):
+    """Roda um comando num shell de OUTRO host, sem Claude/agente nenhum no meio.
+
+    É a sessão "Comando": um pane tmux com o shell do host alvo (``agent_type
+    ="command"``), criado/reusado sob demanda. Casos de uso: abrir o Chrome DO
+    Mac via browser-harness a partir da Duck, ``screencapture`` remoto, rodar
+    uma skill que só existe lá, mover arquivo entre máquinas — tudo sem pagar
+    um turno de LLM nem esperar um agente terminar.
+
+    Saída: o worker só expõe a TELA da sessão, então injetamos o comando entre
+    dois marcadores com nonce (``SF_BEGIN_<n>`` / ``SF_END_<n> rc=<code>``) e
+    fazemos polling em ``GET /sessions/{id}/screen`` até o marcador de fim
+    aparecer — o que está entre eles É o output do comando, e o ``rc`` vira o
+    exit code deste CLI.
+    """
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    workers = fetch_workers(base, token)
+    try:
+        host = resolve_host(workers, args.host, allow_offline=False)
+    except ValueError as exc:
+        die(str(exc))
+    host_id = host["host_id"]
+    host_lbl = _host_label(host)
+
+    # A PONTE é identificada pelo HOST alvo, não pelo nome: `sf command mac`
+    # reusa SEMPRE a mesma sessão do Mac. O nome é rótulo (p/ `sf send`).
+    name = sanitize_name(args.name) if args.name else \
+        sanitize_name(f"cmd-{slugify_remote(host.get('display_name') or host.get('hostname') or host_id)}")
+
+    sessions = list_sessions(env, token)
+    session = _find_command_bridge(sessions, host_id)
+    alias = sanitize_name(args.name) if args.name else None
+    keep_alive = bool(getattr(args, "keep_alive", False))
+    if session is None:
+        # Sem ponte viva neste host → cria uma com o nome pedido (livre no
+        # host: o worker recusa nome repetido e o tmux já existe).
+        session = _create_command_session(
+            env, token, base, host,
+            _free_bridge_name(sessions, name, host_id), args.dir,
+            keep_alive=keep_alive,
+        )
+        # o nome pedido só é apelido se a ponte NÃO se chama assim
+        if (session.get("tmux_name") or "") == name:
+            alias = None
+    elif args.dir:
+        print(f"aviso: --dir ignorado, a ponte de {host_lbl} já existe "
+              f"(work_dir={session.get('work_dir') or '?'})", file=sys.stderr)
+
+    # `--name` numa ponte já viva: o nome pedido vira APELIDO da ponte (dá pra
+    # dirigir com `sf send <apelido>`), sem renomear o tmux — o rename
+    # derrubaria o cwd e o ambiente do shell.
+    if alias and alias == (session.get("tmux_name") or ""):
+        alias = None
+    # DONA da ponte: a sessão que está usando ela agora. Só vale se for uma
+    # sessão de verdade do SessionFlow — um tmux solto (fora do app) não
+    # seria "viva" pra API e mataria a ponte no próximo tick.
+    owner = detect_parent()
+    known = {s.get("tmux_name") for s in sessions}
+    if owner and owner not in known:
+        owner = None
+    # Vínculo: dona + keep_alive + apelido. É também o heartbeat que segura
+    # o TTL ocioso.
+    _claim_bridge(base, token, session["id"], owner=owner, alias=alias,
+                  keep_alive=True if getattr(args, "keep_alive", False) else None)
+    name = session.get("tmux_name") or name
+    session_id = session["id"]
+
+    # --tail: não executa nada, só imprime a tela atual da sessão (o que o
+    # comando anterior deixou lá / o que está rodando agora).
+    if args.tail:
+        visible, scrollback = _screen_text(base, token, session_id)
+        text_now = scrollback or visible
+        if not text_now.strip():
+            print(f"(tela vazia em [{name}] — nada capturado ainda)")
+            return
+        limit = max(1, args.tail_lines)
+        for ln in text_now.split("\n")[-limit:]:
+            sys.stdout.write(_strip_ansi(ln) + "\n")
+        return
+
+    # Comando: argv, stdin ('-') ou nada (só garante a sessão de pé).
+    text = args.command
+    if text == "-":
+        text = sys.stdin.read()
+    if not text or not text.strip():
+        print(f"sessão de comando ✅ [{name}] em {host_lbl}")
+        print(f"  id:      {session_id}")
+        print(f"  dir:     {session.get('work_dir') or '(home do host)'}")
+        print(f"  use:     sf command {args.host} \"ls ~/Documents\"")
+        print(f"  ou dirija à mão: sf send {name} \"<comando>\"")
+        return
+
+    nonce = uuid.uuid4().hex[:8]
+    begin, end = f"SF_BEGIN_{nonce}", f"SF_END_{nonce}"
+    # O comando roda num SUB-SHELL: ``exit N`` (ou um ``source`` que termine em
+    # exit) MATARIA o shell do pane — e com ele a sessão nomeada inteira, que
+    # viraria timeout sem rc. Num sub-shell, ``exit`` só encerra o sub-shell, o
+    # ``$?`` volta pro pai e o marcador END é SEMPRE impresso.
+    # O rc do comando é capturado DENTRO do sub-shell (antes do pwd), senão o
+    # pwd sobrescreve o status e um comando que falha volta com rc=0.
+    # O ``pwd`` final volta pro shell pai pra preservar o cwd da sessão nomeada
+    # (ex.: ``cd repo && npm test`` deixa o repo como cwd). Ele roda DEPOIS do
+    # END, então um erro ali nunca vaza pro output capturado.
+    # Tudo num paste só: se o shell suportar bracketed paste, as quebras de
+    # linha viram dado (heredoc/multilinha funcionam); se não suportar, cada
+    # linha executa em sequência — dá certo nos dois casos.
+    cwd_file = f"${{TMPDIR:-/tmp}}/.sf_cwd_{nonce}"
+    wrapped = (
+        f"__sf_tmp={cwd_file}\n"
+        f"printf '{begin}\\n'\n"
+        f"( {text.rstrip(chr(10))}\n"
+        f"  __sf_inner=$?\n"
+        f"  pwd > \"$__sf_tmp\"\n"
+        f"  exit $__sf_inner\n"
+        f" )\n"
+        f"__sf_rc=$?\n"
+        f"printf '{end} rc=%s\\n' \"$__sf_rc\"\n"
+        f"[ -f \"$__sf_tmp\" ] && cd \"$(cat \"$__sf_tmp\")\"; rm -f \"$__sf_tmp\"; "
+        f"unset __sf_tmp __sf_rc __sf_inner"
+    )
+
+    status, body = _request(
+        "POST", f"{base}/sessions/{session_id}/input",
+        token=token, body={"text": wrapped, "enter": True},
+    )
+    if status != 202:
+        die(f"envio do comando falhou (HTTP {status}): {body}")
+
+    if args.no_wait:
+        print(f"comando enviado ✅ -> [{name}] em {host_lbl} (sem esperar)")
+        print(f"  acompanhe: sf command {args.host} --tail  |  app: sessão {name}")
+        return
+
+    timeout = args.timeout or _CMD_TIMEOUT
+    deadline = time.monotonic() + timeout
+    last = ""
+    last_beat = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(_CMD_POLL_INTERVAL)
+        if time.monotonic() - last_beat > _BRIDGE_BEAT_SECONDS:
+            # Heartbeat: re-registra a dona → zera o relógio do TTL ocioso
+            # (senão um comando longo veria a ponte morrer no meio).
+            _claim_bridge(base, token, session_id, owner=owner)
+            last_beat = time.monotonic()
+        visible, scrollback = _screen_text(base, token, session_id)
+        last = scrollback or visible
+        out_lines, rc, done = _extract_marked(last, begin, end)
+        if done:
+            for ln in out_lines:
+                sys.stdout.write((_strip_ansi(ln) if not args.color else ln) + "\n")
+            sys.stdout.flush()
+            if rc is None:
+                print(f"aviso: output capturado mas sem rc (marcador truncado?)",
+                      file=sys.stderr)
+                return
+            if rc != 0:
+                print(f"-- comando saiu com rc={rc} em {host_lbl}", file=sys.stderr)
+            sys.exit(rc)
+    # Timeout: mostra o que a tela tem (ajuda a ver se o comando ainda roda ou
+    # se travou pedindo algo) e sai com código próprio.
+    tail = "\n".join(_strip_ansi(ln) for ln in last.split("\n")[-40:])
+    print(f"sf: timeout de {timeout:.0f}s aguardando o comando terminar em "
+          f"[{name}]. A sessão continua rodando lá — o comando NÃO foi cancelado.",
+          file=sys.stderr)
+    if tail.strip():
+        print("---- tela atual ----", file=sys.stderr)
+        print(tail, file=sys.stderr)
+    sys.exit(2)
+
+
+# --------------------------------------------------------------------------- #
+# comando: notify
+# --------------------------------------------------------------------------- #
+def cmd_notify(args):
+    """Web push avulso pro celular (todas as subscrições) via POST /push/notify."""
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    payload = {"title": args.title, "body": args.body}
+    if args.url:
+        payload["url"] = args.url
+    status, body = _request("POST", f"{base}/push/notify", token=token, body=payload)
+    if status != 200:
+        die(f"push falhou (HTTP {status}): {body}")
+    print(f"push ✅ -> {body.get('sent', 0)} dispositivo(s)")
 
 
 # --------------------------------------------------------------------------- #
@@ -1719,6 +2196,114 @@ def _emit_fetch_result(host_id: str, result: dict, args) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# comando: gpu (serviços de GPU sob demanda)
+# --------------------------------------------------------------------------- #
+#: Timeout do polling do comando ``gpu_service``. Subir um modelo na GPU leva
+#: dezenas de segundos (o auto-start espera o health check), então a janela
+#: é generosa — mas não infinita.
+_GPU_POLL_TIMEOUT = 120.0
+_GPU_POLL_INTERVAL = 0.5
+
+
+def cmd_gpu(args):
+    """Liga/desliga/consulta os serviços de GPU (xtts, omnivoice, ...) de um host.
+
+    Publica o comando ``gpu_service`` na fila do worker do host alvo via API
+    (mesmo mecanismo do ``fetch``); o worker executa o ``systemctl`` e grava
+    o resultado em ``command_results``; este CLI faz polling em
+    ``GET /commands/{command_id}`` e imprime o estado.
+
+    A visão de TODOS os serviços sai do heartbeat (``worker_status.gpu_services``)
+    — é instantânea e não acorda nada; o status de UM serviço vai como comando
+    (estado real do systemd).
+    """
+    env = resolve_env(args)
+    token = login(env)
+    base = api_base(env)
+    workers = fetch_workers(base, token)
+    try:
+        host = resolve_host(workers, args.host, allow_offline=False)
+    except ValueError as exc:
+        die(str(exc))
+    host_id = host["host_id"]
+    action = args.action
+    name = (args.name or "").strip()
+
+    if action == "status" and not name:
+        _print_gpu_snapshot(host)
+        return
+    if not name:
+        die(f"'{action}' precisa do nome do serviço "
+            f"(ex.: sf gpu {args.host} {action} xtts)")
+
+    result = _gpu_command(base, token, host_id, action, name)
+    _print_gpu_result(action, name, result)
+
+
+def _gpu_command(base, token, host_id, action, name):
+    """Publica o comando e espera o resultado (polling em /commands/{id})."""
+    status, body = _request(
+        "POST",
+        f"{base}/hosts/{host_id}/gpu-services/{name}/{action}",
+        token=token,
+        body={},
+        timeout=15,
+    )
+    if status != 202 or "command_id" not in body:
+        die(f"gpu {action} enfileirar falhou (HTTP {status}): {body}")
+    command_id = body["command_id"]
+
+    deadline = time.monotonic() + _GPU_POLL_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(_GPU_POLL_INTERVAL)
+        status, body = _request(
+            "GET", f"{base}/commands/{command_id}", token=token, timeout=10,
+        )
+        if status != 200:
+            die(f"polling /commands falhou (HTTP {status}): {body}")
+        st = body.get("status")
+        if st == "ok":
+            return body.get("result") or {}
+        if st == "error":
+            err = body.get("error") or "erro desconhecido"
+            die(f"gpu {action} {name} em {host_id} falhou: {err}", code=2)
+        # status == "pending" → continua polling
+    die(f"timeout aguardando gpu {action} em {host_id}", code=2)
+
+
+def _print_gpu_snapshot(host):
+    """Imprime o estado de TODOS os serviços (vem do heartbeat do worker)."""
+    services = host.get("gpu_services") or {}
+    if not services:
+        print("(nenhum serviço de GPU configurado neste host)")
+        return
+    for name, info in sorted(services.items()):
+        info = info or {}
+        active = "🟢" if info.get("active") else "⚪"
+        last = info.get("last_used_at") or "-"
+        unit = info.get("unit") or "-"
+        print(f"{active} {name}\tactive={info.get('active')}\tunit={unit}\tlast_used_at={last}")
+
+
+def _print_gpu_result(action, name, result):
+    """Imprime o resultado de um comando gpu_service (start/stop/status)."""
+    if not result:
+        print(f"gpu {action} {name}: (sem resultado)")
+        return
+    if result.get("services"):
+        for svc_name, info in sorted(result["services"].items()):
+            info = info or {}
+            active = "🟢" if info.get("active") else "⚪"
+            print(f"{active} {svc_name}\tactive={info.get('active')}\t"
+                  f"unit={info.get('unit') or '-'}\t"
+                  f"last_used_at={info.get('last_used_at') or '-'}")
+        return
+    active = "🟢" if result.get("active") else "⚪"
+    print(f"{active} {result.get('name') or name}\taction={result.get('action') or action}\t"
+          f"active={result.get('active')}\tunit={result.get('unit') or '-'}")
+
+
+# --------------------------------------------------------------------------- #
 # comando: share
 # --------------------------------------------------------------------------- #
 def cmd_share(args):
@@ -1809,6 +2394,12 @@ def build_parser():
                         "ou 'auto' (escolhe o mais livre com o provider e a pasta) "
                         "ou 'auto-remote' (igual auto, mas nunca o host que dispara). "
                         "Remoto: --dir é caminho/nome NAQUELE host (veja 'sf dirs').")
+    d.add_argument("--gpu", action="store_true",
+                   help="exige host com GPU (hardware.gpu). Sem --host = '--host auto --gpu': "
+                        "GPU estável não-Colab primeiro (ex.: Duck, RTX 3060), Colab GPU só "
+                        "como overflow e só se já online (nunca liga Colab offline); sem "
+                        "fallback local; GPU com VRAM livre < SF_GPU_MIN_VRAM_GB (padrão 2) "
+                        "é pulada. Com --host explícito, rejeita host sem GPU.")
     d.add_argument("--worktree", action="store_true",
                    help="(remoto) roda num worktree novo na branch sf/<nome>.")
     d.add_argument("--push", action="store_true",
@@ -1907,6 +2498,57 @@ def build_parser():
     m.add_argument("--remote", default=None, help=_REMOTE_HELP)
     m.set_defaults(func=cmd_send)
 
+    cm = sub.add_parser(
+        "command",
+        help="roda um comando num shell de OUTRO host, SEM agente no meio "
+             "(sessão 'Comando': pane tmux com o shell do host alvo).",
+        description="Sessão 'Comando': abre/usa um pane tmux com o shell do "
+                    "host alvo (sem Claude, sem modelo, sem custo de LLM) e "
+                    "roda o comando informado, devolvendo a SAÍDA e o exit "
+                    "code. Serve p/ usar o Chrome/skills/arquivos de uma "
+                    "máquina a partir de outra (ex.: da Duck rodar "
+                    "browser-harness no Mac). A ponte é identificada pelo "
+                    "HOST alvo e REUSADA sempre (uma por host, não uma por "
+                    "chamada); o --name vira apelido pra dirigir com 'sf send'.",
+    )
+    cm.add_argument("host", help="host alvo (alias/emoji/host_id, ex: mac, duck, colab1-cpu).")
+    cm.add_argument("command", nargs="?", default=None,
+                    help="comando a rodar (use '-' pra ler de stdin: o conteúdo "
+                         "lido é EXECUTADO como script shell no host alvo). "
+                         "Sem argumento: só garante a sessão de comando de pé.")
+    cm.add_argument("--name", default=None,
+                    help="apelido da ponte de comando (default: cmd-<host>). "
+                         "A ponte é identificada pelo HOST e reusada sempre; "
+                         "o --name vira apelido pra dirigir com 'sf send'.")
+    cm.add_argument("--keep-alive", action="store_true",
+                    help="ponte de serviço: não morre por TTL/cascata/dedupe "
+                         "(uso: relay e outros daemons).")
+    cm.add_argument("--dir", default=None,
+                    help="work_dir da sessão ao criar (default: HOME do host).")
+    cm.add_argument("--timeout", type=float, default=None,
+                    help=f"segundos esperando o comando terminar (default {_CMD_TIMEOUT:.0f}s).")
+    cm.add_argument("--no-wait", action="store_true",
+                    help="injeta o comando e sai sem esperar o fim.")
+    cm.add_argument("--tail", action="store_true",
+                    help="não executa nada: imprime a tela atual da sessão.")
+    cm.add_argument("--tail-lines", type=int, default=40,
+                    help="linhas da tela no --tail (default 40).")
+    cm.add_argument("--color", action="store_true",
+                    help="preserva as cores ANSI na saída (default: limpa).")
+    cm.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    cm.set_defaults(func=cmd_command)
+
+    nt = sub.add_parser(
+        "notify",
+        help="manda um web push pro celular (todas as subscrições do app) — "
+             "ex: avisar que algo precisa de humano.",
+    )
+    nt.add_argument("title", help="título da notificação.")
+    nt.add_argument("body", help="corpo da notificação.")
+    nt.add_argument("--url", default=None, help="URL aberta ao tocar na notificação.")
+    nt.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    nt.set_defaults(func=cmd_notify)
+
     mv = sub.add_parser(
         "move",
         help="move uma sessão claude já iniciada pra outro host, retomando a "
@@ -1951,12 +2593,74 @@ def build_parser():
                    help=f"timeout do polling (default {_FETCH_POLL_TIMEOUT:.0f}s).")
     f.add_argument("--remote", default=None, help=_REMOTE_HELP)
     f.set_defaults(func=cmd_fetch)
+
+    g = sub.add_parser(
+        "gpu",
+        help="liga/desliga/consulta os serviços de GPU (xtts, omnivoice, ...) "
+             "de um host — sob demanda, com auto-stop quando ficam ociosos.",
+        description="Controle dos serviços de GPU do host via P2P: publica um "
+                    "comando gpu_service pro worker do host alvo, que roda o "
+                    "systemctl e devolve o estado. 'status' sem nome mostra "
+                    "todos os serviços (vem do heartbeat); com nome, consulta "
+                    "o worker ao vivo.",
+    )
+    g.add_argument("host", help="host alvo (alias/emoji/host_id).")
+    g.add_argument("action", choices=["status", "start", "stop"],
+                   help="o que fazer com o serviço de GPU.")
+    g.add_argument("name", nargs="?", default=None,
+                   help="nome do serviço (ex.: xtts). OBRIGATÓRIO p/ start/stop; "
+                        "opcional em 'status' (sem nome = todos).")
+    g.add_argument("--remote", default=None, help=_REMOTE_HELP)
+    g.set_defaults(func=cmd_gpu)
     return p
+
+
+# Opções do verbo `command` que CONSOMEM valor (as outras são flags). A lista
+# é conferida por teste contra o parser — se alguém adicionar opção nova com
+# valor, o teste quebra e a lista é atualizada.
+_CMD_VALUE_OPTS = frozenset(
+    {"--name", "--dir", "--timeout", "--tail-lines", "--remote"}
+)
+
+
+def _split_command_argv(argv):
+    """Separa o TEXTO do comando do resto da linha ``sf command ...``.
+
+    Por que: ``host`` é positional e ``command`` é positional ``nargs="?"``.
+    Quando a opção vem ANTES do texto (``sf command mac --name lab "ls"``), o
+    argparse entrega o VALOR da opção ("lab") pro slot ``command`` e joga o
+    texto real em "unrecognized arguments" — nenhuma forma de ``nargs``
+    resolve (testado: ``?``, ``*``, ``REMAINDER``). Extraindo o texto ANTES do
+    argparse, as duas ordens funcionam.
+    """
+    argv = list(argv or [])
+    if not argv or argv[0] != "command":
+        return argv, None
+    rest = argv[1:]
+    free = []       # (índice, token) de tudo que NÃO é opção nem valor de opção
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok in ("-h", "--help"):
+            break
+        if tok.startswith("-") and tok != "-":
+            i += 2 if tok in _CMD_VALUE_OPTS else 1
+            continue
+        free.append((i, tok))
+        i += 1
+    if len(free) < 2:
+        return argv, None
+    idx, text = free[1]          # free[0] = host, free[1] = texto do comando
+    return ["command"] + rest[:idx] + rest[idx + 1:], text
 
 
 def main(argv=None):
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv, cmd_text = _split_command_argv(argv)
     args = parser.parse_args(argv)
+    if cmd_text is not None:
+        args.command = cmd_text
     args.func(args)
 
 

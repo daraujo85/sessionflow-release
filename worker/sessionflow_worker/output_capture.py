@@ -150,9 +150,23 @@ def split_terminal_lines(text: str) -> list[str]:
     texto DEPOIS do último ``\\r`` de cada trecho terminado em ``\\n`` é o
     que o terminal realmente mostra — o resto foi sobrescrito antes de
     qualquer humano/TTS ver. Função pura; não faz strip de ANSI.
+
+    ``\r\n`` (terminador CRLF, que é o que o pty entrega) conta como FIM DE
+    LINHA: o ``\r`` é descartado e o texto ANTES dele é o visível. Só ``\r``
+    isolado é reposicionamento de cursor.
     """
     lines = []
-    for segment in text.split("\n"):
+    segments = text.split("\n")
+    last = len(segments) - 1
+    for i, segment in enumerate(segments):
+        # ``\r\n`` é TERMINADOR DE LINHA, não "cursor voltou pra coluna 0":
+        # o pty traduz o ``\n`` do shell em ``\r\n``. Só o ``\r`` isolado
+        # (sem ``\n`` depois) é reposicionamento de cursor. Sem esta
+        # distinção, o ``rsplit`` abaixo devolvia "" pra TODO segmento
+        # terminado em CRLF — ou seja, TODA saída normal de comando era
+        # descartada (só o redraw de spinner em alt-screen sobrevivia).
+        if i < last and segment.endswith("\r"):
+            segment = segment[:-1]
         visible = segment.rsplit("\r", 1)[-1]
         if visible:
             lines.append(visible)
@@ -565,6 +579,11 @@ class OutputCapture:
         Nome da coleção de output (injetável p/ testes isolados).
     max_lines:
         Tamanho do ring buffer por sessão (linhas mais antigas são removidas).
+    routing_key:
+        Rota (routing key) onde os eventos ``output`` são publicados. Default
+        :data:`OUTPUT_ROUTING_KEY` — a rota compartilhada com a API. Injetável
+        p/ isolar testes de integração da fila do worker de produção (que
+        publica na MESMA rota e contaminaria a fila efêmera do teste).
     """
 
     def __init__(
@@ -574,12 +593,17 @@ class OutputCapture:
         channel=None,
         collection: str = DEFAULT_COLLECTION,
         max_lines: int = DEFAULT_MAX_LINES,
+        routing_key: str | None = None,
     ) -> None:
         self._runtime = runtime
         self._db = db
         self._channel = channel
         self._collection = collection
         self._max_lines = max_lines
+        # Rota de publicação dos eventos de output. O campo ``event`` do
+        # payload continua sendo OUTPUT_ROUTING_KEY (é o TIPO do evento,
+        # consumido pela API); a routing key é só por ONDE ele é publicado.
+        self._routing_key = routing_key or OUTPUT_ROUTING_KEY
         # Estado por sessão: arquivo do pipe-pane e offset de bytes já lido.
         self._pipe_files: dict[str, str] = {}
         self._offsets: dict[str, int] = {}
@@ -777,7 +801,7 @@ class OutputCapture:
             "text": text,
             "at": at.isoformat(),
         }
-        await publish(self._channel, OUTPUT_ROUTING_KEY, payload)
+        await publish(self._channel, self._routing_key, payload)
 
     def start_capture(self, tmux_name: str) -> str:
         """Captura o snapshot atual do pane e inicia o pipe-pane da sessão.
@@ -956,4 +980,4 @@ class OutputCapture:
                 # novo do agente.
                 "snapshot": idx < n_snapshot,
             }
-            await publish(self._channel, OUTPUT_ROUTING_KEY, payload)
+            await publish(self._channel, self._routing_key, payload)

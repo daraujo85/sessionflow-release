@@ -58,6 +58,14 @@ class SessionOut(BaseModel):
     # tmux_name da sessão PAI (chefe que delegou esta via `sf delegate`); None
     # se a sessão não foi delegada. Imutável após a criação.
     parent: str | None = None
+    # PONTE DE COMANDO (``agent_type="command"``): dona = tmux_name da sessão
+    # que está usando a ponte (cascata: dona morre → ponte morre). NÃO é o
+    # mesmo que ``parent`` — ``parent`` é linhagem de delegação.
+    owner: str | None = None
+    # Ponte que é serviço de longa duração (ex.: relay): fora de TTL/cascata.
+    keep_alive: bool = False
+    # Nomes alternativos pelos quais a ponte pode ser endereçada (`sf send`).
+    aliases: list[str] = Field(default_factory=list)
     model: str | None = None
     effort: str | None = None
     work_dir: str | None = None
@@ -143,6 +151,9 @@ class AgentType(StrEnum):
     codex = "codex"
     gemini = "gemini"
     opencode = "opencode"
+    #: Sessão "Comando": pane tmux com o shell do host, sem agente LLM. Recebe
+    #: comandos via ``input`` (``sf command`` / ``sf send``). Sem model/effort.
+    command = "command"
 
 
 class SessionCreate(BaseModel):
@@ -168,6 +179,10 @@ class SessionCreate(BaseModel):
     # no host), marca `origin="ephemeral"`, e o scheduler apaga após 24h sem
     # atividade (doc + tmux + pasta). Quando True, `work_dir` é opcional.
     ephemeral: bool = False
+    # Ponte de comando de SERVIÇO (`sf command --keep-alive`): fica fora do
+    # TTL/cascata/dedupe e NÃO ocupa o slot de ponte do host (pode conviver
+    # com a ponte normal do mesmo host).
+    keep_alive: bool = False
 
 
 class SessionCreateAccepted(BaseModel):
@@ -268,6 +283,19 @@ class SessionRename(BaseModel):
         return self.new_name if self.new_name is not None else self.name
 
 
+class SessionBridge(BaseModel):
+    """Vínculo de uma PONTE DE COMANDO (sessão ``agent_type="command"``).
+
+    ``owner``    = tmux_name da sessão que está usando a ponte (cascata).
+    ``keep_alive`` = serviço de longa duração: fora de TTL/cascata/dedupe.
+    ``alias``    = nome alternativo pra endereçar a ponte (`sf send <alias>`).
+    """
+
+    owner: str | None = None
+    keep_alive: bool | None = None
+    alias: str | None = None
+
+
 def _get_repo(request: Request) -> SessionsRepository:
     settings = request.app.state.settings
     db = request.app.state.mongo_db
@@ -332,13 +360,17 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="name must not be empty")
-    # work_dir é obrigatório, EXCETO quando a sessão é efêmera (UI "Rápida"):
-    # o worker gera a pasta sozinho no host escolhido.
+    # work_dir é obrigatório, EXCETO quando:
+    #  - sessão EFÊMERA (UI "Rápida"): o worker gera a pasta sozinho no host;
+    #  - sessão COMANDO (``sf command``): abre no HOME do host (o usuário quer um
+    #    shell remoto, não um projeto). Ver `command_consumer._handle_create`.
+    is_command = body.agent_type == AgentType.command
     work_dir = (body.work_dir or "").strip()
-    if not work_dir and not body.ephemeral:
+    if not work_dir and not body.ephemeral and not is_command:
         raise HTTPException(status_code=422, detail="work_dir must not be empty")
 
     # Gemini has no effort dimension; force it to None regardless of input.
+    # Sessão "Comando" não tem agente LLM: nem model, nem effort.
     effort = None if body.agent_type == AgentType.gemini else body.effort
 
     repo = _get_repo(request)
@@ -349,6 +381,11 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
         )
 
     model = (body.model or "").strip() or None
+    if is_command:
+        # Sem agente → sem modelo. Força None pra um model herdado de clone/UI
+        # não aparecer como badge enganoso no card.
+        model = None
+        effort = None
     if body.agent_type == AgentType.claude and (
         model is None or model.lower() in ("default", "padrão", "padrao")
     ):
@@ -367,6 +404,35 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
     }
     settings = request.app.state.settings
     target_host_id = body.host_id or await _resolve_default_host_id(request)
+
+    if is_command:
+        # UMA ponte por host: se o host já tem ponte viva, RECUSA o pedido —
+        # o certo é reusar a que existe. O CLI (`sf command`) já reusa; a UI
+        # "criar" não, e criar outra seria voltar à pilha de shells órfãos.
+        # `keep_alive` (serviço) não ocupa o slot: convive com a ponte normal.
+        if target_host_id and not body.keep_alive:
+            live = await repo.live_command_bridge(target_host_id)
+            if live is not None:
+                # Detalhe ESTRUTURADO: o front sabe ABRIR a ponte existente
+                # em vez de mostrar "erro" (o usuário só queria um shell).
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "command_bridge_exists",
+                        "message": (
+                            f"Este host já tem uma ponte de comando viva "
+                            f"({live.get('tmux_name')})."
+                        ),
+                        "session_id": str(live.get("_id")),
+                        "session_name": live.get("tmux_name"),
+                    },
+                )
+        # Recomeço: o worker faz upsert pelo tmux_name e herdaria a dona
+        # (morta) e o keep_alive da vida anterior → limpa ANTES do worker
+        # escrever, senão a ponte nova morre em cascata no tick seguinte.
+        await repo.reset_bridge_state(_slugify(name))
+        payload["keep_alive"] = body.keep_alive
+
     command_id = await publish_command(
         settings, type="create", payload=payload, host_id=target_host_id
     )
@@ -702,6 +768,36 @@ async def set_display_name(
     )
     return {"display_name": name}
 
+@router.put("/{session_id}/bridge", status_code=200)
+async def set_session_bridge(
+    request: Request, session_id: str, body: SessionBridge
+) -> dict:
+    """Liga a sessão a uma PONTE DE COMANDO: dona, keep_alive e alias.
+
+    Chamado pelo `sf command` a cada uso — é também o HEARTBEAT: a gravação
+    zera ``last_activity_at``, que é o relógio do TTL ocioso (a ponte morre
+    sozinha depois de ``command_bridge_ttl_seconds`` sem uso).
+    """
+    repo = _get_repo(request)
+    doc = await repo.get_session(session_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if doc.get("agent_type") != AgentType.command.value:
+        raise HTTPException(
+            status_code=400, detail="sessão não é uma ponte de comando"
+        )
+    alias = (body.alias or "").strip()
+    if alias:
+        alias = re.sub(r"[^A-Za-z0-9_-]+", "-", alias).strip("-")[:60]
+    await repo.set_bridge(
+        session_id,
+        owner=(body.owner or "").strip() or None,
+        keep_alive=body.keep_alive,
+        alias=alias or None,
+        now=datetime.now(UTC),
+    )
+    return {"owner": body.owner, "keep_alive": body.keep_alive, "alias": alias or None}
+
 
 @router.patch("/{session_id}", response_model=SessionCreateAccepted, status_code=202)
 async def rename_session(
@@ -816,6 +912,10 @@ async def instruct_milestones(request: Request, session_id: str) -> dict:
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Sessão "Comando" é só shell: não há agente pra ler a instrução — o texto
+    # viraria um comando inválido digitado no terminal.
+    if doc.get("agent_type") == AgentType.command:
+        return {"status": "skipped", "reason": "command"}
 
     settings = request.app.state.settings
     db = request.app.state.mongo_db

@@ -72,6 +72,30 @@ def test_build_unknown_raises() -> None:
         build_launch_cmd(AgentType.UNKNOWN, None, None)
 
 
+def test_build_command_raises() -> None:
+    """Sessão "Comando" não tem comando de lançamento (o pane JÁ é o shell).
+
+    Se este guard não existisse, o worker digitaria "command" no shell — um
+    binário inexistente — e a sessão ficaria com um erro fantasma no terminal.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="command"):
+        build_launch_cmd(AgentType.COMMAND, None, None)
+
+
+def test_command_is_not_inferable_from_cmdline() -> None:
+    """Shell puro NÃO infere "command": a inferência é por cmdline de AGENTE.
+
+    Quem declara a sessão "Comando" é o DOC no Mongo (``agent_type`` gravado
+    no create). Um shell (zsh/bash) precisa continuar inferindo UNKNOWN — se
+    inferisse "command", qualquer shell do usuário viraria sessão de comando.
+    """
+    assert infer_agent_type("zsh -l") == AgentType.UNKNOWN
+    assert infer_agent_type("/bin/bash") == AgentType.UNKNOWN
+    assert infer_agent_type("") == AgentType.UNKNOWN
+
+
 # --- yolo (permissão máxima): default por agente + toggle off ---
 
 

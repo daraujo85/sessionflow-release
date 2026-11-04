@@ -323,6 +323,79 @@ describe('DetalheComponent — scroll nativo do histórico', () => {
 
     expect((component as any).screen()).toBe('antiga\ntela');
   });
+
+  it('modelo do card vem do SEGMENTO do modelo na statusline (não do bloco JEV)', () => {
+    // Statusline real do Claude Code (hooks/jarvis-statusline.sh):
+    //   ●JARVIS on │ worker ⎇ main │ claude-tudao │ ⚡JEV on 6✓
+    // Pegar o ÚLTIMO segmento devolvia "⚡JEV on 6✓" no lugar do modelo.
+    (component as any).screen.set(
+      'conversa\n●JARVIS on │ worker ⎇ main │ claude-tudao │ ⚡JEV on 6✓',
+    );
+
+    expect((component as any).terminalModel()).toBe('claude-tudao');
+    expect((component as any).modelLabel()).toBe('claude-tudao');
+  });
+
+  it('mostra o combo e o modelo usado entre parênteses', () => {
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ main │ claude-tudao │ ⚡JEV on 6✓',
+    );
+    // O modelo usado vem das métricas: o `model` que o 9router devolveu na
+    // RESPOSTA (o combo é um roteador com failover — pode ser outro).
+    (component as any).session.set({ metrics: { model: 'claude-opus-5-5' } });
+
+    expect((component as any).modelLabel()).toBe('claude-tudao (claude-opus-5-5)');
+  });
+
+  it('não duplica o combo quando o modelo usado é o mesmo', () => {
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ main │ claude-tudao │ ⚡JEV on 6✓',
+    );
+    (component as any).session.set({ metrics: { model: 'Tudão' } });
+
+    expect((component as any).modelLabel()).toBe('claude-tudao');
+  });
+
+  it('ignora token de modelo que apareça no branch (o modelo é o penúltimo)', () => {
+    // O dir/branch é o MESMO segmento na statusline: se o branch tiver
+    // "gpt" no nome, um "primeiro que casa" pegaria o branch, não o modelo.
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ feat/gpt-cache │ claude-tudao │ ⚡JEV on 6✓',
+    );
+
+    expect((component as any).terminalModel()).toBe('claude-tudao');
+  });
+
+  it('devolve vazio quando a statusline não tem o segmento de modelo', () => {
+    // O campo MODELO é opcional no script: sem ele a linha fica
+    // `JARVIS │ dir ⎇ branch │ JEV` — o dir NÃO pode virar o modelo.
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ main │ ⚡JEV on 6✓',
+    );
+
+    expect((component as any).terminalModel()).toBe('');
+    expect((component as any).modelLabel()).toBe('—');
+  });
+
+  it('não usa o branch como modelo mesmo com token de modelo no nome', () => {
+    // Sem o segmento MODELO, o penúltimo é o dir/branch — e ele carrega o
+    // marcador "⎇". O "gpt" do branch não pode virar o modelo do card.
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ feat/gpt-cache │ ⚡JEV on 6✓',
+    );
+
+    expect((component as any).terminalModel()).toBe('');
+  });
+
+  it('aceita o rótulo amigável do modelo (Tudão) como modelo do combo', () => {
+    // A statusline pode mostrar o rótulo ("Tudão") em vez do id
+    // ("claude-tudao") — o worker usa os mesmos rótulos em metrics.model.
+    (component as any).screen.set(
+      '●JARVIS on │ worker ⎇ main │ Tudão │ ⚡JEV on 6✓',
+    );
+
+    expect((component as any).terminalModel()).toBe('Tudão');
+  });
 });
 
 describe('DetalheComponent — fila de demandas', () => {
@@ -619,5 +692,100 @@ describe('DetalheComponent — mover sessão de host', () => {
     (component as any).dismissMoveError();
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.move-badge--failed')).toBeNull();
+  });
+});
+
+/**
+ * Sessão "Comando" (agent_type="command"): pane tmux com o shell do host,
+ * SEM agente LLM. Não há modelo, tokens nem contexto — o bloco de métricas
+ * vira um resumo mínimo ("Shell no host — sem agente") em vez de mostrar
+ * tudo como "—".
+ */
+describe('DetalheComponent — sessão de comando', () => {
+  const SID = 'sess-cmd';
+  let fixture: ReturnType<typeof TestBed.createComponent<DetalheComponent>>;
+  let component: DetalheComponent;
+  let httpMock: HttpTestingController;
+
+  function commandSession(): Record<string, unknown> {
+    return {
+      id: SID, tmux_name: 'cmd-mac', display_name: 'cmd-mac', agent_type: 'command',
+      model: null, effort: null, work_dir: '/home/diego', status: 'running',
+      origin: 'app', host_id: 'host-a',
+    };
+  }
+
+  function drain(sessionDoc: Record<string, unknown>): void {
+    for (let i = 0; i < 5; i++) {
+      const pending = httpMock.match(() => true);
+      if (!pending.length) {
+        return;
+      }
+      for (const req of pending) {
+        if (req.request.url.endsWith('/screen')) {
+          req.flush({ text: '' });
+        } else if (req.request.url.endsWith('/workers')) {
+          req.flush([]);
+        } else if (req.request.url.endsWith(`/sessions/${SID}`) && req.request.method === 'GET') {
+          req.flush(sessionDoc);
+        } else {
+          req.flush({});
+        }
+      }
+    }
+  }
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [DetalheComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: API_BASE_URL, useValue: BASE },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            snapshot: {
+              paramMap: { get: () => SID },
+              queryParamMap: { get: () => null },
+              data: {},
+            },
+            paramMap: of({ get: () => SID }),
+            queryParamMap: of({ get: () => null }),
+          },
+        },
+      ],
+    });
+    fixture = TestBed.createComponent(DetalheComponent);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.detectChanges();
+    drain(commandSession());
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    drain(commandSession());
+    httpMock.verify();
+  });
+
+  it('reconhece a sessão de comando (isCommand)', () => {
+    expect((component as any).isCommand()).toBe(true);
+  });
+
+  it('mostra o resumo do shell em vez das métricas de modelo/contexto', () => {
+    const metrics = fixture.nativeElement.querySelector('.metrics') as HTMLElement;
+    expect(metrics?.getAttribute('aria-label')).toBe('Sessão de comando');
+    expect(metrics?.textContent).toContain('Sessão de comando');
+    expect(metrics?.textContent).toContain('Shell no host — sem agente');
+    // Nada de "Contexto usado" (não há tokens numa sessão de shell).
+    expect(metrics?.textContent).not.toContain('Contexto usado');
+  });
+
+  it('não mostra o bloco de métricas normal', () => {
+    const labels = Array.from(
+      fixture.nativeElement.querySelectorAll('.metrics') as NodeListOf<HTMLElement>,
+    ).map((el) => el.getAttribute('aria-label'));
+    expect(labels).toEqual(['Sessão de comando']);
   });
 });

@@ -37,6 +37,13 @@ class AgentType(str, Enum):
     GEMINI = "gemini"
     OPENCODE = "opencode"
     ANTIGRAVITY = "agy"
+    #: Sessão "Comando": pane tmux com o shell do host, SEM agente LLM.
+    #: Criada via ``sf command`` / API ``agent_type="command"`` — recebe
+    #: comandos por ``input`` como qualquer sessão, mas não tem launch_cmd,
+    #: model, effort nem resume de conversa. NÃO é inferível do cmdline
+    #: (shell puro infere UNKNOWN de propósito): quem diz que a sessão é
+    #: command é o DOC no Mongo (ver discovery.reconcile).
+    COMMAND = "command"
     UNKNOWN = "unknown"
 
 
@@ -160,6 +167,12 @@ def build_launch_cmd(
     """
     if agent_type is AgentType.UNKNOWN:
         raise ValueError("não é possível montar comando para agente unknown")
+    if agent_type is AgentType.COMMAND:
+        # Sessão "Comando" NÃO lança nada: o pane já é o shell e tudo que ela
+        # recebe é send-keys do usuário. Chamar isto é bug de fluxo (create/
+        # resume deveriam ter pulado o launch) — melhor estourar do que
+        # digitar "command" no shell e criar um processo inexistente.
+        raise ValueError("sessão 'command' não tem comando de lançamento")
 
     # "Default"/vazio = usar o modelo padrão do agente → OMITE a flag --model.
     # (No picker, "Default" é uma opção-rótulo, não um id válido; sem isso o

@@ -260,7 +260,8 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
               @for (t of tasks(); track t.id) {
                 <li class="t-item" [class.t-item-doing]="t.state === 'doing'">
                   <span class="t-dot" [class.t-doing]="t.state === 'doing'"
-                        [class.t-done]="t.state === 'done'"
+                        [class.t-done]="t.state === 'done' && !t.epic"
+                        [class.t-epic]="t.state === 'done' && !!t.epic"
                         [class.t-blocked]="t.state === 'blocked'"
                         [class.t-todo]="t.state === 'todo'" aria-hidden="true"></span>
                   <span class="t-title" [class.t-strike]="t.state === 'done'" [title]="t.title">{{ t.title }}</span>
@@ -756,6 +757,10 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
       }
       .t-done {
         background: #2cecc4;
+      }
+      .t-epic {
+        background: #a78bfa;
+        box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.3);
       }
       .t-blocked {
         background: #f59e0b;

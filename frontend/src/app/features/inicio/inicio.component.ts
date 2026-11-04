@@ -21,7 +21,7 @@ import { SessionCloneService } from '../../core/session-clone.service';
 import { RemoteSession, Session, SessionStatus, Task, TaskState } from '../../core/models';
 
 /** Display state for a task row; extends TaskState with a derived "paused". */
-type TaskDisplayState = TaskState | 'paused';
+type TaskDisplayState = TaskState | 'paused' | 'epic_done';
 import { STATUS_META, agentMeta, isWorkerSession } from '../../shared/status-color';
 import { timeAgo as fmtTimeAgo } from '../../shared/time-ago';
 import { WorkersStore } from '../../core/workers-store';
@@ -53,10 +53,10 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
     <section class="sf-inicio">
       <!-- Toast de "tarefa concluída" 🎉 (some sozinho). -->
       @if (sse.taskDoneToast(); as t) {
-        <div class="sf-task-toast" role="status" aria-live="polite">
-          <span class="sf-task-toast-emoji" aria-hidden="true">🎉</span>
+        <div class="sf-task-toast" [class.sf-task-toast--all]="t.allDone" role="status" aria-live="polite">
+          <span class="sf-task-toast-emoji" aria-hidden="true">{{ t.allDone ? '🏆' : '🎉' }}</span>
           <span class="sf-task-toast-body">
-            <span class="sf-task-toast-title">Tarefa concluída</span>
+            <span class="sf-task-toast-title">{{ t.allDone ? 'Todas as tarefas concluídas!' : 'Tarefa concluída' }}</span>
             <span class="sf-task-toast-sub">{{ t.title }} · {{ t.session }}</span>
           </span>
         </div>
@@ -196,6 +196,24 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+              </svg>
+            </button>
+          }
+          @if (viewMode() === 'grouped' && visibleGroups().length > 1) {
+            <button
+              type="button"
+              class="sf-icon-link"
+              (click)="setAllGroupsOpen(!allGroupsOpen())"
+              [attr.aria-label]="allGroupsOpen() ? 'Recolher todos os grupos' : 'Abrir todos os grupos'"
+              [title]="allGroupsOpen() ? 'Recolher todos' : 'Abrir todos'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                @if (allGroupsOpen()) {
+                  <path d="M7 20l5-5 5 5M7 4l5 5 5-5" />
+                } @else {
+                  <path d="M7 15l5 5 5-5M7 9l5-5 5 5" />
+                }
               </svg>
             </button>
           }
@@ -358,6 +376,42 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         }
       }
 
+      <!-- Comandos: sessões "Comando" (shell do host, sem agente) abertas pelo
+           sf command de outra sessão. Seção própria pra não misturar com os
+           cards de agente — só aparece quando existe alguma. -->
+      @if (commandSessions().length > 0) {
+        <div class="sf-section-head">
+          <h2>Comandos</h2>
+          <span class="sf-cmd-hint">shell remoto · sem agente</span>
+        </div>
+        <div class="sf-cmd-list">
+          @for (s of commandSessions(); track s.id) {
+            <button type="button" class="sf-cmd-row" (click)="openSession(s.id)"
+                    [attr.aria-label]="'Abrir sessão de comando ' + displayName(s)">
+              <span class="sf-cmd-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 17l6-5-6-5M12 19h8" />
+                </svg>
+              </span>
+              <span class="sf-cmd-main">
+                <span class="sf-cmd-name">{{ displayName(s) }}</span>
+                <span class="mono sf-cmd-dir">{{ s.work_dir || '~' }}</span>
+              </span>
+              @if (hostBadge(s); as host) {
+                <span class="sf-cmd-host">
+                  @if (hostEmoji(s); as emoji) {<span aria-hidden="true">{{ emoji }}</span>}
+                  {{ host }}
+                </span>
+              }
+              @if (timeAgo(s)) {
+                <span class="sf-cmd-time">{{ timeAgo(s) }}</span>
+              }
+            </button>
+          }
+        </div>
+      }
+
       <!-- Tarefas (marcos do agente, via .sessionflow/milestones.json) -->
       <div class="sf-section-head">
         <h2>Tarefas</h2>
@@ -438,6 +492,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 [style.background]="taskMeta(effectiveTaskState(t)).bg"
               >
                 @switch (effectiveTaskState(t)) {
+                  @case ('epic_done') {
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.8l2.8 5.7 6.3.9-4.55 4.43 1.07 6.27L12 17.15 6.38 20.1l1.07-6.27L2.9 9.4l6.3-.9z" /></svg>
+                  }
                   @case ('done') {
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
                   }
@@ -459,7 +516,7 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 }
               </span>
               <span class="sf-task-body">
-                <span class="sf-task-title">{{ t.title }}</span>
+                <span class="sf-task-title" [class.sf-task-title--epic]="t.epic">{{ t.title }}</span>
                 <span class="sf-task-meta" [style.color]="taskMeta(effectiveTaskState(t)).color">{{
                   taskMeta(effectiveTaskState(t)).label
                 }}</span>
@@ -563,6 +620,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
                 [style.background]="agentBg(s)"
                 >{{ agent(s).short }}</span
               >
+              @if (allTasksDone(s); as n) {
+                <span class="sf-alldone-chip" [title]="'Todas as ' + n + ' tarefas concluídas'">✓ {{ n }}/{{ n }}</span>
+              }
               @if (isWorker(s)) {
                 <span class="sf-worker-chip" title="Worker / sub-agente">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
@@ -906,6 +966,89 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         font-weight: 700;
         color: #00e4b4;
         white-space: nowrap;
+      }
+
+      /* Seção "Comandos" — mesma linguagem do Top consumo (linhas em card),
+         acento terminal (verde + mono) pra marcar que não há agente. */
+      .sf-cmd-hint {
+        font: 500 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text-muted);
+      }
+      .sf-cmd-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .sf-cmd-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        background: var(--surface-card);
+        border: 1px solid var(--border-default);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+        text-align: left;
+        color: inherit;
+      }
+      .sf-cmd-row:hover {
+        border-color: rgba(52, 211, 153, 0.45);
+        border-left-color: #34d399;
+      }
+      .sf-cmd-icon {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: rgba(52, 211, 153, 0.14);
+        color: #34d399;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sf-cmd-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .sf-cmd-name {
+        font: 600 13.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-cmd-dir {
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sf-cmd-host {
+        flex: none;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 7px;
+        padding: 2px 7px;
+        white-space: nowrap;
+      }
+      .sf-cmd-time {
+        flex: none;
+        font-size: 11px;
+        color: #7a8090;
+        white-space: nowrap;
+      }
+      @media (max-width: 480px) {
+        .sf-cmd-host {
+          display: none;
+        }
       }
 
       .sf-bell {
@@ -1412,6 +1555,21 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      /* Lista de tarefas inteira concluída — violeta (mesma cor do épico). */
+      .sf-alldone-chip {
+        flex: none;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+        padding: 2px 7px;
+        border-radius: 6px;
+        color: #a78bfa;
+        background: rgba(167, 139, 250, 0.16);
+      }
+      .sf-task-toast.sf-task-toast--all {
+        border-color: rgba(167, 139, 250, 0.55);
+        box-shadow: 0 8px 28px rgba(167, 139, 250, 0.25);
+      }
       .sf-agent {
         font-size: 10px;
         font-weight: 800;
@@ -1726,6 +1884,9 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         display: flex;
         flex-direction: column;
       }
+      .sf-task-title.sf-task-title--epic {
+        font-weight: 700;
+      }
       .sf-task-title {
         font-size: 15px;
         font-weight: 600;
@@ -1909,6 +2070,18 @@ export class InicioComponent implements OnInit {
 
   /** All sessions loaded from the API, refreshed on SSE activity. */
   private readonly sessions = signal<Session[]>([]);
+
+  /** Sessões "Comando" (shell remoto sem agente), mais recente primeiro. */
+  protected readonly commandSessions = signal<Session[]>([]);
+
+  private lastActivityTs(s: Session): number {
+    const iso =
+      s.last_activity_at ??
+      (s['updated_at'] as string | undefined) ??
+      (s['created_at'] as string | undefined);
+    const t = iso ? Date.parse(iso) : 0;
+    return Number.isNaN(t) ? 0 : t;
+  }
   /** Recent tasks loaded from the API. */
   protected readonly tasks = signal<Task[]>([]);
   protected readonly refreshingAllMilestones = signal(false);
@@ -2346,6 +2519,28 @@ export class InicioComponent implements OnInit {
   protected toggleGroup(g: SessionGroup): void {
     const next = !this.isGroupOpen(g);
     this.groupOpenOverride.update((m) => ({ ...m, [g.key]: next }));
+    this.persistGroupOpen();
+  }
+
+  /** Todos os grupos visíveis estão abertos? (decide abrir/recolher todos) */
+  protected readonly allGroupsOpen = computed(() => {
+    const open = this.groupOpenOverride();
+    return this.visibleGroups().every((g) => open[g.key] ?? g.active);
+  });
+
+  /** Abre ou recolhe TODOS os grupos visíveis de uma vez (override manual). */
+  protected setAllGroupsOpen(open: boolean): void {
+    this.groupOpenOverride.update((m) => {
+      const next = { ...m };
+      for (const g of this.visibleGroups()) {
+        next[g.key] = open;
+      }
+      return next;
+    });
+    this.persistGroupOpen();
+  }
+
+  private persistGroupOpen(): void {
     try {
       sessionStorage.setItem(GROUP_OPEN_KEY, JSON.stringify(this.groupOpenOverride()));
     } catch {
@@ -2564,7 +2759,17 @@ export class InicioComponent implements OnInit {
 
   private reloadSessions(): void {
     this.api.listSessions().subscribe({
-      next: (list) => this.sessions.set(list ?? []),
+      // Sessões "Comando" (shell sem agente) têm seção própria — fora dos
+      // cards, dos grupos, do top consumo e da revisão de marcos.
+      next: (list) => {
+        const all = list ?? [];
+        this.sessions.set(all.filter((s) => s.agent_type !== 'command'));
+        this.commandSessions.set(
+          all
+            .filter((s) => s.agent_type === 'command')
+            .sort((a, b) => this.lastActivityTs(b) - this.lastActivityTs(a)),
+        );
+      },
       error: () => {
         /* keep last known state */
       },
@@ -2733,6 +2938,7 @@ export class InicioComponent implements OnInit {
       done: { label: 'Concluída', color: 'var(--positive)' },
       attention: { label: 'Requer atenção', color: 'var(--warning)' },
       paused: { label: 'Pausada', color: '#9aa0ad' },
+      epic_done: { label: 'Épico concluído', color: '#a78bfa' },
     };
     const m = map[state] ?? map.todo;
     return { ...m, bg: this.cssVarToRgba(m.color) };
@@ -2758,6 +2964,12 @@ export class InicioComponent implements OnInit {
     );
   }
 
+  /** Nº de tarefas quando TODAS da sessão estão "done" (chip violeta); 0 senão. */
+  protected allTasksDone(s: Session): number {
+    const mine = this.tasks().filter((t) => t.session_id === s.tmux_name);
+    return mine.length > 0 && mine.every((t) => t.state === 'done') ? mine.length : 0;
+  }
+
   /** Status da sessão (tmux_name) a que a tarefa pertence — null se não achar. */
   private sessionStatusFor(t: Task): string | null {
     const s = this.sessions().find((s) => s.tmux_name === t.session_id);
@@ -2770,6 +2982,11 @@ export class InicioComponent implements OnInit {
    * tarefa não aparece "Em andamento" sem o agente trabalhando de fato.
    */
   protected effectiveTaskState(t: Task): TaskDisplayState {
+    // Épico (marco-guarda-chuva) fechado ganha cor própria — o "done" comum
+    // é verde e se perde no meio das subtarefas concluídas.
+    if (t.state === 'done' && t.epic) {
+      return 'epic_done';
+    }
     if (t.state === 'doing' && this.sessionStatusFor(t) !== 'running') {
       return 'paused';
     }

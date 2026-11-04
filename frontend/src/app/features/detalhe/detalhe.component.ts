@@ -877,6 +877,21 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
       }
 
       <!-- Bloco de métricas (recolhido por padrão; topo resume modelo + ctx%) -->
+      @if (isCommand()) {
+        <!-- Sessão "Comando": não há agente/modelo/tokens — só o shell do host.
+             Bloco mínimo no lugar das métricas (que seriam todas "—"). -->
+        <section class="metrics" aria-label="Sessão de comando">
+          <div class="metrics-top">
+            <div class="metrics-model">
+              <span class="agent-dot" [style.background]="agent().color"></span>
+              <div class="metrics-model-info">
+                <div class="metric-label">Sessão de comando</div>
+                <div class="metric-value">Shell no host — sem agente</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      } @else {
       <section class="metrics" aria-label="Métricas da sessão">
         <div
           class="metrics-top metrics-top--toggle"
@@ -886,7 +901,7 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
             <span class="agent-dot" [style.background]="agent().color"></span>
             <div class="metrics-model-info">
               <div class="metric-label">Modelo</div>
-              <div class="metric-value">{{ modelLabel() }}</div>
+              <div class="metric-value" [title]="modelLabel()">{{ modelLabel() }}</div>
             </div>
           </div>
           <div class="metrics-ctx">
@@ -1102,6 +1117,7 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
         }
         }
       </section>
+      }
 
       <!-- Tarefas da sessão (marcos) — recolhível p/ não roubar o terminal -->
       @if (tasks().length > 0) {
@@ -4209,7 +4225,7 @@ export class DetalheComponent implements AfterViewChecked {
   protected refreshMilestones(): void {
     const id = this.id();
     const name = this.session()?.tmux_name;
-    if (!id || !name || this.milestonesRefreshing()) {
+    if (!id || !name || this.milestonesRefreshing() || this.isCommand()) {
       return;
     }
     this.milestonesRefreshing.set(true);
@@ -5444,6 +5460,12 @@ export class DetalheComponent implements AfterViewChecked {
    * ex. "Opus 4.8"). O modelo das métricas vem do transcript (última resposta)
    * e fica defasado quando se troca via `/model`; a statusline é a verdade do
    * que o usuário vê. Vazio se não der pra extrair.
+   *
+   * A statusline é COMPOSTA por "│":
+   *   `<JARVIS> │ <dir> ⎇ <branch> │ <MODELO> │ <JEV>`
+   * O modelo é o SEGMENTO que casa com o padrão de modelo — pegar o ÚLTIMO
+   * (`.pop()`) devolvia o bloco JEV ("⚡JEV on 6✓") e era isso que aparecia
+   * no card no lugar do modelo (ex.: "claude-tudao").
    */
   protected readonly terminalModel = computed<string>(() => {
     const scr = this.screen();
@@ -5452,26 +5474,74 @@ export class DetalheComponent implements AfterViewChecked {
     }
     const stripAnsi = (s: string) => s.replace(/\[[0-9;]*m/g, '');
     const lines = scr.split('\n').map(stripAnsi);
-    const line = [...lines]
-      .reverse()
-      .find(
-        (l) =>
-          l.includes('│') && /Opus|Sonnet|Haiku|Gemini|GPT|claude-/i.test(l),
-      );
-    if (!line) {
-      return '';
+    // Cobre os ids crus ("claude-opus-5-5", "gpt-5.4", "MiniMax-M3") E os
+    // rótulos amigáveis que o worker produz (metrics._MODEL_LABELS: "Tudão",
+    // "Opus 4.8", "Fable 5", "Sonnet 5", "Haiku 4.5").
+    const MODEL_RE =
+      /Opus|Sonnet|Haiku|Fable|Gemini|GPT|Grok|Llama|Qwen|DeepSeek|MiniMax|Kimi|claude-|tudão/i;
+    for (const line of [...lines].reverse()) {
+      if (!line.includes('│')) {
+        continue;
+      }
+      // A statusline é `JARVIS │ dir ⎇ branch │ MODELO │ JEV`: o MODELO é
+      // sempre o PENÚLTIMO segmento (o JEV é sempre o último). O campo MODELO
+      // é opcional no script — sem ele, o penúltimo vira o dir/branch (que
+      // carrega o marcador "⎇"), daí as duas validações antes de aceitar.
+      const segs = line
+        .split('│')
+        .map((s) => s.replace(/\([^)]*\)/g, '').trim())
+        .filter((s) => !!s);
+      const penult = segs.length >= 2 ? segs[segs.length - 2] : '';
+      if (penult && !penult.includes('⎇') && MODEL_RE.test(penult)) {
+        return penult;
+      }
+      // Fallback: algum segmento do MEIO (sem o JARVIS e sem o JEV) que case
+      // com o padrão de modelo — cobre statuslines antigas em outra ordem.
+      const hit = segs
+        .slice(1, -1)
+        .filter((s) => !s.includes('⎇') && MODEL_RE.test(s))
+        .pop();
+      if (hit) {
+        return hit;
+      }
     }
-    const seg = (line.split('│').pop() ?? '').replace(/\([^)]*\)/g, '').trim();
-    return seg;
+    return '';
   });
 
-  protected readonly modelLabel = computed<string>(
-    () =>
-      this.terminalModel() ||
-      this.metrics()?.model ||
-      this.session()?.model ||
-      '—',
-  );
+  /**
+   * Rótulo do modelo: NOME DO COMBO + modelo realmente usado entre parênteses.
+   *
+   * São duas fontes diferentes e ambas são verdade:
+   * - combo: vem da statusline (o alias selecionado no Claude Code, ex.
+   *   "claude-tudao") — o que o usuário escolheu;
+   * - modelo usado: vem das métricas (o ``message.model`` do transcript, ou
+   *   seja, o ``model`` que o 9router devolveu na RESPOSTA) — o que-até
+   *   respondeu. O combo é um roteador com failover, então a resposta pode
+   *   ter vindo de "claude-opus-5-5", "gemini-3.8-flash-n" etc.
+   */
+  protected readonly modelLabel = computed<string>(() => {
+    const combo = this.terminalModel().trim();
+    const used = (this.metrics()?.model ?? '').trim();
+    // "claude-tudao" e "Tudão" (label do mesmo modelo) são o MESMO combo:
+    // normaliza (sem acento, sem separador) e compara por inclusão antes
+    // de mostrar os dois. O folding de acento é o que faz "Tudão" casar
+    // com "claude-tudao" — sem ele, "Tudão" vira "tud" e nunca acha.
+    const norm = (s: string) =>
+      s
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+    const same = (a: string, b: string) => {
+      const na = norm(a);
+      const nb = norm(b);
+      return !!na && !!nb && (na === nb || na.includes(nb) || nb.includes(na));
+    };
+    if (combo && used && !same(combo, used)) {
+      return `${combo} (${used})`;
+    }
+    return combo || used || this.session()?.model || '—';
+  });
 
   /** Cor da barra de contexto: <70% mint, 70-85% âmbar, ≥85% vermelho. */
   protected readonly ctxColor = computed<string>(() => {
@@ -5509,6 +5579,12 @@ export class DetalheComponent implements AfterViewChecked {
   protected agent() {
     return agentMeta(this.session()?.agent_type ?? 'desconhecido');
   }
+
+  /** Sessão "Comando": pane tmux com o shell do host, SEM agente LLM.
+   *  Não tem modelo/tokens/custo/limites — o card mostra só o essencial. */
+  protected readonly isCommand = computed(
+    () => this.session()?.agent_type === 'command',
+  );
 
   protected statusMeta() {
     const s = this.session();

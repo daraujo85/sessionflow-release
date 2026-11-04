@@ -303,6 +303,7 @@ class Discovery:
                 "last_activity_at": 1,
                 "screen_sig": 1,
                 "claude_session_id": 1,
+                "agent_type": 1,
             },
         )
         prev_status = prev.get("status") if prev else None
@@ -310,16 +311,28 @@ class Discovery:
         # UUID fixo da conversa Claude (``--session-id`` no launch) — usado
         # pra localizar o JSONL EXATO da métrica (ver ``_agent_metrics``).
         claude_session_id = prev.get("claude_session_id") if prev else None
+        # Tipo DECLARADO no doc (create/clone gravam; discover de sessão
+        # externa não). Precisa ser lido daqui porque o cmdline de uma sessão
+        # "Comando" é um shell puro — a inferência devolve UNKNOWN de propósito.
+        doc_agent_type = (prev or {}).get("agent_type")
+        is_command_session = doc_agent_type == AgentType.COMMAND.value
 
         # Sessão viva = tmux presente E o AGENTE (claude/codex/...) ainda na
         # árvore de processos do pane. Antes era ``pane_pid is not None``, mas o
         # pane sempre tem PID (o shell), então sessões cujo claude saiu — sobrou
         # só o zsh — apareciam "running" e o comando ia pro vazio. agent_type é
         # inferido da cmdline (contém "claude ..." só enquanto o agente vive).
+        # EXCEÇÃO: na sessão "Comando" (sf command) o shell É o produto — não
+        # há agente pra inferir, e exigir um deixaria a sessão marcada
+        # ``detached`` (com "Retomar" na UI) enquanto está perfeitamente útil.
         state = derive_state(
             tmux_present=True,
             attached=info.attached,
-            agent_alive=info.agent_type is not AgentType.UNKNOWN,
+            agent_alive=(
+                True
+                if is_command_session
+                else info.agent_type is not AgentType.UNKNOWN
+            ),
             exit_code=None,
         )
 

@@ -1,9 +1,11 @@
+import argparse
 import contextlib
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -625,6 +627,110 @@ class PickHostTests(unittest.TestCase):
         self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[3])
 
 
+DUCK_ID = "67122d03-0b03-4b80-9001-ba982603d0fb"
+
+
+class GpuPickHostTests(unittest.TestCase):
+    """`--gpu`: GPU estável (Duck) > Colab T4 online (overflow); nunca Colab offline."""
+
+    def setUp(self):
+        self.colab_t4 = _w(sf.AUTO_PRIORITY_HOSTS[0], cpu=1, mem=12, gpu="Tesla T4")
+        self.colab_t4_b = _w(sf.AUTO_PRIORITY_HOSTS[1], cpu=1, mem=12, gpu="Tesla T4")
+        self.colab_cpu = _w(sf.AUTO_PRIORITY_HOSTS[2], cpu=1, mem=12)
+        self.duck = _w(DUCK_ID, cpu=40, mem=6, cores=8, gpu="RTX 3060")
+        self.mac = _w("mac", cpu=1, mem=30, cores=16)
+
+    def _reasons(self, rejected):
+        return {w["host_id"]: r for w, r in rejected}
+
+    def test_is_colab_by_label_and_known_ids(self):
+        self.assertTrue(sf.is_colab({"display_name": "⚡ Colab 2 Pro", "host_id": "x"}))
+        self.assertTrue(sf.is_colab({"hostname": "19db473d4190", "host_id": sf.AUTO_PRIORITY_HOSTS[0]}))
+        self.assertFalse(sf.is_colab({"display_name": "Duck Server", "hostname": "DESKTOP-ASCBQRT",
+                                      "host_id": DUCK_ID}))
+        self.assertTrue(sf._colab_info({"display_name": "Colab 1", "host_id": "y"})["is_colab"])
+
+    def test_gpu_picks_duck_even_with_free_colab_t4(self):
+        ws = [self.colab_t4, self.colab_t4_b, self.colab_cpu, self.duck, self.mac]
+        chosen, ranked, rejected, _ = sf.pick_host(ws, "claude", "mac", OK, gpu=True)
+        self.assertEqual(chosen["host_id"], DUCK_ID)
+        self.assertEqual([w["host_id"] for w in ranked], [DUCK_ID])
+        reasons = self._reasons(rejected)
+        self.assertEqual(reasons["mac"], "sem GPU")
+        self.assertEqual(reasons[sf.AUTO_PRIORITY_HOSTS[2]], "sem GPU")
+        self.assertIn("colab = overflow", reasons[sf.AUTO_PRIORITY_HOSTS[0]])
+
+    def test_gpu_duck_busy_falls_to_online_colab_t4(self):
+        self.duck["metrics"]["cpu_pct"] = 99
+        chosen, _, rejected, _ = sf.pick_host([self.duck, self.colab_t4_b, self.colab_t4],
+                                              "claude", "mac", OK, gpu=True)
+        self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[0])  # ordem de prioridade
+        self.assertIn("cpu", self._reasons(rejected)[DUCK_ID])
+
+    def test_gpu_duck_offline_skips_offline_colab(self):
+        self.duck["online"] = False
+        self.colab_t4["online"] = False
+        chosen, _, rejected, _ = sf.pick_host([self.duck, self.colab_t4, self.colab_t4_b],
+                                              "claude", "mac", OK, gpu=True)
+        self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[1])
+        self.assertEqual(self._reasons(rejected)[sf.AUTO_PRIORITY_HOSTS[0]],
+                         "colab = overflow: offline")
+
+    def test_gpu_no_gpu_host_returns_none_without_local_fallback(self):
+        self.duck["online"] = False
+        self.colab_t4["online"] = False
+        chosen, ranked, rejected, local_serves = sf.pick_host(
+            [self.duck, self.colab_t4, self.colab_cpu, self.mac], "claude", "mac", OK, gpu=True)
+        self.assertIsNone(chosen)
+        self.assertEqual(ranked, [])
+        self.assertFalse(local_serves)
+        self.assertEqual(self._reasons(rejected)["mac"], "sem GPU")
+
+    def test_gpu_respects_dir_ok(self):
+        dir_ok = lambda w: "pasta 'x' não indexada" if w["host_id"] == DUCK_ID else None  # noqa: E731
+        chosen, _, rejected, _ = sf.pick_host([self.duck, self.colab_t4], "claude", "mac",
+                                              dir_ok, gpu=True)
+        self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[0])
+        self.assertIn("não indexada", self._reasons(rejected)[DUCK_ID])
+
+    def test_gpu_low_vram_duck_falls_to_colab(self):
+        self.duck["metrics"].update(vram_total_gb=12.0, vram_used_gb=10.8)
+        self.colab_t4["metrics"].update(vram_total_gb=15.0, vram_used_gb=0.0)
+        chosen, _, rejected, _ = sf.pick_host([self.duck, self.colab_t4], "claude", "mac",
+                                              OK, gpu=True)
+        self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[0])
+        self.assertIn("vram livre 1.2G", self._reasons(rejected)[DUCK_ID])
+
+    def test_gpu_low_vram_colab_marked_overflow(self):
+        self.duck["online"] = False
+        self.colab_t4["metrics"].update(vram_total_gb=15.0, vram_used_gb=14.5)
+        chosen, _, rejected, _ = sf.pick_host([self.duck, self.colab_t4], "claude", "mac",
+                                              OK, gpu=True)
+        self.assertIsNone(chosen)
+        self.assertIn("colab = overflow: vram livre", self._reasons(rejected)[sf.AUTO_PRIORITY_HOSTS[0]])
+
+    def test_gpu_vram_unknown_or_enough_passes(self):
+        chosen, _, _, _ = sf.pick_host([self.duck], "claude", "mac", OK, gpu=True)
+        self.assertEqual(chosen["host_id"], DUCK_ID)  # worker sem vram_* → não barra
+        self.duck["metrics"].update(vram_total_gb=12.0, vram_used_gb=4.0)
+        chosen, _, _, _ = sf.pick_host([self.duck], "claude", "mac", OK, gpu=True)
+        self.assertEqual(chosen["host_id"], DUCK_ID)
+
+    def test_gpu_vram_floor_configurable(self):
+        self.duck["metrics"].update(vram_total_gb=12.0, vram_used_gb=4.0)
+        with mock.patch.object(sf, "AUTO_GPU_MIN_VRAM_GB", 10.0):
+            chosen, _, rejected, _ = sf.pick_host([self.duck], "claude", "mac", OK, gpu=True)
+        self.assertIsNone(chosen)
+        self.assertIn("< 10.0G", self._reasons(rejected)[DUCK_ID])
+
+    def test_without_gpu_behavior_unchanged(self):
+        ws = [self.colab_t4, self.duck, self.mac]
+        chosen, _, _, _ = sf.pick_host(ws, "claude", "mac", OK)
+        self.assertEqual(chosen["host_id"], sf.AUTO_PRIORITY_HOSTS[0])  # Colab prioritário segue
+        chosen, _, _, _ = sf.pick_host([self.duck, self.mac], "claude", "mac", OK)
+        self.assertEqual(chosen["host_id"], "mac")  # score, mesmo sem GPU
+
+
 class AutoDelegateTests(SfApiTestCase):
     ARGS = ("delegate", "--provider", "claude", "--host", "auto", "--dir", "sessionflow",
             "--name", "w1", "--task", "Do work")
@@ -750,6 +856,26 @@ class AutoDelegateTests(SfApiTestCase):
         self.workers[0]["online"] = False
         err = self.run_sf_error(*self.ARGS, "--worktree")
         self.assertIn("nenhum host", err)
+
+    def test_gpu_flag_alone_routes_to_gpu_host(self):
+        """`--gpu` sem --host = auto restrito a GPU: Mac (mais livre, sem GPU) fica fora."""
+        self.workers[0]["hardware"] = {"cpu_cores": 8, "gpu": "RTX 3060"}
+        self.workers[1]["metrics"] = {"cpu_pct": 1.0, "mem_avail_gb": 30.0}
+        out = self.run_sf(*[a for a in self.ARGS if a not in ("--host", "auto")], "--gpu")
+        self.assertEqual(self._post()["host_id"], "duck-id")
+        self.assertIn("sem GPU", out)
+
+    def test_gpu_dies_when_no_gpu_host(self):
+        self.workers[1]["metrics"] = {"cpu_pct": 1.0, "mem_avail_gb": 30.0}
+        err = self.run_sf_error(*self.ARGS, "--gpu")
+        self.assertIn("--gpu: nenhum host com GPU", err)
+        self.assertIn("sem GPU", err)
+        self.assertFalse([c for c in self.calls if c[0] == "POST" and c[1].endswith("/sessions")])
+
+    def test_gpu_with_explicit_host_without_gpu_dies(self):
+        err = self.run_sf_error("delegate", "--provider", "claude", "--host", "duck", "--dir",
+                                "sessionflow", "--name", "w1", "--task", "Do work", "--gpu")
+        self.assertIn("sem GPU", err)
 
     def test_explicit_host_unchanged(self):
         out = self.run_sf("delegate", "--provider", "claude", "--host", "duck", "--dir", "sessionflow",
@@ -890,6 +1016,506 @@ class MoveCommandTests(SfApiTestCase):
 
     def test_unknown_session_dies(self):
         self.assertIn("nenhuma sessão", self.run_sf_error("move", "nope", "--host", "duck"))
+
+
+class NotifyCommandTests(SfApiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.notify_status, self.notify_body = 200, {"sent": 2}
+        orig = sf._request
+
+        def fake(method, url, token=None, body=None, timeout=30):
+            if url.endswith("/push/notify"):
+                self.calls.append((method, url, body, token))
+                return self.notify_status, self.notify_body
+            return orig(method, url, token=token, body=body, timeout=timeout)
+
+        patcher = mock.patch.object(sf, "_request", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_posts_title_body_url_with_token(self):
+        out = self.run_sf("notify", "🤖 Colab precisa de você", "colab1: captcha",
+                          "--url", "https://colab/x")
+        self.assertEqual(self.calls, [("POST", "http://api/push/notify",
+                                       {"title": "🤖 Colab precisa de você",
+                                        "body": "colab1: captcha",
+                                        "url": "https://colab/x"}, "tok")])
+        self.assertIn("2 dispositivo(s)", out)
+
+    def test_without_url_omits_field(self):
+        self.run_sf("notify", "t", "b")
+        self.assertEqual(self.calls[0][2], {"title": "t", "body": "b"})
+
+    def test_http_error_dies(self):
+        self.notify_status, self.notify_body = 503, {"detail": "sem chave"}
+        self.assertIn("HTTP 503", self.run_sf_error("notify", "t", "b"))
+
+
+class GpuCommandTests(SfApiTestCase):
+    """`sf gpu` — liga/desliga/consulta os serviços de GPU de um host."""
+
+    def setUp(self):
+        super().setUp()
+        self.workers = [{**WORKERS[0], "gpu_services": {
+            "xtts": {"active": True, "unit": "xtts.service", "port": 5111,
+                     "last_used_at": "2026-10-26T12:00:00+00:00"},
+        }}]
+        self.gpu_result = {
+            "action": "start", "name": "xtts", "unit": "xtts.service", "active": True,
+        }
+
+        def fake_request(method, url, token=None, body=None, timeout=30):
+            self.calls.append((method, url, body))
+            if url.endswith("/workers"):
+                return 200, self.workers
+            if "/gpu-services/" in url:
+                return 202, {"command_id": "g1", "status": "queued", "host_id": "duck-id"}
+            if url.endswith("/commands/g1"):
+                return 200, {"id": "g1", "status": "ok", "type": "gpu_service",
+                             "result": self.gpu_result}
+            raise AssertionError(f"rota inesperada: {method} {url}")
+
+        patcher = mock.patch.object(sf, "_request", fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_gpu_status_lista_do_heartbeat(self):
+        out = self.run_sf("gpu", "duck", "status")
+        self.assertIn("xtts", out)
+        self.assertIn("active=True", out)
+        self.assertIn("xtts.service", out)
+        # status sem nome NÃO publica comando (lê o heartbeat)
+        self.assertFalse([u for m, u, b in self.calls if "/gpu-services/" in u])
+
+    def test_gpu_status_de_um_servico_vai_como_comando(self):
+        out = self.run_sf("gpu", "duck", "status", "xtts")
+        self.assertIn("xtts", out)
+        url = next(u for m, u, b in self.calls if "/gpu-services/" in u)
+        self.assertTrue(url.endswith("/gpu-services/xtts/status"))
+
+    def test_gpu_start_publica_comando(self):
+        out = self.run_sf("gpu", "duck", "start", "xtts")
+        self.assertIn("xtts", out)
+        url = next(u for m, u, b in self.calls if "/gpu-services/" in u)
+        self.assertTrue(url.endswith("/gpu-services/xtts/start"))
+
+    def test_gpu_stop_publica_comando(self):
+        self.run_sf("gpu", "duck", "stop", "xtts")
+        url = next(u for m, u, b in self.calls if "/gpu-services/" in u)
+        self.assertTrue(url.endswith("/gpu-services/xtts/stop"))
+
+    def test_gpu_start_sem_nome_dies(self):
+        err = self.run_sf_error("gpu", "duck", "start")
+        self.assertIn("nome do serviço", err)
+
+    def test_gpu_sem_servicos_configurados(self):
+        self.workers = [{**WORKERS[0], "gpu_services": {}}]
+        out = self.run_sf("gpu", "duck", "status")
+        self.assertIn("nenhum serviço de GPU", out)
+
+
+class CommandHelpersTests(unittest.TestCase):
+    """Helpers do verbo `sf command` (isolamento de output por marcadores)."""
+
+    def test_extract_marked_isolates_output_and_rc(self):
+        screen = ("ruido\nSF_BEGIN_ab12cd34\nlinha1\nlinha2\n"
+                  "SF_END_ab12cd34 rc=3\nmais ruido")
+        lines, rc, done = sf._extract_marked(screen, "SF_BEGIN_ab12cd34", "SF_END_ab12cd34")
+        self.assertTrue(done)
+        self.assertEqual(lines, ["linha1", "linha2"])
+        self.assertEqual(rc, 3)
+
+    def test_extract_marked_without_end_marker_is_not_done(self):
+        lines, rc, done = sf._extract_marked("SF_BEGIN_x\nsaida", "SF_BEGIN_x", "SF_END_x")
+        self.assertFalse(done)
+        self.assertIsNone(rc)
+        self.assertEqual(lines, [])
+
+    def test_extract_marked_uses_last_occurrence(self):
+        screen = ("SF_BEGIN_x\nantigo\nSF_END_x rc=0\n"
+                  "SF_BEGIN_x\nnovo\nSF_END_x rc=2")
+        lines, rc, done = sf._extract_marked(screen, "SF_BEGIN_x", "SF_END_x")
+        self.assertTrue(done)
+        self.assertEqual(lines, ["novo"])
+        self.assertEqual(rc, 2)
+
+    def test_extract_marked_ignores_ansi_before_matching(self):
+        screen = "\x1b[32mSF_BEGIN_x\x1b[0m\nok\n\x1b[32mSF_END_x rc=0\x1b[0m"
+        lines, rc, done = sf._extract_marked(screen, "SF_BEGIN_x", "SF_END_x")
+        self.assertTrue(done)
+        self.assertEqual(lines, ["ok"])
+        self.assertEqual(rc, 0)
+
+    def test_extract_marked_rc_can_be_missing(self):
+        screen = "SF_BEGIN_x\nok\nSF_END_x"
+        lines, rc, done = sf._extract_marked(screen, "SF_BEGIN_x", "SF_END_x")
+        self.assertTrue(done)
+        self.assertIsNone(rc)
+
+    def test_exact_session_matches_only_exact(self):
+        sessions = [{"id": "s1", "tmux_name": "cmd-duck-server",
+                     "display_name": "cmd-duck-server"}]
+        # Substring NÃO casa: injetar num work errado é pior que falhar.
+        self.assertIsNone(sf._exact_session(sessions, "cmd-duck"))
+        self.assertIsNone(sf._exact_session(sessions, "duck"))
+        self.assertIsNotNone(sf._exact_session(sessions, "cmd-duck-server"))
+        self.assertIsNotNone(sf._exact_session(sessions, "s1"))
+
+    def test_strip_ansi_removes_escape_sequences(self):
+        self.assertEqual(sf._strip_ansi("\x1b[1;31mvermelho\x1b[0m"), "vermelho")
+        self.assertEqual(sf._strip_ansi("plain"), "plain")
+
+
+class CommandVerbTests(SfApiTestCase):
+    """`sf command`: roda comando num shell de OUTRO host, sem agente LLM."""
+
+    def setUp(self):
+        super().setUp()
+        self.sessions = []
+        self.screen = ""
+        self.remote_output = "arquivo-a\narquivo-b"
+        self.remote_rc = 0
+        self.inputs = []
+        self.emit_markers = True
+        self.create_status = 202
+        self.on_conflict = None
+
+        def fake(method, url, token=None, body=None, timeout=30):
+            self.calls.append((method, url, body))
+            if url.endswith("/workers"):
+                return 200, self.workers
+            if method == "GET" and url.endswith("/sessions"):
+                return 200, {"items": list(self.sessions)}
+            if method == "POST" and url.endswith("/sessions"):
+                if self.create_status == 409:
+                    if self.on_conflict:
+                        self.on_conflict()
+                    return 409, {"detail": {"code": "command_bridge_exists"}}
+                self.sessions.append({
+                    "id": "cmd-1", "tmux_name": body["name"],
+                    "display_name": body["name"], "status": "running",
+                    "agent_type": body.get("agent_type"),
+                    "host_id": body.get("host_id"),
+                    "work_dir": body.get("work_dir") or "/home/diego",
+                })
+                return 202, {"command_id": "c1"}
+            if method == "PUT" and url.endswith("/bridge"):
+                return 200, {}
+            if method == "POST" and url.endswith("/input"):
+                self.inputs.append(body)
+                if self.emit_markers:
+                    # Simula o shell remoto: ecoa o comando e emite os marcadores.
+                    m = re.search(r"SF_BEGIN_([0-9a-f]+)", body.get("text", ""))
+                    nonce = m.group(1) if m else "deadbeef"
+                    self.screen = "\n".join([
+                        "$ " + body.get("text", "").strip(),
+                        f"SF_BEGIN_{nonce}",
+                        self.remote_output,
+                        f"SF_END_{nonce} rc={self.remote_rc}",
+                    ])
+                else:
+                    self.screen = "comando rodando, sem marcador ainda"
+                return 202, {}
+            if method == "GET" and url.endswith("/screen"):
+                return 200, {"text": self.screen, "scrollback": self.screen}
+            raise AssertionError(f"rota inesperada: {method} {url}")
+
+        for attr, value in (
+            ("_request", fake),
+            ("list_sessions", lambda env, token: list(self.sessions)),
+        ):
+            patcher = mock.patch.object(sf, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_cmd(self, *argv):
+        """`sf command` termina com sys.exit(rc) — devolve (saída, rc)."""
+        args = sf.build_parser().parse_args(list(argv))
+        out = io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out):
+            try:
+                args.func(args)
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return out.getvalue(), code
+
+    def _create_body(self):
+        return next(b for m, u, b in self.calls if m == "POST" and u.endswith("/sessions"))
+
+    def test_creates_command_session_without_model_or_effort(self):
+        self.run_cmd("command", "duck", "ls ~/Documents")
+        body = self._create_body()
+        self.assertEqual(body["agent_type"], "command")
+        self.assertEqual(body["host_id"], "duck-id")
+        self.assertEqual(body["name"], "cmd-duck-server")
+        self.assertNotIn("model", body)
+        self.assertNotIn("effort", body)
+
+    def test_wraps_command_with_markers_and_prints_output(self):
+        out, code = self.run_cmd("command", "duck", "ls ~/Documents")
+        text = self.inputs[0]["text"]
+        self.assertIn("ls ~/Documents", text)
+        self.assertRegex(text, r"printf 'SF_BEGIN_[0-9a-f]+")
+        self.assertRegex(text, r"printf 'SF_END_[0-9a-f]+ rc=%s")
+        self.assertTrue(self.inputs[0]["enter"])
+        self.assertIn("arquivo-a", out)
+        self.assertIn("arquivo-b", out)
+        self.assertEqual(code, 0)
+
+    def test_propagates_remote_exit_code(self):
+        self.remote_rc = 7
+        _, code = self.run_cmd("command", "duck", "false")
+        self.assertEqual(code, 7)
+
+    def test_reuses_existing_session_without_creating(self):
+        self.sessions.append({"id": "cmd-1", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id"})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertFalse(any(m == "POST" and u.endswith("/sessions")
+                             for m, u, b in self.calls))
+
+    def test_named_session_uses_given_name(self):
+        self.run_cmd("command", "duck", "echo hi", "--name", "lab-mac")
+        self.assertEqual(self._create_body()["name"], "lab-mac")
+
+    def test_dir_becomes_work_dir(self):
+        self.run_cmd("command", "duck", "ls", "--dir", "/tmp")
+        self.assertEqual(self._create_body()["work_dir"], "/tmp")
+
+    def test_no_wait_skips_screen_polling(self):
+        out, _ = self.run_cmd("command", "duck", "echo hi", "--no-wait")
+        self.assertIn("sem esperar", out)
+        self.assertFalse(any(u.endswith("/screen") for m, u, b in self.calls))
+
+    def test_tail_prints_screen_without_running_command(self):
+        self.sessions.append({"id": "cmd-1", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id"})
+        self.screen = "linha1\nlinha2"
+        out, _ = self.run_cmd("command", "duck", "--tail")
+        self.assertIn("linha2", out)
+        self.assertEqual(self.inputs, [])
+
+    def test_without_command_only_reports_session(self):
+        out, _ = self.run_cmd("command", "duck")
+        self.assertIn("sessão de comando", out)
+        self.assertIn("cmd-duck-server", out)
+        self.assertEqual(self.inputs, [])
+
+    def test_timeout_exits_2_and_says_command_not_cancelled(self):
+        self.emit_markers = False
+        err = io.StringIO()
+        code = 0
+        with contextlib.redirect_stderr(err):
+            _, code = self.run_cmd("command", "duck", "sleep 999", "--timeout", "0.01")
+        self.assertEqual(code, 2)
+        self.assertIn("NÃO foi cancelado", err.getvalue())
+
+    def test_unknown_host_dies_before_creating(self):
+        err = self.run_sf_error("command", "nope", "ls")
+        self.assertIn("nope", err)
+        self.assertEqual(self.sessions, [])
+
+    def test_wraps_command_in_subshell_so_exit_does_not_kill_pane(self):
+        """`exit 7` NÃO pode matar o shell do pane.
+
+        Sem sub-shell, o `exit` do comando encerra o shell antes do marcador
+        END: a sessão morre, o CLI espera o timeout e perde o rc.
+        """
+        self.run_cmd("command", "duck", "exit 7")
+        text = self.inputs[0]["text"]
+        self.assertIn("( exit 7", text)
+        self.assertIn("__sf_rc=$?", text)
+        # O rc do comando é lido DEPOIS do sub-shell (que é quem roda o exit).
+        self.assertLess(text.index("__sf_rc=$?"), text.index("SF_END_"))
+        self.assertIn("\n )\n", text.replace("\r\n", "\n"))
+
+    def test_captures_rc_inside_subshell_before_cwd_bookkeeping(self):
+        """O `pwd` de bookkeeping NÃO pode sobrescrever o rc do comando.
+
+        Sem isso, `ls /nao-existe` (rc=2) voltaria com rc=0.
+        """
+        self.run_cmd("command", "duck", "ls /nao-existe")
+        text = self.inputs[0]["text"]
+        self.assertLess(text.index("__sf_inner=$?"), text.index("pwd >"))
+        self.assertLess(text.index("pwd >"), text.index("exit $__sf_inner"))
+
+    def test_preserves_cwd_of_named_session(self):
+        """O `pwd` final volta pro shell pai — `cd repo` persiste na sessão."""
+        self.run_cmd("command", "duck", "cd /tmp", "--name", "lab-mac")
+        text = self.inputs[0]["text"]
+        self.assertIn("pwd >", text)
+        self.assertIn("cd \"$(cat", text)
+
+    def test_recreates_session_when_previous_pane_is_dead(self):
+        """Sessão parada (pane morto) não é reusada — cria outra com o mesmo nome."""
+        self.sessions.append({"id": "cmd-dead", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "stopped",
+                              "agent_type": "command", "host_id": "duck-id"})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertTrue(any(m == "POST" and u.endswith("/sessions")
+                            for m, u, b in self.calls))
+        self.assertEqual(self._create_body()["name"], "cmd-duck-server")
+        self.assertEqual(self._create_body()["agent_type"], "command")
+
+    def test_reuses_live_session_without_creating(self):
+        self.sessions.append({"id": "cmd-live", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id"})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertFalse(any(m == "POST" and u.endswith("/sessions")
+                             for m, u, b in self.calls))
+
+    def test_new_bridge_avoids_live_pane_with_same_name(self):
+        """Pane VIVO com o mesmo nome → a ponte nova ganha sufixo.
+
+        O tmux não aceita dois panes com o mesmo nome — sem o sufixo, o
+        `sf command` morreria com "sessão tmux já existe" quando existe uma
+        ponte de SERVIÇO (keep_alive) com o nome default.
+        """
+        self.sessions.append({"id": "svc", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id",
+                              "keep_alive": True})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertEqual(self._create_body()["name"], "cmd-duck-server-2")
+
+    def test_reuses_bridge_when_create_conflicts(self):
+        """Corrida: a API recusa a 2ª ponte do host → o CLI REAPROVEITA a que existe."""
+        def spawn_bridge():
+            self.sessions.append({
+                "id": "cmd-race", "tmux_name": "cmd-duck-server",
+                "display_name": "cmd-duck-server", "status": "running",
+                "agent_type": "command", "host_id": "duck-id",
+            })
+
+        self.create_status = 409
+        self.on_conflict = spawn_bridge
+        out, code = self.run_cmd("command", "duck", "echo hi")
+        self.assertEqual(code, 0)
+        self.assertTrue(any(u.endswith("/sessions/cmd-race/input")
+                            for m, u, b in self.calls))
+        self.assertEqual(len([c for c in self.calls
+                              if c[0] == "POST" and c[1].endswith("/sessions")]), 1)
+
+    def test_bridge_put_always_sends_owner(self):
+        """O PUT da ponte SEMPRE manda a dona — None limpa a dona antiga.
+
+        A ponte pode ser recriada com o mesmo nome; sem o owner explícito a
+        dona morta da vida velha continuaria no doc e mataria a ponte nova em
+        cascata.
+        """
+        self.run_cmd("command", "duck", "echo hi")
+        bridge = next(b for m, u, b in self.calls if u.endswith("/bridge"))
+        self.assertIn("owner", bridge)
+        self.assertIsNone(bridge["owner"])
+
+    # --- ponte de comando: a identidade é o HOST, não o nome ---
+
+    def test_reuses_bridge_of_same_host_even_with_other_name(self):
+        """Ponte viva do MESMO host é reusada mesmo com outro nome.
+
+        É a regra que mata a pilha de shells: o vínculo é o host, o nome é
+        só rótulo (e vira apelido pra `sf send`).
+        """
+        self.sessions.append({"id": "cmd-live", "tmux_name": "cmd-duck-server",
+                              "display_name": "cmd-duck-server", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id"})
+        self.run_cmd("command", "duck", "echo hi", "--name", "lab-duck")
+        self.assertFalse(any(m == "POST" and u.endswith("/sessions")
+                             for m, u, b in self.calls))
+        bridge = next(b for m, u, b in self.calls if u.endswith("/bridge"))
+        self.assertEqual(bridge["alias"], "lab-duck")
+
+    def test_does_not_reuse_bridge_of_another_host(self):
+        self.sessions.append({"id": "cmd-mac", "tmux_name": "cmd-mac",
+                              "display_name": "cmd-mac", "status": "running",
+                              "agent_type": "command", "host_id": "mac-id"})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertTrue(any(m == "POST" and u.endswith("/sessions")
+                            for m, u, b in self.calls))
+
+    def test_keep_alive_session_is_not_used_as_bridge(self):
+        """Serviço keep_alive NÃO é ponte: injetar comando derrubaria o serviço."""
+        self.sessions.append({"id": "cmd-svc", "tmux_name": "tmux-sf-phone-relay",
+                              "display_name": "tmux-sf-phone-relay", "status": "running",
+                              "agent_type": "command", "host_id": "duck-id",
+                              "keep_alive": True})
+        self.run_cmd("command", "duck", "echo hi")
+        self.assertTrue(any(m == "POST" and u.endswith("/sessions")
+                            for m, u, b in self.calls))
+
+    def test_registers_owner_of_the_bridge(self):
+        # A dona precisa ser uma sessão REAL do SessionFlow: um tmux solto
+        # (fora do app) não seria "viva" pra API e mataria a ponte no tick.
+        self.sessions.append({"id": "s-pai", "tmux_name": "pai",
+                              "status": "running", "agent_type": "claude"})
+        self.run_cmd("command", "duck", "echo hi")
+        bridge = next(b for m, u, b in self.calls if u.endswith("/bridge"))
+        self.assertEqual(bridge["owner"], "pai")  # detect_parent() patchado
+
+    def test_unknown_parent_is_not_registered_as_owner(self):
+        self.run_cmd("command", "duck", "echo hi")
+        bridge = next(b for m, u, b in self.calls if u.endswith("/bridge"))
+        self.assertIsNone(bridge.get("owner"))
+
+    def test_keep_alive_flag_marks_the_bridge(self):
+        self.run_cmd("command", "duck", "echo hi", "--keep-alive")
+        bridge = next(b for m, u, b in self.calls if u.endswith("/bridge"))
+        self.assertTrue(bridge["keep_alive"])
+
+    def test_resolves_bridge_by_alias(self):
+        """`sf send lab-duck` acha a ponte pelo apelido."""
+        sessions = [{"id": "s1", "tmux_name": "cmd-duck-server",
+                     "display_name": "cmd-duck-server", "aliases": ["lab-duck"]}]
+        self.assertEqual(sf.resolve_session(sessions, "lab-duck")["id"], "s1")
+
+    # --- ordem dos argumentos: o texto do comando pode vir antes OU depois
+    # --- das opções. Sem o pré-parse, o argparse rouba o valor da opção.
+
+    def run_main(self, *argv):
+        """Roda pelo `main()` (como o CLI de verdade) — devolve (saída, rc)."""
+        out = io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out):
+            try:
+                sf.main(list(argv))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return out.getvalue(), code
+
+    def test_command_text_after_options_is_not_swallowed_by_option_value(self):
+        """`sf command duck --name lab "ls"` — o texto NÃO pode virar o
+        valor da opção (bug do argparse com positional nargs='?')."""
+        _, code = self.run_main("command", "duck", "--name", "lab-duck", "echo hi")
+        self.assertEqual(code, 0)
+        self.assertIn("echo hi", self.inputs[0]["text"])
+        self.assertEqual(self.sessions[0]["tmux_name"], "lab-duck")
+
+    def test_command_text_before_options_still_works(self):
+        _, code = self.run_main("command", "duck", "echo hi", "--name", "lab-duck")
+        self.assertEqual(code, 0)
+        self.assertIn("echo hi", self.inputs[0]["text"])
+        self.assertEqual(self.sessions[0]["tmux_name"], "lab-duck")
+
+    def test_options_with_values_are_known_to_the_preparser(self):
+        """Trava anti-drift: opção nova com valor precisa entrar na lista."""
+        parser = sf.build_parser()
+        sub = None
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                sub = action.choices.get("command")
+                break
+        self.assertIsNotNone(sub)
+        from_parser = set()
+        for action in sub._actions:
+            if not action.option_strings or action.nargs == 0:
+                continue
+            from_parser.update(action.option_strings)
+        self.assertEqual(from_parser, set(sf._CMD_VALUE_OPTS))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ polling em ``GET /commands/{command_id}`` até receber.
 
 Endpoints hoje:
 - ``POST /hosts/{host_id}/fetch`` — publica ``fs_fetch`` (ler 1 arquivo do host)
+- ``POST /hosts/{host_id}/gpu-services/{name}/{action}`` — publica
+  ``gpu_service`` (liga/desliga/consulta um serviço de GPU do host)
 - ``GET /commands/{command_id}``  — busca o resultado do comando
 
 NÃO há sessão Claude envolvida — só host + worker. O (multi-host, AD-011)
@@ -15,6 +17,7 @@ garante que cada worker só consome comandos roteados pro SEU host_id.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +29,13 @@ from app.publishers.command_publisher import publish_command
 router = APIRouter(tags=["host_commands"])
 
 COMMAND_RESULTS_COLLECTION = "command_results"
+
+#: Ações aceitas no comando ``gpu_service``.
+GPU_SERVICE_ACTIONS = ("start", "stop", "status")
+
+#: Nome do serviço de GPU — whitelist estrita (o worker valida contra o
+#: catálogo dele; aqui é só pra não publicar lixo no RabbitMQ).
+_GPU_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class FetchIn(BaseModel):
@@ -71,6 +81,64 @@ async def post_fetch(
     Falha se o host alvo nunca fez heartbeat (worker offline) — não vale a
     pena enfileirar, ninguém vai consumir.
     """
+    await _require_live_worker(request, host_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="fs_fetch",
+        payload={"path": body.path},
+        host_id=host_id,
+    )
+    return FetchAccepted(command_id=command_id, host_id=host_id)
+
+
+@router.post(
+    "/hosts/{host_id}/gpu-services/{name}/{action}",
+    response_model=FetchAccepted,
+    status_code=202,
+)
+async def post_gpu_service(
+    request: Request, host_id: str, name: str, action: str
+) -> FetchAccepted:
+    """Liga/desliga/consulta um serviço de GPU (unit systemd) do host.
+
+    Publica o comando ``gpu_service`` na fila do worker de ``host_id``; o
+    worker executa (systemctl) e grava o resultado em ``command_results`` —
+    o cliente faz polling em ``GET /commands/{command_id}`` (o mesmo
+    endpoint do ``fetch``).
+
+    ``action`` ∈ ``{start, stop, status}``. Em ``status`` o ``name`` é
+    obrigatório aqui (a visão de todos os serviços vem do heartbeat, em
+    ``worker_status.gpu_services``).
+
+    O worker valida o ``name`` contra o CATÁLOGO dele
+    (``SESSIONFLOW_GPU_SERVICES``) — nome fora do catálogo é recusado lá.
+    """
+    if action not in GPU_SERVICE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action inválida: {action!r} (use {', '.join(GPU_SERVICE_ACTIONS)})",
+        )
+    if not _GPU_SERVICE_NAME_RE.match(name or ""):
+        raise HTTPException(status_code=400, detail=f"nome de serviço inválido: {name!r}")
+
+    await _require_live_worker(request, host_id)
+    settings = request.app.state.settings
+    command_id = await publish_command(
+        settings,
+        type="gpu_service",
+        payload={"action": action, "name": name},
+        host_id=host_id,
+    )
+    return FetchAccepted(command_id=command_id, host_id=host_id)
+
+
+async def _require_live_worker(request: Request, host_id: str) -> None:
+    """404 se o host nunca fez heartbeat; 409 se o heartbeat está velho.
+
+    Worker offline = ninguém vai consumir o comando (o requester ficaria em
+    polling eterno). Mesma checagem do ``/fetch``.
+    """
     db = request.app.state.mongo_db
     coll = db["worker_status"]
     worker = await coll.find_one({"_id": host_id})
@@ -90,15 +158,6 @@ async def post_fetch(
                 status_code=409,
                 detail=f"worker {host_id} offline há {int(age)}s; nada vai consumir o comando",
             )
-
-    settings = request.app.state.settings
-    command_id = await publish_command(
-        settings,
-        type="fs_fetch",
-        payload={"path": body.path},
-        host_id=host_id,
-    )
-    return FetchAccepted(command_id=command_id, host_id=host_id)
 
 
 @router.get("/commands/{command_id}", response_model=CommandOut)

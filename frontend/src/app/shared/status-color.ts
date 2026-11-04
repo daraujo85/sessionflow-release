@@ -44,6 +44,8 @@ export const AGENT_META: Record<AgentType, AgentMeta> = {
   codex: { label: 'Codex', short: 'Cx', color: '#10A37F', cmd: 'codex' },
   gemini: { label: 'Gemini CLI', short: 'G', color: '#4796E3', cmd: 'gemini' },
   opencode: { label: 'OpenCode', short: 'OC', color: '#06B6D4', cmd: 'opencode' },
+  // Sessão "Comando": não é agente — é o shell do host. Rótulo curto "⌘".
+  command: { label: 'Comando', short: '⌘', color: '#6B7280', cmd: '' },
   desconhecido: { label: 'Desconhecido', short: '?', color: '#8A90A0', cmd: '' },
 };
 

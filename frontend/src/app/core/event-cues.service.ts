@@ -9,7 +9,14 @@ export type CueMode = 'off' | 'chime' | 'voice';
 const STORAGE_KEY = 'sf.cues.mode';
 
 /** Categoria de cue derivada do evento de ciclo de vida da sessão. */
-type CueKind = 'created' | 'completed' | 'attention' | 'stopped' | 'error' | 'task_done';
+type CueKind =
+  | 'created'
+  | 'completed'
+  | 'attention'
+  | 'stopped'
+  | 'error'
+  | 'task_done'
+  | 'all_done';
 
 /** Frases curtas (PT-BR) faladas no modo "voice", por categoria de cue. */
 const PHRASES: Record<CueKind, string> = {
@@ -19,6 +26,7 @@ const PHRASES: Record<CueKind, string> = {
   stopped: 'Sessão encerrada',
   error: 'Erro na sessão',
   task_done: 'Tarefa concluída',
+  all_done: 'Todas as tarefas concluídas!',
 };
 
 /**
@@ -180,6 +188,18 @@ export class EventCuesService {
     const now = ctx.currentTime;
 
     switch (cue) {
+      case 'all_done':
+        // FANFARRA de vitória (lista inteira fechada): "ta-ta-ta-TÁÁ" —
+        // G-G-G-C' com acorde final (C-E-G) sustentado, mais longa que o
+        // arpejo de uma tarefa só.
+        this.tone(783.99, now, 0.1, 'triangle', 0.11); // G5
+        this.tone(783.99, now + 0.12, 0.1, 'triangle', 0.11); // G5
+        this.tone(783.99, now + 0.24, 0.1, 'triangle', 0.11); // G5
+        this.tone(1046.5, now + 0.38, 0.75, 'triangle', 0.13); // C6
+        this.tone(1318.51, now + 0.38, 0.75, 'sine', 0.07); // E6
+        this.tone(1567.98, now + 0.38, 0.75, 'sine', 0.06); // G6
+        this.tone(523.25, now + 0.38, 0.75, 'sine', 0.07); // C5 (base)
+        break;
       case 'task_done':
         // Arpejo de VITÓRIA (C-E-G-C) — tarefa concluída de fato.
         this.tone(523.25, now, 0.12, 'triangle'); // C5
@@ -223,6 +243,7 @@ export class EventCuesService {
     start: number,
     dur: number,
     type: OscillatorType,
+    peak = 0.09, // gain baixo (~0.06–0.12) — discreto
   ): void {
     const ctx = this.ctx;
     if (!ctx) {
@@ -233,7 +254,6 @@ export class EventCuesService {
     osc.type = type;
     osc.frequency.value = freq;
 
-    const peak = 0.09; // gain baixo (~0.06–0.12) — discreto
     const attack = 0.012;
     const release = Math.max(0.04, dur - attack);
     gain.gain.setValueAtTime(0.0001, start);
@@ -264,6 +284,9 @@ function classify(e: EventItem): CueKind | null {
   const type = (e.type || '').toLowerCase();
   const kind = (e.kind || '').toLowerCase();
 
+  if (type === 'milestones_all_done') {
+    return 'all_done';
+  }
   if (type === 'task_done') {
     return 'task_done';
   }

@@ -60,6 +60,8 @@ class TaskOut(BaseModel):
     session_id: str | None = None
     title: str | None = None
     state: str | None = None
+    # Marco grande (feature/entrega inteira) — o app destaca o épico concluído.
+    epic: bool = False
     updated_at: datetime | None = None
 
     @classmethod

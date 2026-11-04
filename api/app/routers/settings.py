@@ -28,7 +28,9 @@ def milestones_instruction(session: str) -> str:
         'formato {"description":"<1 frase>","milestones":[{"id":"<kebab>",'
         '"title":"<curto>","status":"todo|doing|blocked|done"}]}, criando e '
         "atualizando o status conforme avança. O SessionFlow lê esse arquivo para "
-        "mostrar suas tarefas. O campo \"description\" é uma descrição BREVE e "
+        "mostrar suas tarefas. Marco GRANDE (a feature/entrega inteira que agrupa "
+        'as demais, o "épico") leva também "epic":true — o app destaca o épico '
+        "concluído com cor própria; use só no marco-guarda-chuva, não em subtarefas. O campo \"description\" é uma descrição BREVE e "
         "VIVA (1 frase, sua observação) do que se trata esta sessão — o app "
         "mostra junto do nome; atualize-a sempre que o foco/assunto da sessão "
         "mudar de verdade. "
@@ -47,7 +49,11 @@ def milestones_instruction(session: str) -> str:
         "refletir o estado REAL do trabalho — no máximo ~8 itens focados no que "
         "está vivo/recente. NÃO acumule histórico: quando um marco ficar obsoleto "
         "ou for superado, REMOVA-o; não mantenha várias linhas 'done' sobre o mesmo "
-        "ticket/feature (colapse em UMA). Antes de mudar um status, confira o "
+        "ticket/feature (colapse em UMA). Tarefa que NÃO VAI MAIS SER FEITA "
+        "(abandonada, descartada pelo usuário, superada por outra abordagem, fora "
+        "de escopo) deve ser REMOVIDA do arquivo — não deixe \"todo\"/\"doing\" "
+        "órfão esperando pra sempre; o painel só lista o que ainda vai acontecer "
+        "ou já aconteceu. Antes de mudar um status, confira o "
         "estado real (o que de fato foi concluído). Poucos itens verdadeiros valem "
         "mais que uma lista longa e desatualizada. "
         "FORMATO DE ENTREGA (checkpoint): ao CONCLUIR algo que o usuário pediu, "
@@ -81,6 +87,10 @@ def milestones_refresh_instruction(session: str) -> str:
         f"[SessionFlow] Revise AGORA o arquivo .sessionflow/milestones.{session}.json: "
         "confira o estado REAL do trabalho, atualize status desatualizados, remova "
         'itens obsoletos/duplicados e garanta no máximo uma tarefa "doing". '
+        'REMOVA também toda tarefa "todo"/"doing"/"blocked" que NÃO vai mais ser '
+        "feita (abandonada, descartada, superada ou fora do escopo atual) — não "
+        "deixe pendência órfã na lista; se ainda for relevante mas depende de "
+        'outra pessoa, use "blocked" dizendo do quê. '
         'Revise também o campo "description" (1 frase, o que se trata esta sessão '
         "na SUA observação) — atualize se o foco mudou; crie se não existir."
     )

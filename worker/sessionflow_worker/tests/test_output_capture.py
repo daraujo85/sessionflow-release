@@ -105,6 +105,15 @@ def test_split_terminal_lines_trailing_cr_with_no_new_content_is_dropped() -> No
     nada de novo pra mostrar; próximo poll pega o estado completo."""
     assert split_terminal_lines("Nebulizing… 44s\r") == []
 
+def test_split_terminal_lines_keeps_crlf_terminated_lines() -> None:
+    """``\\r\\n`` é TERMINADOR DE LINHA (o pty traduz ``\\n`` → ``\\r\\n``), não
+    reposicionamento de cursor. O ``\\r`` não pode esvaziar a linha: senão
+    TODA saída normal de comando é descartada e só o redraw de spinner
+    (alt-screen) sobrevive."""
+    assert split_terminal_lines("linha1\r\nlinha2\r\n") == ["linha1", "linha2"]
+    # CRLF combinado com redraw de spinner na mesma linha.
+    assert split_terminal_lines("a\r\nb\rc\r\n") == ["a", "c"]
+
 
 class _FakeChannel:
     """Marker só pra `_publish` não sair no early-return de `channel is None`."""
@@ -201,10 +210,14 @@ async def db(coll_name: str):
 
 @pytest.fixture
 async def ephemeral_queue() -> AsyncIterator[tuple]:
-    """Canal + fila efêmera (auto_delete) bind à rota ``output``.
+    """Canal + fila efêmera (auto_delete) bind numa rota EXCLUSIVA do teste.
 
-    Não usa a fila durável compartilhada: declara uma fila exclusiva de nome
-    único, bind ao exchange ``sessionflow`` na routing key ``output``.
+    Não usa a fila durável compartilhada nem a rota de produção
+    (``sessionflow.events``): o worker local vivo publica ali o output de
+    TODAS as sessões dele, então a fila efêmera do teste recebia esses
+    eventos (com o ``tmux_name`` da sessão viva) no lugar dos da sessão de
+    teste. Cada teste ganha uma routing key própria e o ``OutputCapture``
+    sob teste publica nela.
     """
     try:
         conn = await rabbit.connect()
@@ -216,8 +229,9 @@ async def ephemeral_queue() -> AsyncIterator[tuple]:
         queue = await ch.declare_queue(
             f"sftest.output.{uuid.uuid4().hex}", auto_delete=True, exclusive=True
         )
-        await queue.bind(exchange, routing_key=OUTPUT_ROUTING_KEY)
-        yield ch, queue
+        routing_key = f"sftest.output.{uuid.uuid4().hex}"
+        await queue.bind(exchange, routing_key=routing_key)
+        yield ch, queue, routing_key
     finally:
         await conn.close()
 
@@ -262,10 +276,12 @@ async def test_poll_persists_and_returns(
 async def test_poll_publishes_output_event(
     runtime: TmuxRuntime, db, coll_name: str, session_name: str, ephemeral_queue
 ) -> None:
-    channel, queue = ephemeral_queue
+    channel, queue, routing_key = ephemeral_queue
     runtime.new_session(session_name, os.getcwd())
 
-    cap = OutputCapture(runtime, db, channel=channel, collection=coll_name)
+    cap = OutputCapture(
+        runtime, db, channel=channel, collection=coll_name, routing_key=routing_key
+    )
     cap.start_capture(session_name)
 
     session = runtime.server.sessions.get(session_name=session_name)

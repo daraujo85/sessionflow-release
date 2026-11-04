@@ -162,6 +162,44 @@ async def test_vanished_session_becomes_stopped(
     assert doc["agent_pid"] is None
 
 
+async def test_command_session_stays_running(
+    discovery: Discovery,
+    runtime: TmuxRuntime,
+    make_name: Callable[[], str],
+    db,
+    coll_name: str,
+    tmp_path,
+) -> None:
+    """Sessão "Comando" (shell puro) NÃO vira "detached".
+
+    O shell É o produto: não há agente pra inferir, e exigir um deixaria a
+    sessão marcada como detached (com botão "Retomar") enquanto ela está
+    perfeitamente útil. O tipo vem do DOC (agent_type="command"), porque o
+    cmdline de um shell puro infere UNKNOWN de propósito.
+    """
+    name = make_name()
+    runtime.new_session(name, tmp_path)
+
+    # Sem doc prévio: o discovery NÃO pode inventar o tipo "command" (a sessão
+    # é externa, um shell qualquer do usuário).
+    await discovery.reconcile_once()
+    doc = await db[coll_name].find_one({"tmux_name": name})
+    assert doc is not None
+    assert doc["status"] == "detached"
+
+    # Com o doc declarando agent_type="command": fica RUNNING.
+    await db[coll_name].update_one(
+        {"tmux_name": name},
+        {"$set": {"agent_type": "command", "host_id": "test-host"}},
+    )
+    await discovery.reconcile_once()
+    doc = await db[coll_name].find_one({"tmux_name": name})
+    assert doc is not None
+    assert doc["status"] == "running"
+    # O tipo declarado não é sobrescrito pela inferência (que daria UNKNOWN).
+    assert doc["agent_type"] == "command"
+
+
 async def test_reconcile_without_sftest_sessions_does_not_break(
     discovery: Discovery,
     db,

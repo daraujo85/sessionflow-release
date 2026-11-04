@@ -66,7 +66,7 @@ from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from sessionflow_worker import git_info, jarvis, milestones, session_move, transcriber
+from sessionflow_worker import git_info, gpu_services, jarvis, milestones, session_move, transcriber
 from sessionflow_worker.events import emit_event
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
 from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
@@ -146,6 +146,8 @@ _VALID_TYPES = frozenset(
         # arquivo publicado pela API. Resultado gravado em `command_results` pra
         # o requester polling em GET /commands/{id}.
         "fs_fetch",
+        # Serviços de GPU sob demanda (liga/desliga/status de unit systemd).
+        "gpu_service",
     }
 )
 
@@ -372,6 +374,11 @@ def _ephemeral_scratch_path(slug: str) -> Path:
     """
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return Path.home() / ".sessionflow" / "scratch" / f"{slug}-{ts}"
+
+
+def _iso_or_none(moment: datetime | None) -> str | None:
+    """Instante em ISO-8601 (ou None) — serializa ``last_used_at`` pro Mongo."""
+    return moment.isoformat() if moment is not None else None
 
 
 class CommandConsumer:
@@ -727,6 +734,8 @@ class CommandConsumer:
             return await self._handle_move_in(payload)
         if ctype == "fs_fetch":
             return await self._handle_fs_fetch(payload, command_id)
+        if ctype == "gpu_service":
+            return await self._handle_gpu_service(payload, command_id)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -748,6 +757,11 @@ class CommandConsumer:
         if not work_dir:
             if ephemeral:
                 work_dir = str(_ephemeral_scratch_path(name))
+            elif payload.get("agent_type") == AgentType.COMMAND.value:
+                # Sessão "Comando" (sf command): abrir no HOME do host é o
+                # default sensato — o usuário quer um shell remoto, não um
+                # projeto específico (ele faz `cd` depois se precisar).
+                work_dir = str(Path.home())
             else:
                 raise CommandError("create requer 'work_dir'")
 
@@ -825,6 +839,53 @@ class CommandConsumer:
 
         # new_session valida work_dir inexistente e nome inválido (erro tipado).
         info = self._runtime.new_session(name, work_dir)
+
+        # Sessão "Comando" (sf command): o pane JÁ É o shell do host — não
+        # lança agente nenhum. Sem model/effort/claude_session_id, sem
+        # language_instruction (não há system prompt) e sem trust (não há CLI
+        # pra confiar no diretório). O doc grava agent_type="command" — é o
+        # que o discovery usa pra manter a sessão RUNNING enquanto o pane
+        # roda shell (agente desconhecido em sessão comum = DETACHED).
+        if agent_type is AgentType.COMMAND:
+            now = _now()
+            doc = await self._sessions.find_one_and_update(
+                {"tmux_name": name},
+                {
+                    "$set": {
+                        "tmux_name": name,
+                        "display_name": display,
+                        "origin": "ephemeral" if ephemeral else SESSION_ORIGIN,
+                        "status": SessionState.RUNNING.value,
+                        "agent_type": agent_type.value,
+                        "model": None,
+                        "effort": None,
+                        "work_dir": str(work_dir),
+                        "tmux_id": info.id,
+                        "claude_session_id": None,
+                        "parent": parent,
+                        "host_id": self._host_id,
+                        # Ponte de comando: dona (cascata) e keep_alive são
+                        # gravados pela API depois do create — o doc NÃO pode
+                        # herdar a dona de uma vida anterior (o upsert reusa o
+                        # mesmo _id quando o nome se repete).
+                        "owner": None,
+                        # `keep_alive` nasce do payload (ponte de SERVIÇO):
+                        # o CLI passa no create pra não haver janela em que a
+                        # ponte de serviço é tratada como ponte normal.
+                        "keep_alive": bool(payload.get("keep_alive")),
+                        "updated_at": now,
+                        "last_activity_at": now,
+                    },
+                    "$setOnInsert": {"created_at": now},
+                },
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+            return {
+                "name": name,
+                "launch_cmd": None,
+                "session_id": str(doc["_id"]) if doc else None,
+            }
 
         # Idioma da sessão criada pelo app (config global): injeta no system
         # prompt p/ o agente já responder no idioma certo (default pt-BR).
@@ -1122,12 +1183,23 @@ class CommandConsumer:
         self._runtime.rename_session(old, new)
 
         # Preserva o _id: update por tmux_name antigo, sem recriar documento.
-        # NÃO mexe em display_name: o nome "falado/exibição" é editado à parte
-        # (endpoint próprio) e pode diferir do nome técnico do tmux.
-        await self._sessions.update_one(
-            {"tmux_name": old},
-            {"$set": {"tmux_name": new, "updated_at": _now()}},
-        )
+        # O nome "falado/exibição" (display_name) tem edição própria (endpoint
+        # PUT /sessions/{id}/display-name) e NÃO é sobrescrito aqui — EXCETO
+        # quando ele ainda é a COPIA do nome técnico (display_name gerado
+        # automaticamente no create, nunca customizado pelo usuário). Nesse
+        # caso o app continuaria mostrando o nome ANTIGO pra sempre, porque
+        # display_name tem precedência sobre tmux_name na listagem — o rename
+        # técnico pareceria não ter feito nada.
+        doc = await self._sessions.find_one({"tmux_name": old}, {"display_name": 1})
+        display = (doc or {}).get("display_name")
+        # Comparação case-insensitive: o slug da API (``re.sub[^A-Za-z0-9_-]``)
+        # preserva maiúsculas, o do worker (``_slugify``) não — o mesmo nome
+        # técnico pode aparecer dos dois jeitos.
+        display_mirror = not display or _slugify(display).lower() == old.lower()
+        fields: dict[str, Any] = {"tmux_name": new, "updated_at": _now()}
+        if display_mirror:
+            fields["display_name"] = new
+        await self._sessions.update_one({"tmux_name": old}, {"$set": fields})
         return {"old": old, "new": new}
 
     async def _handle_resume(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1213,6 +1285,11 @@ class CommandConsumer:
         if not self._runtime.has_session(name):
             info = self._runtime.new_session(name, work_dir)
             tmux_id = info.id
+
+        # Sessão "Comando": retomar = só garantir o pane vivo. Não há agente
+        # pra lançar nem conversa pra resumir (o shell é o estado completo).
+        if agent_type is AgentType.COMMAND:
+            return tmux_id, ""
 
         # resume=True → retoma a conversa anterior. Com claude_session_id salvo,
         # usa --resume <uuid> (a conversa EXATA dessa sessão); senão cai no
@@ -1777,6 +1854,14 @@ class CommandConsumer:
         # BACKGROUND (não bloqueia o consumer) e injeta quando pronto. (Só p/
         # submissão real; digitação ao vivo não ressuscita nada.)
         if enter and not self._runtime.has_session(name):
+            # Distingue "sessão PARADA" de "sessão INEXISTENTE". Parada = tem
+            # doc no Mongo, pane tmux morreu: o relaunch funciona. Inexistente
+            # = não tem doc: o relaunch falharia com CommandError DENTRO da
+            # task de background, que só faz log — o comando voltava
+            # ok=true/"resuming" e a mensagem nunca chegava a lugar nenhum,
+            # sem ninguém saber que falhou. Aqui o erro sai no evento.
+            if not await self._session_exists(name):
+                raise CommandError(f"input: sessão {name!r} desconhecida")
             await self._mark_working(name)  # UI já vira "rodando"
             asyncio.create_task(self._resume_and_send(name, text))
             return {"name": name, "note": "resuming"}
@@ -1800,8 +1885,12 @@ class CommandConsumer:
         Roda em background (não bloqueia o consumer). Best-effort: nunca levanta.
         """
         try:
-            await self._recreate_and_relaunch(name)
-            await self._await_agent_ready(name)
+            result = await self._recreate_and_relaunch(name)
+            # Sessão "Comando": launch_cmd vazio = não há agente pra esperar
+            # subir (o shell do pane novo já nasce pronto). Esperar os 20s do
+            # _await_agent_ready só atrasaria a injeção do comando.
+            if result.get("launch_cmd"):
+                await self._await_agent_ready(name)
             await self._type_and_submit(name, text)
             await self._sessions.update_one(
                 {"tmux_name": name}, {"$set": {"last_activity_at": _now()}}
@@ -2649,6 +2738,15 @@ class CommandConsumer:
 
     # -- infra ------------------------------------------------------------
 
+    async def _session_exists(self, name: str) -> bool:
+        """A sessão tem documento no Mongo (independe do pane tmux existir).
+
+        Serve p/ separar "sessão PARADA" (doc existe, pane morreu → pode
+        relançar) de "sessão INEXISTENTE" (não há doc → nada a retomar).
+        """
+        doc = await self._sessions.find_one({"tmux_name": name}, {"_id": 1})
+        return doc is not None
+
     async def _mark_working(self, name: str) -> None:
         """Usuário respondeu → se a sessão AGUARDAVA por ele, vira ``running`` na
         hora (inverte o fluxo: agora o agente trabalha e o usuário é que espera).
@@ -3082,17 +3180,18 @@ class CommandConsumer:
 
     async def _write_command_result(
         self, command_id: str, *, ok: bool, result: dict[str, Any] | None = None,
-        error: str | None = None,
+        error: str | None = None, ctype: str = "fs_fetch",
     ) -> None:
         """Upsert do resultado de um comando P2P em ``command_results``.
 
         O requester polling em ``GET /commands/{command_id}`` lê esta coleção.
-        Sempre grava ``host_id`` (de onde veio), ``type`` (``fs_fetch`` hoje)
-        e ``finished_at`` pra o cliente saber que terminou (vs ainda pendente).
+        Sempre grava ``host_id`` (de onde veio), ``type`` (``fs_fetch`` /
+        ``gpu_service``) e ``finished_at`` pra o cliente saber que terminou
+        (vs ainda pendente).
         """
         doc: dict[str, Any] = {
             "host_id": self._host_id,
-            "type": "fs_fetch",
+            "type": ctype,
             "ok": ok,
             "finished_at": datetime.now(timezone.utc),
         }
@@ -3103,6 +3202,116 @@ class CommandConsumer:
         await self._db["command_results"].update_one(
             {"_id": command_id}, {"$set": doc}, upsert=True,
         )
+
+    # -- P2P host-to-host: gpu_service (liga/desliga de serviço de GPU) -----
+
+    #: Ações aceitas no payload do comando ``gpu_service``.
+    _GPU_SERVICE_ACTIONS = frozenset({"start", "stop", "status"})
+
+    async def _handle_gpu_service(
+        self, payload: dict[str, Any], command_id: str | None
+    ) -> dict[str, Any]:
+        """Liga/desliga/consulta um serviço de GPU (unit systemd) deste host.
+
+        Sem sessão Claude envolvida: a API publica ``gpu_service`` via
+        RabbitMQ pro host alvo, o worker executa e grava o resultado em
+        ``command_results`` (key=command_id), o requester faz polling em
+        ``GET /commands/{command_id}``.
+
+        Payload: ``{"action": "start"|"stop"|"status", "name": "<serviço>"}``.
+        ``status`` sem ``name`` devolve o estado de TODOS os serviços.
+
+        Segurança: o nome precisa estar no CATÁLOGO do host (lista fechada,
+        ``SESSIONFLOW_GPU_SERVICES``) — nada de executar unit arbitrária.
+        Todo erro (validação inclusa) também persiste, senão o requester
+        fica em polling até o timeout em vez de ver o motivo.
+        """
+        try:
+            result = await self._gpu_service_run(payload)
+        except gpu_services.GpuServiceError as exc:
+            # Falha do systemctl/catálogo → vira CommandError (o ``handle()``
+            # só conhece CommandError; sem isso o consumer derrubaria).
+            if command_id:
+                await self._write_command_result(
+                    command_id, ok=False, error=str(exc), ctype="gpu_service",
+                )
+            raise CommandError(str(exc)) from exc
+        except CommandError as exc:
+            if command_id:
+                await self._write_command_result(
+                    command_id, ok=False, error=str(exc), ctype="gpu_service",
+                )
+            raise
+        if command_id:
+            await self._write_command_result(
+                command_id, ok=True, result=result, ctype="gpu_service",
+            )
+        return {"note": f"gpu_service {result.get('action')} ok", **result}
+
+    async def _gpu_service_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Valida o payload e executa a ação (erros viram CommandError)."""
+        action = str(payload.get("action") or "").strip().lower()
+        if action not in self._GPU_SERVICE_ACTIONS:
+            raise CommandError(
+                f"gpu_service requer action em {sorted(self._GPU_SERVICE_ACTIONS)}"
+            )
+        raw_name = str(payload.get("name") or "").strip()
+        catalog = gpu_services.load_catalog()
+        if not catalog:
+            raise CommandError(
+                "gpu_service: nenhum serviço configurado neste host "
+                f"({gpu_services.CATALOG_ENV} vazio)"
+            )
+
+        loop = asyncio.get_running_loop()
+
+        if action == "status" and not raw_name:
+            # status sem nome → o estado de TODOS os serviços do catálogo.
+            states: dict[str, Any] = {}
+            for name, svc in catalog.items():
+                states[name] = {
+                    "unit": svc.unit,
+                    "scope": svc.scope,
+                    "port": svc.port,
+                    "active": await loop.run_in_executor(
+                        None, gpu_services.is_active, name, catalog,
+                    ),
+                    "last_used_at": _iso_or_none(gpu_services.last_used_at(name)),
+                }
+            return {"action": "status", "name": None, "services": states}
+
+        svc = gpu_services.get_service(raw_name, catalog)
+        if action == "start":
+            await loop.run_in_executor(None, gpu_services.start_service, svc.name, catalog)
+            gpu_services.mark_used(svc.name)
+            return {
+                "action": "start",
+                "name": svc.name,
+                "unit": svc.unit,
+                "scope": svc.scope,
+                "active": True,
+            }
+        if action == "stop":
+            await loop.run_in_executor(None, gpu_services.stop_service, svc.name, catalog)
+            return {
+                "action": "stop",
+                "name": svc.name,
+                "unit": svc.unit,
+                "scope": svc.scope,
+                "active": False,
+            }
+        active = await loop.run_in_executor(
+            None, gpu_services.is_active, svc.name, catalog,
+        )
+        return {
+            "action": "status",
+            "name": svc.name,
+            "unit": svc.unit,
+            "scope": svc.scope,
+            "port": svc.port,
+            "active": active,
+            "last_used_at": _iso_or_none(gpu_services.last_used_at(svc.name)),
+        }
 
     @staticmethod
     def _read_for_fetch(target: Path) -> bytes:

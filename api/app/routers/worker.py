@@ -89,6 +89,10 @@ class WorkerOut(BaseModel):
     # Google selecionar (None = heurística: "colab 2"/"02151543" → 1, resto → 0).
     colab_notebook_id: str | None = None
     colab_authuser: str | None = None
+    # Serviços de GPU sob demanda deste host: {nome: {active, last_used_at,
+    # unit, port}} (ver worker/sessionflow_worker/gpu_services.py).
+    # None = worker antigo (sem catálogo de GPU).
+    gpu_services: dict | None = None
 
 
 class WorkerDisplayName(BaseModel):
@@ -164,6 +168,7 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         agents=doc.get("agents"),
         colab_notebook_id=doc.get("colab_notebook_id"),
         colab_authuser=doc.get("colab_authuser"),
+        gpu_services=doc.get("gpu_services"),
     )
 
 

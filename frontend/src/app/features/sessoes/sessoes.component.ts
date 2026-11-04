@@ -1482,7 +1482,8 @@ export class SessoesComponent {
     const key = this.activeKey();
     const chip = this.filters.find((c) => c.key === key);
     const wanted = chip?.status;
-    const list = this.sessions();
+    // Sessões "Comando" (shell sem agente) vivem na seção própria da Home.
+    const list = this.sessions().filter((s) => s.agent_type !== 'command');
     const byFilter =
       key === 'favorites'
         ? list.filter((s) => !!s.favorite)

@@ -2,6 +2,7 @@ import {
   Component,
   EventEmitter,
   Input,
+  OnDestroy,
   Output,
   inject,
   signal,
@@ -210,7 +211,7 @@ import { AudioRecorderService } from './audio-recorder.service';
     `,
   ],
 })
-export class AudioRecorderComponent {
+export class AudioRecorderComponent implements OnDestroy {
   /** Target session that will receive the uploaded audio. */
   @Input({ required: true }) sessionId!: string;
 
@@ -230,6 +231,17 @@ export class AudioRecorderComponent {
   /** Toast local com o % economizado pelo dedup, quando houver. */
   protected readonly dedupToast = signal<string | null>(null);
   private dedupToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Blob gravado com sucesso mas ainda não confirmado no servidor — mantido
+   * aqui (nunca descartado) até o upload ser confirmado, para o retry
+   * automático reenviar sem precisar gravar tudo de novo.
+   */
+  private pendingFile: File | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
+  /** Backoff entre tentativas automáticas (ms); última entrada se repete. */
+  private static readonly RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
 
   /** Atrasos (ms) das barras da onda — staggered p/ efeito de equalizador. */
   protected readonly waveBars = [0, 120, 240, 360, 240, 120, 0, 180, 300];
@@ -267,25 +279,53 @@ export class AudioRecorderComponent {
     try {
       blob = await this.recorder.stop();
     } catch {
+      // `stop()` só rejeita se já não estava gravando (race) — não há áudio
+      // pra perder aqui, mas o usuário merece saber que nada foi enviado.
+      this.recorder.error.set('Gravação não pôde ser finalizada. Tente gravar de novo.');
       return;
     } finally {
       // Gravação encerrada (com sucesso ou falha): retoma o áudio do JARVIS.
       this.jarvisAudio.setRecording(false);
     }
 
+    this.pendingFile = new File([blob], 'gravacao.webm', { type: 'audio/webm' });
+    this.retryAttempt = 0;
+    await this.send();
+  }
+
+  private async send(): Promise<void> {
+    const file = this.pendingFile;
+    if (!file) return;
+    this.recorder.error.set(null);
     this.busy.set(true);
     this.transcribing.emit(true);
-    const file = new File([blob], 'gravacao.webm', { type: 'audio/webm' });
     try {
       const { command_id } = await firstValueFrom(this.api.uploadAudio(this.sessionId, file));
+      // Só descarta o áudio gravado DEPOIS do servidor confirmar o recebimento.
+      this.pendingFile = null;
       this.uploaded.emit();
       this.watchDedupStats(command_id);
     } catch {
-      this.recorder.error.set('Falha ao enviar o áudio.');
+      // Upload falhou (ex.: rede caiu) — o áudio gravado continua retido em
+      // `pendingFile`: nada se perde. Reagenda sozinho, sem exigir ação do
+      // usuário (era o botão "tentar de novo"; agora automático).
+      this.recorder.error.set('Falha ao enviar o áudio — tentando de novo…');
+      this.scheduleRetry();
     } finally {
       this.transcribing.emit(false);
       this.busy.set(false);
     }
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer) return; // já agendado
+    const delays = AudioRecorderComponent.RETRY_DELAYS_MS;
+    const delay = delays[Math.min(this.retryAttempt, delays.length - 1)];
+    this.retryAttempt++;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.send();
+    }, delay);
   }
 
   /**
@@ -316,5 +356,16 @@ export class AudioRecorderComponent {
       clearTimeout(this.dedupToastTimer);
     }
     this.dedupToastTimer = setTimeout(() => this.dedupToast.set(null), 6000);
+  }
+
+  ngOnDestroy(): void {
+    // Sai da sessão com upload ainda pendente: cancela o retry agendado
+    // (não adianta reenviar pra um componente morto) — o áudio em si já foi
+    // perdido nesse caso (saiu antes de confirmar), mas não tentamos reenviar
+    // às cegas depois que o usuário saiu da tela.
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
   }
 }
