@@ -305,12 +305,22 @@ export class AudioRecorderComponent implements OnDestroy {
       this.pendingFile = null;
       this.uploaded.emit();
       this.watchDedupStats(command_id);
-    } catch {
-      // Upload falhou (ex.: rede caiu) — o áudio gravado continua retido em
-      // `pendingFile`: nada se perde. Reagenda sozinho, sem exigir ação do
-      // usuário (era o botão "tentar de novo"; agora automático).
-      this.recorder.error.set('Falha ao enviar o áudio — tentando de novo…');
-      this.scheduleRetry();
+    } catch (err: unknown) {
+      // Upload falhou — o áudio gravado continua retido em `pendingFile`:
+      // nada se perde. Só reagenda sozinho se o erro for TRANSITÓRIO
+      // (rede/gateway) e dentro do teto de tentativas; erro definitivo
+      // (401/413/etc — reenviar nunca vai dar certo) ou teto esgotado avisa
+      // e PARA, sem ficar "tentando de novo" pra sempre mascarando o problema.
+      const status = (err as { status?: number } | null)?.status;
+      const permanent =
+        typeof status === 'number' && status >= 400 && status < 500 &&
+        status !== 408 && status !== 429;
+      if (permanent || this.retryAttempt >= AudioRecorderComponent.RETRY_DELAYS_MS.length) {
+        this.recorder.error.set('Falha ao enviar o áudio.');
+      } else {
+        this.recorder.error.set('Falha ao enviar o áudio — tentando de novo…');
+        this.scheduleRetry();
+      }
     } finally {
       this.transcribing.emit(false);
       this.busy.set(false);
