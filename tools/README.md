@@ -390,6 +390,135 @@ efêmera, isso acontece a cada boot. `tools/test_colab_selfboot.py` (4 casos,
 
 ---
 
+## `graph-fetch.py` — um grafo só, gerado no Mac e consumido pela frota
+
+`graphify extract` custa tempo (e, no modo semântico, LLM). O Mac já indexa os
+projetos; Deepin, Duck e Colab não têm por que refazer o mesmo trabalho. Este
+script move o artefato pronto pelo **MinIO do Hetzner**
+(`https://s3.boletoazap.dev.br`, bucket `graphify`).
+
+```bash
+./tools/graph-fetch.py publish   # no Mac (o noturno já faz isso sozinho)
+./tools/graph-fetch.py fetch     # em Deepin / Duck / Colab
+./tools/graph-fetch.py status    # em qualquer host; exit 1 se não estiver em dia
+```
+
+Config: `~/.claude/secrets/graphify-s3.env` (`GRAPHIFY_S3_ENDPOINT`,
+`GRAPHIFY_S3_ACCESS_KEY`, `GRAPHIFY_S3_SECRET_KEY`, `GRAPHIFY_S3_BUCKET`).
+O usuário `graphify` do MinIO tem policy **só** no bucket `graphify` — nunca
+reutilize as credenciais root.
+
+### Só os essenciais viajam — ~7.1 MB, não 91 MB
+
+| arquivo | tam. | portátil? |
+|---|---|---|
+| `graph.json` | 6.6M | sim — **0 caminhos absolutos** |
+| `.graphify_analysis.json` | 404K | sim |
+| `.graphify_labels.json` | 8K | sim |
+| `cache/stat-index.json` | 84K | sim — 358 chaves, todas relativas |
+
+As pastas datadas (`graphify-out/2026-11-03/` etc.) são snapshots históricos e
+somam ~84M: ficam de fora de propósito. O `fetch` é **aditivo** — nunca apaga
+snapshots que o host já tenha.
+
+### A pegadinha do `.graphify_root` (e por que o fetch o reescreve)
+
+`.graphify_root` guarda o caminho **absoluto** do host que indexou. Medido em
+2026-11-05:
+
+* `graphify query` **ignora** esse arquivo — lê só `graph.json` e funciona no
+  destino mesmo com o marcador apontando para um caminho inexistente;
+* `graphify update .` tem guarda `out-of-repo` (`graphify/hooks.py`) que
+  descarta o marcador estranho e **reindexa a árvore inteira do zero**.
+
+Por isso o `fetch` reescreve `.graphify_root` para o root local. Sem isso,
+qualquer `update` no consumidor refaz tudo.
+
+### Regra: consumidor não roda `update`
+
+`graphify update .` num host com a árvore desatualizada **degrada** o grafo em
+silêncio. Medido no Deepin: o repo lá tem 868 arquivos (o Mac tem 1218) e não
+tem `.git`; depois de um `update`, o artefato de 5780 nós/commit real virou
+2955 nós com `built_at_commit: null`. Recuperação: `fetch` de novo.
+
+Consumidor consulta (`query`/`explain`/`path`) com o grafo do Mac; quem mantém o
+grafo é o host que tem o repo completo + git. Rodar `update` só onde isso vale.
+
+### Testes
+
+`tools/test_graph_fetch.py` — 22 casos, sem rede. A assinatura SigV4 é conferida
+contra o **vetor oficial da AWS** (`f0e8bdb87c96…`), então erro de HMAC vira
+falha de teste em vez de 403 opaco em produção. O fluxo GET/PUT roda contra um
+S3 de mentira em thread local.
+
+### Ciclo automático
+
+`~/.claude/skills/atualizar-grafos/update_modified.sh` (LaunchAgent
+`com.diego.nightly-grafos`, meia-noite) publica o projeto logo após o graphify
+dele — não-fatal: se o MinIO estiver fora, o consumidor segue com a cópia
+anterior.
+
+### Colab
+
+A VM do Colab é efêmera, então o `colab-selfboot.sh` baixa o grafo a cada boot
+(bloco **não-fatal**: MinIO fora ou token faltando não impedem o worker de
+subir). Precisa de um Colab Secret a mais:
+
+```bash
+./tools/colab-secrets.sh GRAPHIFY_S3_SECRET_KEY   # copia pro clipboard
+```
+
+Cole em Colab ▸ 🔑 Secrets (junto de `SF_ENV_B64`, `SF_HOST_ID`,
+`ANTHROPIC_AUTH_TOKEN`). Sem ele o log mostra
+`grafo: secret GRAPHIFY_S3_SECRET_KEY ausente — pulando` e o worker sobe normal.
+
+Três cenários verificados no bloco, com `set -euo pipefail` ativo:
+
+| cenário | resultado |
+|---|---|
+| sem secret | pula, `rc=0` |
+| secret inválido (403 do MinIO) | avisa, segue, `rc=0` |
+| secret válido | baixa 4 objetos, 5780 nós |
+
+### Host de deploy: o caso do Deepin
+
+Nem todo host é clone completo. O Deepin é uma instalação **deployada** (sem
+git até 2026-11-05, só `worker/` + `tools/` + `docker/`), então o Deepin
+virou repo git com `sparse-checkout` em vez de baixar `api/`/`frontend/`
+(201 arquivos que aquele host nunca roda):
+
+```bash
+git clone --no-checkout https://github.com/daraujo85/sessionflow.git  # ou fetch no dir existente
+git sparse-checkout init --no-cone
+git sparse-checkout set --no-cone '/.gitignore' '/docker-compose.yml' \
+  '/tools/' '/docker/' '/worker/'
+```
+
+Consequências que valem saber:
+
+- `api/` e `frontend/` não existem no disco de propósito — o `graphify update`
+  não roda lá e por isso o grafo venha do Mac;
+- `graphify-out/`, `.grepai/` e `data/uploads/` ficam em `.git/info/exclude`
+  (local ao host, não polui o `.gitignore` compartilhado);
+- o `.gitignore` **estava ausente no disco** naquela instalação, então `.env`
+  aparecia como untracked e seria commitável. Um `git checkout origin/main --
+  .gitignore` resolveu; vale conferir isso em qualquer host deployado à mão;
+- `gh auth setup-git` foi necessário: a chave SSH do host não está no GitHub,
+  mas o `gh` já está logado.
+
+### Testes
+
+`tools/test_graph_fetch.py` — 22 casos, sem rede. A assinatura SigV4 é conferida
+contra o **vetor oficial da AWS** (`f0e8bdb87c96…`), então erro de HMAC vira
+falha de teste em vez de 403 opaco em produção. O fluxo GET/PUT roda contra um
+S3 de mentira em thread local.
+
+`tools/test_colab_selfboot.py` — 8 casos: os 4 originais do MCP + 4 novos que
+travam o contrato do grafo (baixa no boot, credencial opcional, falha não
+derruba o boot, aponta para o repo que o agente vê).
+
+---
+
 ## `watchdog/` — Auto-recuperação (Auto-Healing) do `sessionflow-api`
 
 Monitor de saúde leve que roda em background a cada 60s. Se a API travar (deadlock de event loop, queda do RabbitMQ) por 2 checagens consecutivas, reinicia o container `sessionflow-api` automaticamente via `docker restart`.

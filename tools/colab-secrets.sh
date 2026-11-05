@@ -21,8 +21,19 @@ case "${1:-}" in
   ANTHROPIC_AUTH_TOKEN)
     : "${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN não está no ambiente}"
     printf '%s' "$ANTHROPIC_AUTH_TOKEN" | pbcopy; echo "✓ ANTHROPIC_AUTH_TOKEN copiado" ;;
+  GRAPHIFY_S3_SECRET_KEY)
+    # Mesma chave que os hosts usam em ~/.claude/secrets/graphify-s3.env —
+    # usuário `graphify` do MinIO, com policy só no bucket `graphify`.
+    f="$HOME/.claude/secrets/graphify-s3.env"
+    [ -f "$f" ] || { echo "✗ $f não existe" >&2; exit 1; }
+    v="$(grep -E '^GRAPHIFY_S3_SECRET_KEY=' "$f" | cut -d= -f2-)"
+    [ -n "$v" ] || { echo "✗ GRAPHIFY_S3_SECRET_KEY vazia em $f" >&2; exit 1; }
+    printf '%s' "$v" | pbcopy; echo "✓ GRAPHIFY_S3_SECRET_KEY copiado (${#v} chars)"
+    echo "  Cole em Colab ▸ 🔑 Secrets. Sem ela o Colab sobe sem grafo." ;;
   "")
     echo "SF_ENV_B64: $(grep -cE "$KEYS" "$REPO/.env") chaves ($(grep -E "$KEYS" "$REPO/.env" | cut -d= -f1 | tr '\n' ' '))"
-    echo "ANTHROPIC_AUTH_TOKEN: $([ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && echo presente || echo ausente)" ;;
-  *) echo "uso: $0 [SF_ENV_B64|ANTHROPIC_AUTH_TOKEN]" >&2; exit 2 ;;
+    echo "ANTHROPIC_AUTH_TOKEN: $([ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && echo presente || echo ausente)"
+    gf="$HOME/.claude/secrets/graphify-s3.env"
+    echo "GRAPHIFY_S3_SECRET_KEY: $([ -s "$gf" ] && echo "presente ($gf)" || echo ausente)" ;;
+  *) echo "uso: $0 [SF_ENV_B64|ANTHROPIC_AUTH_TOKEN|GRAPHIFY_S3_SECRET_KEY]" >&2; exit 2 ;;
 esac

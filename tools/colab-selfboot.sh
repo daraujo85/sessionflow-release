@@ -132,6 +132,37 @@ else
   tail -5 /tmp/mcp-install.log 2>/dev/null || true
 fi
 
+# Grafo do graphify: o Colab CONSOME o artefato gerado no Mac (~7 MB) em vez de
+# rodar `graphify extract` — a VM é efêmera e reindexar a cada boot é desperdício.
+# O Colab é host de execução, não de indexação: aqui NUNCA se roda `graphify
+# update .` (degrada o grafo: a árvore do Colab é menor e não tem histórico).
+# Não-fatal de propósito: MinIO fora do ar ou token ausente não pode impedir o
+# worker de subir. Por isso todo o bloco vive dentro de um `if`.
+if [ -n "${GRAPHIFY_S3_SECRET_KEY:-}" ]; then
+  log "grafo do graphify (MinIO)"
+  SF_GRAPH="$WORK"   # o repo que o agente vê como --dir sessionflow
+  SEGREDOS="${HOME:-/root}/.claude/secrets"
+  if ( umask 077
+       mkdir -p "$SEGREDOS"
+       cat > "$SEGREDOS/graphify-s3.env" <<EOF
+GRAPHIFY_S3_ENDPOINT=${GRAPHIFY_S3_ENDPOINT:-https://s3.boletoazap.dev.br}
+GRAPHIFY_S3_ACCESS_KEY=${GRAPHIFY_S3_ACCESS_KEY:-graphify}
+GRAPHIFY_S3_SECRET_KEY=${GRAPHIFY_S3_SECRET_KEY}
+GRAPHIFY_S3_BUCKET=${GRAPHIFY_S3_BUCKET:-graphify}
+EOF
+     ) \
+     && "$WORK/tools/graph-fetch.py" --dir "$SF_GRAPH" fetch >/tmp/graph-fetch.log 2>&1; then
+    chown -R diego: "$SF_GRAPH/graphify-out" 2>/dev/null || true
+    chmod -R a+rX "$SF_GRAPH/graphify-out" 2>/dev/null || true
+    log "✅ grafo baixado ($(grep -c '↓' /tmp/graph-fetch.log 2>/dev/null || echo 0) objetos)"
+  else
+    log "⚠ grafo não baixado — segue sem (log em /tmp/graph-fetch.log)"
+    tail -3 /tmp/graph-fetch.log 2>/dev/null || true
+  fi
+else
+  log "grafo: secret GRAPHIFY_S3_SECRET_KEY ausente — pulando (worker sobe sem)"
+fi
+
 : > /tmp/worker.log
 tmux kill-session -t sessionflow-worker 2>/dev/null || true
 tmux new-session -d -s sessionflow-worker \

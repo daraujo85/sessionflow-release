@@ -68,5 +68,53 @@ class ColabSelfbootMcpTests(unittest.TestCase):
         return self.code[max(0, idx - 600): idx + 600]
 
 
+class ColabSelfbootGrafoTests(unittest.TestCase):
+    """O Colab consome o grafo do Mac em vez de reindexar.
+
+    ``graphify extract`` custa minutos e a VM do Colab é efêmera: reindexar a
+    cada boot é desperdício puro quando o artefato pronto (~7 MB) vem do MinIO.
+
+    Regra que o script precisa respeitar: no Colab o fetch **não** pode ser
+    fatal. O Colab é um host de execução, não de indexação — se o MinIO estiver
+    fora ou o token faltar, o worker ainda tem que subir. Por isso todo o bloco
+    roda dentro de ``if``, nunca no fluxo principal com ``set -e``.
+    """
+
+    def setUp(self):
+        self.text = SCRIPT.read_text(encoding="utf-8")
+        self.code = "\n".join(
+            line for line in self.text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+
+    def test_baixa_o_grafo_no_boot(self):
+        self.assertIn("graph-fetch.py", self.code,
+                      "runtime novo do Colab viria sem grafo — a VM é efêmera")
+
+    def test_aceita_credencial_opcional_do_minio(self):
+        # Sem o secret, o fetch é pulado — não pode derrubar o worker.
+        self.assertIn("GRAPHIFY_S3_SECRET_KEY", self.code)
+
+    def test_falha_do_fetch_nao_derruba_o_boot(self):
+        """Bloco precisa estar protegido: MinIO fora ≠ Colab sem worker."""
+        idx = self.code.find("graph-fetch.py")
+        if idx == -1:
+            self.fail("não usa graph-fetch.py")
+        bloco = self.code[max(0, idx - 700): idx + 400]
+        self.assertTrue(
+            re.search(r"\bif\b.*(graph-fetch|GRAPHIFY)", bloco),
+            "o fetch tem que estar dentro de um `if` — senão set -e mata o boot",
+        )
+
+    def test_fetch_roda_como_diego_no_repo_dele(self):
+        """O grafo precisa ficar no repo que o `diego` usa como --dir."""
+        idx = self.code.find("graph-fetch.py")
+        bloco = self.code[max(0, idx - 700): idx + 400]
+        self.assertTrue(
+            "/content/sessionflow" in bloco or "SF_GRAPH" in bloco,
+            "o fetch precisa apontar para o repo que o agente vê",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
