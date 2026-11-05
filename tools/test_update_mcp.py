@@ -228,6 +228,29 @@ exit 0
         # Delegou pro install-mcp.sh (que cria o venv) em vez de duplicar lógica.
         self.assertIn("instalando", out.stdout.lower())
 
+    def test_usa_uv_de_local_bin_fora_do_path(self):
+        """Regressão Deepin 25: ``uv`` em ``~/.local/bin`` não está no PATH de
+        shell não-interativo. Sem descoberta explícita o script cai no
+        ``pip`` do venv, que nem existe sem ``python3.x-venv`` no sistema."""
+        self.fake_install()
+        self.assertEqual(self.run_script().returncode, 0)
+        # Move o stub para ~/.local/bin e roda com PATH que não o contém.
+        local_bin = self.home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        shutil.move(str(self.bin / "uv"), str(local_bin / "uv"))
+        (self.tools / "mcp-requirements.txt").write_text("mcp\nhttpx\n", encoding="utf-8")
+        env = {
+            "PATH": f"/usr/bin:/bin",
+            "HOME": str(self.home),
+            "CLAUDE_CONFIG": str(self.claude_json),
+            "PYTHON": sys.executable,
+        }
+        out = subprocess.run([str(self.script())], capture_output=True,
+                             text=True, env=env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertTrue(self.uv_log.exists(), "não achou o uv de ~/.local/bin")
+        self.assertIn("mcp-requirements.txt", self.uv_log.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

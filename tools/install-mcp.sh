@@ -23,6 +23,21 @@ ENTRY_NAME="sessionflow"
 
 PYTHON_BIN="${PYTHON:-python3}"
 
+# `uv` costuma viver em ~/.local/bin, que NÃO entra no PATH de shell não
+# interativo (ssh, cron, systemd). Sem descoberta explícita, `command -v uv`
+# dá falso negativo e o fallback `python3 -m venv` morre em distros sem
+# python3.x-venv (no Deepin 25: "ModuleNotFoundError: ensurepip"). O sintoma
+# é um host onde o uv existe e funciona, mas o installer diz que não achou.
+UV_BIN=""
+find_uv() {
+  if [ -n "$UV_BIN" ]; then return 0; fi
+  for cand in "$(command -v uv 2>/dev/null || true)" \
+              "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /usr/local/bin/uv /opt/homebrew/bin/uv; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then UV_BIN="$cand"; return 0; fi
+  done
+  return 1
+}
+
 usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in
@@ -33,9 +48,9 @@ ensure_venv() {
   if [ ! -x "$VENV/bin/python" ]; then
     echo "▸ criando venv em $VENV"
     # uv é o gerenciador usado no repo (mais rápido e já presente); fallback venv.
-    if command -v uv >/dev/null 2>&1; then
-      uv venv "$VENV" --python 3.12 >/dev/null
-      uv pip install --python "$VENV/bin/python" mcp >/dev/null
+    if find_uv; then
+      "$UV_BIN" venv "$VENV" --python 3.12 >/dev/null
+      "$UV_BIN" pip install --python "$VENV/bin/python" mcp >/dev/null
     else
       "$PYTHON_BIN" -m venv "$VENV"
       "$VENV/bin/python" -m pip install --quiet --upgrade pip
@@ -44,8 +59,8 @@ ensure_venv() {
   fi
   "$VENV/bin/python" -c "import mcp" 2>/dev/null || {
     echo "▸ SDK mcp ausente no venv; instalando"
-    if command -v uv >/dev/null 2>&1; then
-      uv pip install --python "$VENV/bin/python" mcp >/dev/null
+    if find_uv; then
+      "$UV_BIN" pip install --python "$VENV/bin/python" mcp >/dev/null
     else
       "$VENV/bin/python" -m pip install --quiet mcp
     fi

@@ -30,6 +30,20 @@ STATE="$VENV/.state"       # o que ESTE script deixou instalado
 LOADED="$VENV/.loaded"     # o que o processo em execução realmente carregou
 CLAUDE_JSON="${CLAUDE_CONFIG:-$HOME/.claude.json}"
 
+# `uv` vive em ~/.local/bin, fora do PATH de shell não-interativo (ssh, cron,
+# systemd — é assim que o self-update roda). `command -v uv` puro dá falso
+# negativo e o fallback cai no `pip` de um venv que pode não ter pip (distro
+# sem python3.x-venv). Mesma descoberta do install-mcp.sh, de propósito.
+UV_BIN=""
+find_uv() {
+  if [ -n "$UV_BIN" ]; then return 0; fi
+  for cand in "$(command -v uv 2>/dev/null || true)" \
+              "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /usr/local/bin/uv /opt/homebrew/bin/uv; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then UV_BIN="$cand"; return 0; fi
+  done
+  return 1
+}
+
 MODE="sync"
 QUIET=0
 case "${1:-}" in
@@ -134,8 +148,8 @@ changed=0
 if [ "$(state_reqs)" != "$(reqs_hash)" ]; then
   say "MCP: sincronizando dependências do venv…"
   PY="$VENV/bin/python"
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$PY" -r "$REQS" >/dev/null 2>&1 \
+  if find_uv; then
+    "$UV_BIN" pip install --python "$PY" -r "$REQS" >/dev/null 2>&1 \
       || { warn "MCP: falha ao instalar dependências"; exit 1; }
   else
     "$PY" -m pip install --quiet -r "$REQS" >/dev/null 2>&1 \
