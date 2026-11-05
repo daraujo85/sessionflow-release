@@ -39,6 +39,7 @@ Registro no Claude Code (``~/.claude.json`` → ``mcpServers``)::
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -777,7 +778,28 @@ def api_call(method: str, path: str, body: dict | None = None) -> dict:
     return {"status": status, "ok": 200 <= status < 300, "body": payload}
 
 
+def _record_loaded(path: Path | None = None) -> None:
+    """Grava o hash do código que ESTE processo carregou.
+
+    ``tools/update-mcp.sh`` compara isso com o hash do disco para saber se há
+    um servidor rodando versão anterior (o processo MCP é filho do Claude Code
+    e só relê o arquivo quando reinicia). É diagnóstico puro: qualquer falha
+    aqui é ignorada, senão um diretório somente-leitura deixaria o agente sem
+    MCP nenhum.
+    """
+    target = path or (Path(__file__).parent / ".venv-mcp" / ".loaded")
+    try:
+        digest = hashlib.sha256()
+        for source in (Path(__file__), SF_PATH):
+            digest.update(source.read_bytes())
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(digest.hexdigest()[:16], encoding="utf-8")
+    except Exception:  # noqa: BLE001 - diagnóstico nunca derruba o servidor
+        pass
+
+
 def main() -> None:
+    _record_loaded()
     server.run()
 
 

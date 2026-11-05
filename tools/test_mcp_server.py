@@ -403,5 +403,36 @@ class DeterminismTests(ServerTestCase):
         self.assertEqual(first, second)
 
 
+class LoadedStateTests(ServerTestCase):
+    """O servidor deixa rastro do que carregou, para detectar processo velho.
+
+    Sem isso não há como distinguir "disco atualizado" de "processo rodando a
+    versão anterior" — o sintoma clássico é a tool nova existir no arquivo e
+    não aparecer para o agente.
+    """
+
+    def test_registra_hash_do_que_carregou_no_boot(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / ".loaded"
+            self.mcp._record_loaded(state_file)
+            gravado = state_file.read_text(encoding="utf-8").strip()
+
+        h = hashlib.sha256()
+        for p in (self.mcp.SF_PATH.parent / "mcp_server.py", self.mcp.SF_PATH):
+            h.update(p.read_bytes())
+        self.assertEqual(gravado, h.hexdigest()[:16])
+
+    def test_falha_ao_registrar_nao_derruba_o_servidor(self):
+        # Diretório somente-leitura / caminho inválido: o registro é
+        # diagnóstico, jamais motivo para o agente ficar sem MCP.
+        from pathlib import Path
+
+        self.mcp._record_loaded(Path("/nao/existe/.loaded"))  # não deve levantar
+
+
 if __name__ == "__main__":
     unittest.main()

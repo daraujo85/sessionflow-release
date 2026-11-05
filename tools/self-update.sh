@@ -74,4 +74,14 @@ if command -v tmux >/dev/null 2>&1 && tmux has-session -t sessionflow-worker 2>/
   tmux send-keys -t sessionflow-worker C-c "" Enter || true
 fi
 
+# Servidor MCP: NÃO é pego pelo docker compose nem pelo restart do worker — é
+# um processo stdio filho do Claude Code que lê `mcp_server.py` no boot. Sem
+# isto, cada release que mexe no MCP exige deploy manual e as máquinas
+# divergem em silêncio. Idempotente e barato: só toca no venv quando o
+# mcp-requirements.txt muda.
+if [ -x "$(dirname "${BASH_SOURCE[0]}")/update-mcp.sh" ]; then
+  "$(dirname "${BASH_SOURCE[0]}")/update-mcp.sh" || \
+    LOG "update-mcp.sh falhou (o MCP pode ficar defasado nesta máquina)."
+fi
+
 LOG "atualizado com sucesso pra $(git rev-parse --short HEAD)."

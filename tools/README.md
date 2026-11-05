@@ -309,6 +309,33 @@ Para falar com uma instância de outro amigo/deploy:
 SESSIONFLOW_MCP_REMOTE=heverton ./tools/install-mcp.sh
 ```
 
+### Manter atualizado (`update-mcp.sh`)
+
+O servidor MCP é um **processo stdio filho do Claude Code**: lê
+`mcp_server.py` (e o `tools/sf` que importa) uma vez, no boot da sessão. Código
+novo no disco não chega a um processo já em execução, e dependência nova nem
+está no venv. Sem isso, cada release que mexe no MCP exige deploy manual em
+cada host e as máquinas divergem em silêncio (uma com a tool nova, outra sem).
+
+```bash
+./tools/update-mcp.sh           # sincroniza deps + registro (idempotente)
+./tools/update-mcp.sh --check   # diagnóstico: sai 1 se está desatualizado
+```
+
+É chamado no fim do `tools/self-update.sh`, então hosts com auto-update
+recebem sozinhos. Dois diagnósticos distintos, de propósito:
+
+| Mensagem | Significado | O que fazer |
+|---|---|---|
+| `desatualizado (servidor/CLI mudou)` | disco mudou, venv não | próxima execução do script sincroniza |
+| `processo em execução está defasado` | disco certo, processo velho | **reiniciar o Claude Code** |
+
+O segundo só o humano resolve — o processo em execução não relê o arquivo.
+O servidor grava `tools/.venv-mcp/.loaded` no boot com o hash do que carregou;
+o script compara com o hash do disco (`.state`) para detectar a defasagem.
+Instalar dependências só acontece quando `mcp-requirements.txt` muda, para o
+self-update de 30 em 30 minutos não martelar a rede.
+
 ### Como funciona (e por que não duplica HTTP)
 
 Importa `tools/sf` como módulo (`SourceFileLoader`, mesmo padrão de
@@ -330,8 +357,10 @@ Duas armadilhas de servidor stdio, tratadas explicitamente:
 - `api_call` recusa URL absoluta de propósito: a instância alvo é fixada pelo
   servidor (env), não escolhida pelo agente.
 
-Testes: `tools/test_mcp_server.py` (19 casos, mock de rede; rode com
-`tools/.venv-mcp/bin/python -m unittest test_mcp_server` a partir de `tools/`).
+Testes: `tools/test_mcp_server.py` (26 casos, mock de rede; rode com
+`tools/.venv-mcp/bin/python -m unittest test_mcp_server` a partir de `tools/`)
+e `tools/test_update_mcp.py` (10 casos, sandbox de filesystem; `python3 -m
+unittest test_update_mcp`).
 
 ---
 
