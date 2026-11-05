@@ -359,8 +359,24 @@ Duas armadilhas de servidor stdio, tratadas explicitamente:
 
 Testes: `tools/test_mcp_server.py` (26 casos, mock de rede; rode com
 `tools/.venv-mcp/bin/python -m unittest test_mcp_server` a partir de `tools/`)
-e `tools/test_update_mcp.py` (10 casos, sandbox de filesystem; `python3 -m
-unittest test_update_mcp`).
+e `tools/test_update_mcp.py` (11 casos, sandbox de filesystem; `python3 -m
+unittest test_update_mcp`) e `tools/test_install_mcp.py` (3 casos; mesma
+sandbox, cobrindo a descoberta do `uv`).
+
+### `uv` fora do PATH (Deepin 25 e afins)
+
+O `uv` costuma ficar em `~/.local/bin`, que **não** entra no PATH de shell
+não-interativo (ssh, cron, systemd) — exatamente o contexto em que o
+`self-update.sh` roda. `command -v uv` dá falso negativo, o installer cai no
+fallback `python3 -m venv`, e em distro sem `python3.x-venv` isso morre com
+`ModuleNotFoundError: ensurepip`. O sintoma é `MCP: desatualizado` num host
+onde o `uv` existe e funciona no terminal do humano.
+
+`install-mcp.sh` e `update-mcp.sh` procuram o `uv` explicitamente em
+`~/.local/bin`, `~/.cargo/bin`, `/usr/local/bin` e `/opt/homebrew/bin` antes
+de desistir. Se for instalar `python3.x-venv` à mão, note que o `un` do `dpkg`
+significa "nunca instalado" (não "meio instalado") — o `apt` pedindo senha é
+outro problema, não corrupção.
 
 ### Colab: MCP tem que viver fora do `/root`
 
