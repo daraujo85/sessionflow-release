@@ -34,6 +34,7 @@ from sessionflow_worker import git_info, jarvis
 from sessionflow_worker.agent_launcher import AgentType
 from sessionflow_worker.codex_metrics import codex_metrics_for
 from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
+from sessionflow_worker.handoff_notify import find_handoff, read_status
 from sessionflow_worker.metrics import claude_metrics_for
 from sessionflow_worker.output_capture import (
     DEFAULT_SCREEN_COLLECTION,
@@ -53,9 +54,30 @@ USAGE_MAX_AGE_SECONDS = 1200.0
 
 # Tela parada por este tempo (s) após atividade ⇒ rótulo de atividade
 # "Ocioso/Concluído" (só cosmético, via derive_activity). NÃO afeta `status`
-# — sessão com agente vivo continua "running" (ativa) indefinidamente; ver
-# uso abaixo em `_reconcile`.
+# por si só — sessão com agente vivo continua "running" (ativa) indefinidamente
+# a menos que um handoff com status final já exista (ver `IDLE_HANDOFF_STATUS`
+# abaixo e uso em `_reconcile`).
 IDLE_SECONDS = 90.0
+
+# Handoff (``.sessionflow/handoff/<nome>.handoff.json``) com ``status`` nesta
+# tabela, combinado com tela ociosa (``attention == "idle"``), promove o
+# status da sessão de "running" para o valor mapeado — hoje só "completed"
+# (TMUX-12 bug real: filhos de `sf delegate` que escrevem o handoff e param
+# ficavam presos em running+"Concluído" pra sempre, sem sinal de que o
+# trabalho DE FATO terminou; só o botão "Parar" tirava de lá). Mantém
+# "running" intocado pra sessão SEM handoff — preserva o fix anterior que
+# impedia sessão ativa (sem essa prova de conclusão) de sumir da Home só por
+# ficar com a tela parada.
+IDLE_HANDOFF_STATUS = {"done": SessionState.COMPLETED.value}
+
+
+def _coerce_utc(dt: datetime | None) -> datetime | None:
+    """Normaliza datetime naive (Mongo guarda sem tz) pra UTC-aware p/ comparar
+    com `datetime.fromtimestamp(..., tz=timezone.utc)`."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
 
 logger = logging.getLogger("sessionflow_worker.discovery")
 
@@ -304,6 +326,8 @@ class Discovery:
                 "screen_sig": 1,
                 "claude_session_id": 1,
                 "agent_type": 1,
+                "display_name": 1,
+                "created_at": 1,
             },
         )
         prev_status = prev.get("status") if prev else None
@@ -359,26 +383,71 @@ class Discovery:
                 screen_text.encode("utf-8", "ignore")
             ).hexdigest()
             screen_changed = screen_sig != prev_sig
+
+            # Handoff (`.sessionflow/handoff/<nome>.handoff.json`) é um
+            # CONTRATO FORMAL escrito pelo próprio agente ao terminar a
+            # tarefa delegada — sinal mais forte que qualquer heurística de
+            # tela. Lido 1x por ciclo pra: (a) não reabrir "waiting_input" por
+            # uma pergunta solta sobre assunto QUALQUER depois da entrega
+            # (ex.: dúvida de outro subsistema, tipo limpeza do JEV memory, há
+            # "quer que eu" na janela de 10 linhas — `_AWAITING_DECISION_MARKERS`
+            # casa texto, não TÓPICO); (b) promover pra "completed" quando a
+            # tela também já ficou ociosa (ver IDLE_HANDOFF_STATUS abaixo).
+            #
+            # Freshness: mesmo gate usado por `idle_watchdog._has_handoff` —
+            # um handoff com mtime ANTERIOR à criação do doc atual é de uma
+            # rodada antiga (sessão tmux reaproveitada/renomeada reusando um
+            # work_dir já usado por outra delegação), não prova nada sobre o
+            # trabalho EM CURSO; ignora.
+            handoff_path = find_handoff(
+                info.work_dir or "", [info.name, (prev or {}).get("display_name") or ""]
+            )
+            handoff_status: str | None = None
+            if handoff_path is not None:
+                created = _coerce_utc((prev or {}).get("created_at"))
+                mtime = datetime.fromtimestamp(
+                    handoff_path.stat().st_mtime, tz=timezone.utc
+                )
+                if created is None or mtime >= created:
+                    handoff_status = read_status(handoff_path)
+
+            # Só "done" suprime o sinal fraco de decisão pendente — um handoff
+            # "blocked"/"failed" é EXATAMENTE o caso em que uma pergunta na
+            # tela ainda importa (o agente pode estar esperando confirmação
+            # sobre como prosseguir depois do bloqueio/falha).
+            ignore_awaiting_decision = handoff_status == "done"
+
             # `parse_choice_prompt` também conta como "aguardando" — cobre
             # diálogos do Claude Code sem o rodapé de navegação (ex.: "Switch
             # model?"), que `screen_wants_attention` sozinho não reconhece.
-            if screen_wants_attention(screen_text, info.agent_type) or parse_choice_prompt(
-                screen_text
-            ):
+            if screen_wants_attention(
+                screen_text,
+                info.agent_type,
+                ignore_awaiting_decision=ignore_awaiting_decision,
+            ) or parse_choice_prompt(screen_text):
                 status_value = SessionState.WAITING_INPUT.value
                 attention = "waiting"
             elif self._screen_idle(info.name, screen_text):
-                # Tela parada há IDLE_SECONDS: só rótulo de atividade
-                # ("Ocioso"/"Concluído" via derive_activity), NÃO status.
-                # Sessão com tmux+agente vivos fica "running" (ativa) pra
-                # sempre — só sai desse estado se o agente encerrar de fato
-                # (derive_state -> detached) ou o usuário apertar Parar.
-                # Antes isso forçava status="completed" e a sessão sumia da
-                # Home ("ativas" = running/waiting_input) mesmo com o agente
-                # rodando e esperando o usuário pensar/ler — comportamento
-                # indesejado (usuário: "se a sessão tá ativa, nada destrói
-                # ela, só o botão de stop").
+                # Tela parada há IDLE_SECONDS: por padrão só rótulo de
+                # atividade ("Ocioso"/"Concluído" via derive_activity), NÃO
+                # status. Sessão com tmux+agente vivos fica "running" (ativa)
+                # pra sempre — só sai desse estado se o agente encerrar de
+                # fato (derive_state -> detached) ou o usuário apertar Parar.
+                # Antes isso forçava status="completed" sempre que a tela
+                # ficava ociosa e a sessão sumia da Home ("ativas" =
+                # running/waiting_input) mesmo com o agente rodando e
+                # esperando o usuário pensar/ler — comportamento indesejado
+                # (usuário: "se a sessão tá ativa, nada destrói ela, só o
+                # botão de stop").
+                #
+                # EXCEÇÃO: handoff com status final (ver acima) — aí a sessão
+                # genuinamente TERMINOU o trabalho combinado, só o processo do
+                # agente ficou vivo ocioso. Promove pra "completed" em vez de
+                # prender o worker em running+"Concluído" indefinidamente.
                 attention = "idle"
+                mapped = IDLE_HANDOFF_STATUS.get(handoff_status or "")
+                if mapped:
+                    status_value = mapped
             activity = derive_activity(screen_text, info.agent_type, attention)
             subagents, subagent_names = derive_subagents(screen_text)
             # Erro de API transitório com o agente parado → manda "continue".

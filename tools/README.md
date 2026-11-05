@@ -269,6 +269,72 @@ no repo é a fonte versionada.
 
 ---
 
+## `mcp_server.py` — os mesmos verbos do `sf` como tools MCP
+
+Servidor **MCP (stdio)** que expõe o SessionFlow a um agente, sem terminal.
+A API REST tem 87 endpoints, mas expô-los 1:1 como tools estouraria o system
+prompt (cada schema entra em **todo** turno). Este servidor espelha os **verbos
+do CLI** — a granularidade que um agente consegue usar de verdade.
+
+| Tool | Equivale a |
+|---|---|
+| `list_sessions` | `sf list` |
+| `list_hosts` | `sf hosts` |
+| `delegate` | `sf delegate` |
+| `check` | `sf check` |
+| `send` | `sf send` |
+| `request_context` | `sf request-context` |
+| `fetch_file` / `share_file` | `sf fetch` / `sf share` |
+| `run_command` | `sf command` |
+| `move_session` | `sf move` |
+| `start_host` / `stop_host` | `sf start` / `sf stop` |
+| `gpu_service` | `sf gpu` |
+| `list_dirs` | `sf dirs` |
+| `metrics` / `notify` | `sf metrics` / `sf notify` |
+| `api_call` | escape hatch p/ qualquer rota autenticada |
+
+### Instalar / registrar
+
+```bash
+./tools/install-mcp.sh            # cria o venv, instala o SDK e registra
+./tools/install-mcp.sh --print    # só imprime o JSON (colar à mão)
+./tools/install-mcp.sh --uninstall
+```
+
+Grava em `~/.claude.json` (`mcpServers.sessionflow`) com caminhos absolutos —
+o venv `tools/.venv-mcp/` é gitignored, então registrar à mão envelhece.
+Para falar com uma instância de outro amigo/deploy:
+
+```bash
+SESSIONFLOW_MCP_REMOTE=heverton ./tools/install-mcp.sh
+```
+
+### Como funciona (e por que não duplica HTTP)
+
+Importa `tools/sf` como módulo (`SourceFileLoader`, mesmo padrão de
+`test_sf.py`) e reusa `load_env`/`login`/`_request`/`resolve_host`. Um fix no
+CLI propaga pro MCP automaticamente; nenhuma rota é reescrita aqui.
+
+Duas armadilhas de servidor stdio, tratadas explicitamente:
+- **`sf.die()` faz `sys.exit(1)`** — e `SystemExit` herda de `BaseException`,
+  não de `Exception`. Convertido em `ToolError` (erro recuperável), senão
+  derrubaria o processo inteiro.
+- **stdout é o canal JSON-RPC.** Todo `print()` do CLI é capturado; um byte
+  solto no stdout corromperia o protocolo.
+
+### Decisões de contrato
+
+- `list_sessions` filtra por padrão nas vivas (`running`/`waiting_input`) e
+  aplica o filtro **na query** — o histórico passa de 290 sessões.
+  `limit`/`total`/`truncated` evitam despejar tudo no contexto do agente.
+- `api_call` recusa URL absoluta de propósito: a instância alvo é fixada pelo
+  servidor (env), não escolhida pelo agente.
+
+Testes: `tools/test_mcp_server.py` (19 casos, mock de rede; rode com
+`tools/.venv-mcp/bin/python -m unittest test_mcp_server` a partir de `tools/`).
+
+---
+
 ## `watchdog/` — Auto-recuperação (Auto-Healing) do `sessionflow-api`
 
 Monitor de saúde leve que roda em background a cada 60s. Se a API travar (deadlock de event loop, queda do RabbitMQ) por 2 checagens consecutivas, reinicia o container `sessionflow-api` automaticamente via `docker restart`.

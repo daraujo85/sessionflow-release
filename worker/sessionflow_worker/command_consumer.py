@@ -148,6 +148,9 @@ _VALID_TYPES = frozenset(
         "fs_fetch",
         # Serviços de GPU sob demanda (liga/desliga/status de unit systemd).
         "gpu_service",
+        # Arquivos por SESSÃO (list/read/write/copy/mkdir/delete) — a API
+        # resolve a sessão pro host dela e publica aqui.
+        "fs_op",
     }
 )
 
@@ -736,6 +739,8 @@ class CommandConsumer:
             return await self._handle_fs_fetch(payload, command_id)
         if ctype == "gpu_service":
             return await self._handle_gpu_service(payload, command_id)
+        if ctype == "fs_op":
+            return await self._handle_fs_op(payload, command_id)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
@@ -3203,8 +3208,277 @@ class CommandConsumer:
             {"_id": command_id}, {"$set": doc}, upsert=True,
         )
 
-    # -- P2P host-to-host: gpu_service (liga/desliga de serviço de GPU) -----
+    # -- P2P por SESSÃO: fs_op (list/read/write/copy/mkdir/delete) ---------
+    #
+    # Diferente do ``fs_fetch`` (host-to-host, read-only), aqui o chamador
+    # aponta uma SESSÃO: a API resolve o ``host_id`` dela e publica o comando
+    # pro worker desse host. Path relativo resolve contra o ``work_dir`` da
+    # sessão, que é onde o agente dela realmente trabalha.
+    #
+    # ESCOPO DE SEGURANÇA: isto NÃO é uma fronteira de contenção nova. O
+    # comando ``command`` (shell remoto) já executa arbitrário como o dono do
+    # tmux. O guard de ``$HOME``/``/tmp`` existe pra impedir engano e
+    # acidente (path errado apagando coisa do sistema), não pra conter um
+    # chamador hostil. Mesma postura do ``fs_fetch``.
 
+    #: Operações aceitas — conjunto FECHADO (nada de op arbitrária).
+    _FS_OPS = frozenset({"list", "read", "write", "copy", "mkdir", "delete"})
+
+    #: Teto do ``list`` (evita despejar 50k entries no contexto do chamador).
+    _FS_LIST_MAX = 500
+
+    async def _handle_fs_op(
+        self, payload: dict[str, Any], command_id: str | None
+    ) -> dict[str, Any]:
+        """Executa uma operação de arquivo neste host, gravando o resultado.
+
+        Payload: ``{op, path, work_dir?, dest?, content?, content_b64?,
+        append?, recursive?, limit?}``.
+
+        Todo erro (validação inclusa) também persiste em ``command_results``,
+        senão o chamador fica em polling até o timeout em vez de ver o motivo.
+        """
+        try:
+            result = await self._fs_op_run(payload)
+        except CommandError as exc:
+            if command_id:
+                await self._write_command_result(
+                    command_id, ok=False, error=str(exc), ctype="fs_op"
+                )
+            raise
+        if command_id:
+            await self._write_command_result(
+                command_id, ok=True, result=result, ctype="fs_op"
+            )
+        return result
+
+    def _fs_resolve(self, raw_path: str, work_dir: str | None, *, what: str) -> Path:
+        """Resolve e valida um path contra ``work_dir`` + ``$HOME``/``/tmp``.
+
+        - Relativo: exige ``work_dir`` e resolve contra ele.
+        - Absoluto (ou ``~``): aceito se cair dentro de ``$HOME`` ou ``/tmp``.
+
+        ``resolve()`` segue symlinks ANTES da checagem, então um link
+        apontando pra fora é recusado (mesmo comportamento do ``fs_fetch``).
+        """
+        if not raw_path:
+            raise CommandError(f"{what} requer 'path'")
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            if not work_dir:
+                raise CommandError(
+                    f"{what}: path relativo exige 'work_dir' (a sessão alvo não tem um)"
+                )
+            base = Path(work_dir).expanduser()
+            if not base.is_absolute():
+                raise CommandError(f"{what}: 'work_dir' precisa ser absoluto ({work_dir})")
+            candidate = base / candidate
+        try:
+            target = candidate.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise CommandError(f"path inválido: {exc}") from exc
+
+        home = Path(os.path.expanduser("~")).resolve()
+        tmp = Path("/tmp").resolve()
+        for root in (home, tmp):
+            try:
+                target.relative_to(root)
+                return target
+            except ValueError:
+                continue
+        raise CommandError(f"{what} recusado: path fora de $HOME ou /tmp ({raw_path})")
+
+    async def _fs_op_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Despacha a operação; cada ramo devolve o dicionário do resultado."""
+        op = str(payload.get("op") or "").strip().lower()
+        if op not in self._FS_OPS:
+            raise CommandError(
+                f"op desconhecida: {op!r} (aceitas: {', '.join(sorted(self._FS_OPS))})"
+            )
+        work_dir = (payload.get("work_dir") or "").strip() or None
+        raw_path = str(payload.get("path") or "").strip()
+        what = f"fs_op[{op}]"
+        target = self._fs_resolve(raw_path, work_dir, what=what)
+
+        loop = asyncio.get_running_loop()
+
+        def _run(fn, *args):
+            return loop.run_in_executor(None, fn, *args)
+
+        if op == "list":
+            return await _run(self._fs_list, target, int(payload.get("limit") or 200))
+        if op == "read":
+            return await _run(self._fs_read, target, what)
+        if op == "write":
+            return await _run(self._fs_write, target, payload, what)
+        if op == "mkdir":
+            return await _run(self._fs_mkdir, target)
+        if op == "delete":
+            return await _run(
+                self._fs_delete, target, bool(payload.get("recursive")), what
+            )
+        # copy
+        raw_dest = str(payload.get("dest") or "").strip()
+        if not raw_dest:
+            raise CommandError(f"{what} requer 'dest'")
+        dest = self._fs_resolve(raw_dest, work_dir, what=what)
+        return await _run(self._fs_copy, target, dest, what)
+
+    @staticmethod
+    def _fs_list(target: Path, limit: int) -> dict[str, Any]:
+        """Lista 1 nível: dirs primeiro, depois arquivos, ambos por nome."""
+        if not target.exists():
+            raise CommandError(f"diretório não encontrado: {target}")
+        if not target.is_dir():
+            raise CommandError(f"não é um diretório: {target}")
+        try:
+            children = list(target.iterdir())
+        except OSError as exc:
+            raise CommandError(f"listagem falhou: {exc}") from exc
+
+        entries: list[dict[str, Any]] = []
+        for child in children:
+            try:
+                st = child.lstat()
+            except OSError:
+                continue
+            is_dir = child.is_dir()
+            entries.append({
+                "name": child.name,
+                "type": "dir" if is_dir else "file",
+                "size": 0 if is_dir else st.st_size,
+                "mtime": st.st_mtime,
+            })
+        entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+        capped = max(1, min(limit, CommandConsumer._FS_LIST_MAX))
+        return {
+            "path": str(target),
+            "entries": entries[:capped],
+            "total": len(entries),
+            "truncated": len(entries) > capped,
+        }
+
+    def _fs_read(self, target: Path, what: str) -> dict[str, Any]:
+        if not target.exists():
+            raise CommandError(f"arquivo não encontrado: {target}")
+        if target.is_dir():
+            raise CommandError(f"é um diretório (use op='list'): {target}")
+        try:
+            st = target.stat()
+            data = self._read_for_fetch(target)
+        except CommandError:
+            raise
+        except OSError as exc:
+            raise CommandError(f"leitura falhou: {exc}") from exc
+
+        is_binary = b"\x00" in data[:8192]
+        result: dict[str, Any] = {
+            "path": str(target),
+            "size_bytes": st.st_size,
+            "returned_bytes": len(data),
+            "truncated": len(data) > self._FS_FETCH_MAX_BYTES,
+            "mtime": st.st_mtime,
+            "binary": is_binary,
+        }
+        if is_binary:
+            result["content_b64"] = base64.b64encode(data).decode("ascii")
+        else:
+            try:
+                result["text"] = data.decode("utf-8")
+            except UnicodeDecodeError:
+                result["binary"] = True
+                result["content_b64"] = base64.b64encode(data).decode("ascii")
+                result["encoding_note"] = "not utf-8, returned as base64"
+        return result
+
+    @staticmethod
+    def _fs_write(target: Path, payload: dict[str, Any], what: str) -> dict[str, Any]:
+        """Grava conteúdo (texto ou base64), criando pastas intermediárias."""
+        if "content_b64" in payload and payload["content_b64"] is not None:
+            try:
+                data = base64.b64decode(str(payload["content_b64"]), validate=True)
+            except (ValueError, TypeError) as exc:
+                raise CommandError(f"{what}: content_b64 inválido ({exc})") from exc
+        else:
+            data = str(payload.get("content") or "").encode("utf-8")
+
+        if target.is_dir():
+            raise CommandError(f"é um diretório, não dá pra escrever: {target}")
+        existed = target.exists()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            mode = "ab" if payload.get("append") else "wb"
+            with target.open(mode) as fh:
+                fh.write(data)
+        except OSError as exc:
+            raise CommandError(f"escrita falhou: {exc}") from exc
+        return {
+            "path": str(target),
+            "bytes_written": len(data),
+            "created": not existed,
+            "appended": bool(payload.get("append")),
+        }
+
+    @staticmethod
+    def _fs_mkdir(target: Path) -> dict[str, Any]:
+        existed = target.exists()
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CommandError(f"mkdir falhou: {exc}") from exc
+        return {"path": str(target), "created": not existed}
+
+    @staticmethod
+    def _fs_copy(source: Path, dest: Path, what: str) -> dict[str, Any]:
+        """Copia 1 arquivo ou uma árvore inteira. Recusa sobrescrever."""
+        if not source.exists():
+            raise CommandError(f"origem não encontrada: {source}")
+        if dest.exists():
+            raise CommandError(f"destino já existe: {dest}")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, dest)
+                total = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+            else:
+                shutil.copy2(source, dest)
+                total = dest.stat().st_size
+        except OSError as exc:
+            raise CommandError(f"cópia falhou: {exc}") from exc
+        return {
+            "source": str(source),
+            "dest": str(dest),
+            "bytes_copied": total,
+            "is_dir": source.is_dir(),
+        }
+
+    @staticmethod
+    def _fs_delete(target: Path, recursive: bool, what: str) -> dict[str, Any]:
+        if not target.exists() and not target.is_symlink():
+            raise CommandError(f"não encontrado: {target}")
+        # Guard extra: nunca apagar a raiz do home/tmp por acidente.
+        for root in (Path(os.path.expanduser("~")).resolve(), Path("/tmp").resolve()):
+            if target == root:
+                raise CommandError(f"{what} recusado: recusa apagar {root}")
+        try:
+            if target.is_dir() and not target.is_symlink():
+                if any(target.iterdir()) and not recursive:
+                    raise CommandError(
+                        f"diretório não vazio (use recursive=true): {target}"
+                    )
+                if recursive:
+                    shutil.rmtree(target)
+                else:
+                    target.rmdir()
+            else:
+                target.unlink()
+        except CommandError:
+            raise
+        except OSError as exc:
+            raise CommandError(f"remoção falhou: {exc}") from exc
+        return {"path": str(target), "deleted": True}
+
+    # -- P2P host-to-host: gpu_service (liga/desliga de serviço de GPU) -----
     #: Ações aceitas no payload do comando ``gpu_service``.
     _GPU_SERVICE_ACTIONS = frozenset({"start", "stop", "status"})
 

@@ -60,11 +60,21 @@ def find_handoff(work_dir: str, names: list[str]) -> Path | None:
 
     O ``sf`` usa o nome cru (``display_name``); o worker slugifica o tmux_name
     — tenta os dois.
+
+    ``names`` pode conter ``display_name``, editável livremente pelo usuário
+    via ``PUT /sessions/{id}/display-name`` (string livre, sem sanitização
+    naquele endpoint). Sem tratamento, um valor tipo ``"../../etc/passwd"``
+    viraria caminho fora de ``.sessionflow/handoff/`` — por isso cada
+    componente é reduzido a um slug seguro e o caminho final é checado contra
+    o diretório base (contenção dupla: regex + verificação de ``parent``).
     """
-    base = Path(work_dir).expanduser() / ".sessionflow" / "handoff"
+    base = (Path(work_dir).expanduser() / ".sessionflow" / "handoff").resolve()
     for name in dict.fromkeys(n for n in names if n):
-        path = base / f"{name}.handoff.json"
-        if path.is_file():
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip(".-")
+        if not safe:
+            continue
+        path = (base / f"{safe}.handoff.json").resolve()
+        if path.parent == base and path.is_file():
             return path
     return None
 

@@ -998,6 +998,120 @@ async def upload_audio(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Arquivos por SESSÃO (fs_op): list/read/write/copy/mkdir/delete
+# --------------------------------------------------------------------------- #
+#: Operações aceitas — espelha o conjunto fechado do worker.
+FS_OPS = ("list", "read", "write", "copy", "mkdir", "delete")
+
+
+class SessionFsIn(BaseModel):
+    """Body do POST /sessions/{session_id}/fs."""
+
+    op: str = Field(min_length=1, description="list|read|write|copy|mkdir|delete")
+    path: str = Field(
+        min_length=1,
+        description="Relativo → resolve contra o work_dir da sessão; "
+                    "absoluto → precisa estar em $HOME ou /tmp do host.",
+    )
+    dest: str | None = Field(default=None, description="Destino (op=copy).")
+    content: str | None = Field(default=None, description="Texto (op=write).")
+    content_b64: str | None = Field(default=None, description="Binário base64 (op=write).")
+    append: bool = Field(default=False, description="Anexa em vez de sobrescrever.")
+    recursive: bool = Field(default=False, description="Remoção recursiva (op=delete).")
+    limit: int | None = Field(default=None, ge=1, le=500, description="Máx. entries (op=list).")
+
+
+class SessionFsAccepted(BaseModel):
+    """202: comando publicado na fila do worker da sessão."""
+
+    command_id: str
+    status: str = "queued"
+    host_id: str
+    work_dir: str | None = None
+
+
+@router.post(
+    "/{session_id}/fs", response_model=SessionFsAccepted, status_code=202
+)
+async def session_fs(
+    request: Request, session_id: str, body: SessionFsIn
+) -> SessionFsAccepted:
+    """Opera arquivos no host de uma SESSÃO (listar, ler, escrever, copiar...).
+
+    Diferente de ``POST /hosts/{host_id}/fetch`` (host-to-host, read-only):
+    aqui o endereço é a SESSÃO. A API resolve o ``host_id`` e o ``work_dir``
+    dela e publica um comando ``fs_op`` pro worker daquele host; o cliente faz
+    polling em ``GET /commands/{command_id}`` (mesmo endpoint do ``fetch``).
+
+    ``path`` relativo resolve contra o ``work_dir`` da sessão — que é onde o
+    agente dela realmente trabalha. Absoluto precisa cair em ``$HOME`` ou
+    ``/tmp`` do host.
+
+    Escopo de segurança: isto NÃO é contenção nova. O comando ``command``
+    (shell remoto) já executa arbitrário como o dono do tmux; o guard existe
+    pra evitar acidente com path errado, mesma postura do ``fs_fetch``.
+    """
+    op = (body.op or "").strip().lower()
+    if op not in FS_OPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"op inválida: {body.op!r} (aceitas: {', '.join(FS_OPS)})",
+        )
+
+    repo = _get_repo(request)
+    session = await repo.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="sessão não encontrada")
+
+    host_id = session.get("host_id")
+    if not host_id:
+        raise HTTPException(
+            status_code=409,
+            detail="sessão sem host_id (pré multi-host): não dá pra rotear",
+        )
+
+    # Mesma checagem do /fetch: worker morto = ninguém consome o comando.
+    worker = await request.app.state.mongo_db[_WORKER_STATUS_COLLECTION].find_one(
+        {"_id": host_id}
+    )
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"host desconhecido: {host_id}")
+    updated = worker.get("updated_at")
+    if updated is not None:
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - updated).total_seconds()
+        if age > ONLINE_WINDOW_SECONDS:
+            raise HTTPException(
+                status_code=409,
+                detail=f"worker {host_id} offline há {int(age)}s; "
+                       "nada vai consumir o comando",
+            )
+
+    work_dir = session.get("work_dir") or None
+    payload: dict[str, Any] = {"op": op, "path": body.path}
+    if work_dir:
+        payload["work_dir"] = work_dir
+    for key in ("dest", "content", "content_b64"):
+        value = getattr(body, key)
+        if value is not None:
+            payload[key] = value
+    if body.append:
+        payload["append"] = True
+    if body.recursive:
+        payload["recursive"] = True
+    if body.limit is not None:
+        payload["limit"] = body.limit
+
+    command_id = await publish_command(
+        request.app.state.settings, type="fs_op", payload=payload, host_id=host_id
+    )
+    return SessionFsAccepted(
+        command_id=command_id, host_id=host_id, work_dir=work_dir
+    )
+
+
 @router.post(
     "/{session_id}/file", response_model=AudioUploadAccepted, status_code=202
 )

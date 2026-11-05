@@ -330,7 +330,9 @@ _AWAITING_DECISION_MARKERS = frozenset(
 )
 
 
-def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
+def screen_wants_attention(
+    text: str, agent_type: AgentType, *, ignore_awaiting_decision: bool = False
+) -> bool:
     """A TELA VISÍVEL sugere que o agente espera uma DECISÃO do usuário?
 
     Sinais fortes: footer de picker / confirmação y-n em qualquer lugar da
@@ -338,6 +340,16 @@ def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
     prompt atual — restrito p/ não casar "?" no meio da prosa do agente). O
     texto pode trazer cor (capture ``-e``), então removemos o ANSI antes.
     Heurística PROVISÓRIA por CLI.
+
+    ``ignore_awaiting_decision``: pula o sinal "_AWAITING_DECISION_MARKERS"
+    (frase solta tipo "quer que eu"/"aguardo sua decisão" numa janela de ~10
+    linhas). Esse sinal é o mais fraco dos três — casa qualquer pergunta na
+    tela, mesmo sobre assunto que NADA tem a ver com a tarefa delegada (ex.:
+    "tem 5 itens pendentes no JEV memory, quer que eu descarte?" depois que o
+    agente já entregou e escreveu o handoff final). Chamador usa isso quando
+    já tem prova formal (handoff com status final) de que a tarefa combinada
+    terminou — nesse caso só os sinais FORTES (footer de picker real / "?"
+    na última linha) ainda contam como bloqueio de verdade.
     """
     if not text:
         return False
@@ -350,9 +362,10 @@ def screen_wants_attention(text: str, agent_type: AgentType) -> bool:
         return True
     # "Aguardando decisão": frases completas (PT/EN) podem aparecer algumas
     # linhas acima do prompt — checa numa janela maior (últimas ~10 linhas).
-    blob10 = "\n".join(non_empty[-10:]).lower()
-    if any(m in blob10 for m in _AWAITING_DECISION_MARKERS):
-        return True
+    if not ignore_awaiting_decision:
+        blob10 = "\n".join(non_empty[-10:]).lower()
+        if any(m in blob10 for m in _AWAITING_DECISION_MARKERS):
+            return True
     # Pergunta direta: só nas 3 últimas linhas (prompt atual).
     return any(detect_waiting(ln, agent_type) for ln in non_empty[-3:])
 
