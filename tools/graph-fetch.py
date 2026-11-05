@@ -288,13 +288,31 @@ def _sha256(path: Path) -> str:
 
 
 def _marcador_origem(root: Path) -> str:
-    """Root de varredura registrado pelo graphify (absoluto, do host de origem)."""
+    """Root de varredura registrado pelo graphify, sempre ABSOLUTO.
+
+    O CLI grava o valor literal que recebeu. Rodando ``graphify update .`` o
+    arquivo fica ``.``; o guarda ``out-of-repo`` do graphify resolve isso contra
+    o cwd e continua funcionando, mas o manifesto publicado passaria a dizer
+    ``origem: .`` — e o consumidor perde a referência de qual árvore gerou o
+    grafo. Por isso resolvemos contra ``root`` e recusamos escapar dele.
+    """
+    root = Path(root).resolve()
     marcador = _out(root) / ".graphify_root"
     if marcador.is_file():
         txt = marcador.read_text(encoding="utf-8-sig").strip()
         if txt:
-            return txt
-    return str(Path(root).resolve())
+            p = Path(txt)
+            if not p.is_absolute():
+                p = (root / p)
+            try:
+                resolvido = p.resolve()
+            except OSError:
+                return str(root)
+            # Um marcador que escapa do repo (``../outro``) não descreve este
+            # artefato; o root publicado é a verdade.
+            if resolvido == root or root in resolvido.parents:
+                return str(resolvido)
+    return str(root)
 
 
 def _commit(root: Path):

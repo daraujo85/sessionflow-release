@@ -392,7 +392,9 @@ class PublicarTestCase(unittest.TestCase):
             gf.publicar(root, s3.cfg(), aws_date="20260101T000000Z")
 
             manifesto = json.loads(s3.objects["sessionflow/PUBLISHED.json"])
-            self.assertEqual(manifesto["origem"], "/Users/diegoaraujo/projects/sessionflow")
+            # O fixture grava um caminho de OUTRA máquina no marcador; ele não
+            # descreve esta árvore, então o manifesto usa o root real (#origem).
+            self.assertEqual(manifesto["origem"], str(root.resolve()))
             self.assertIn("graph.json", manifesto["arquivos"])
             self.assertEqual(len(manifesto["arquivos"]["graph.json"]), 64)
             # assinou tudo (todo PUT traz Authorization SigV4)
@@ -402,6 +404,37 @@ class PublicarTestCase(unittest.TestCase):
                 self.assertIn(
                     "AWS4-HMAC-SHA256", r["headers"].get("Authorization", "")
                 )
+
+    def test_origem_relativa_no_marcador_e_resolvida(self):
+        """`graphify update .` grava o marcador como ``.`` — inútil no manifesto.
+
+        O CLI do graphify escreve o valor literal que recebeu; rodando
+        ``graphify update .`` o arquivo fica ``.``. O guarda out-of-repo dele
+        resolve contra o cwd e continua funcionando, mas o manifesto publicado
+        passaria a dizer ``origem: .`` e o consumidor perde a referência de
+        qual host/árvore gerou o grafo.
+        """
+        with _FakeS3() as s3, tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "projeto"
+            (root / "graphify-out").mkdir(parents=True)
+            (root / "graphify-out" / "graph.json").write_text('{"nodes": []}')
+            (root / "graphify-out" / ".graphify_root").write_text(".")
+            gf.publicar(root, s3.cfg(prefixo="projeto"), aws_date="20260101T000000Z")
+
+            manifesto = json.loads(s3.objects["projeto/PUBLISHED.json"])
+            self.assertEqual(manifesto["origem"], str(root.resolve()))
+            self.assertNotEqual(manifesto["origem"], ".")
+
+    def test_origem_relativa_nao_escapa_do_root(self):
+        """Marcador com ``..`` é resolvido, mas nunca acima do repo publicado."""
+        with _FakeS3() as s3, tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "projeto"
+            (root / "graphify-out").mkdir(parents=True)
+            (root / "graphify-out" / "graph.json").write_text('{"nodes": []}')
+            (root / "graphify-out" / ".graphify_root").write_text("../outro")
+            gf.publicar(root, s3.cfg(prefixo="projeto"), aws_date="20260101T000000Z")
+            manifesto = json.loads(s3.objects["projeto/PUBLISHED.json"])
+            self.assertEqual(manifesto["origem"], str(root.resolve()))
 
 
 class BaixarTestCase(unittest.TestCase):
