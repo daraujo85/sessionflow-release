@@ -106,6 +106,32 @@ git config --system --add safe.directory '*'
 
 log "worker"
 cd "$SF/worker" && uv sync -q
+
+# Servidor MCP do agente. Duas armadilhas que só existem no Colab:
+#  1. /root é drwx------ → um venv ali fica registrado no .claude.json mas o
+#     agente (usuário diego) NÃO consegue executar; o sintoma é "as tools do
+#     MCP simplesmente não aparecem", sem erro visível.
+#  2. a VM é efêmera → sem reinstalar a cada boot, o runtime novo volta sem MCP.
+# Por isso os tools vão para /opt/sessionflow-mcp (mundo-legível) e o installer
+# roda com o HOME do diego, para registrar no .claude.json DELE com caminho
+# que ele abre. O install-mcp.sh resolve REPO a partir da própria localização,
+# então copiando tools/ para lá o venv nasce em /opt/sessionflow-mcp/tools/.
+log "Servidor MCP do agente"
+MCP_HOME=/opt/sessionflow-mcp
+mkdir -p "$MCP_HOME/tools"
+install -m 755 "$SF/tools/mcp_server.py" "$MCP_HOME/tools/mcp_server.py"
+install -m 755 "$SF/tools/install-mcp.sh" "$MCP_HOME/tools/install-mcp.sh"
+install -m 755 "$SF/tools/sf" "$MCP_HOME/tools/sf"
+install -m 644 "$SF/tools/mcp-requirements.txt" "$MCP_HOME/tools/mcp-requirements.txt"
+if HOME=/home/diego PATH="/usr/local/bin:$PATH" "$MCP_HOME/tools/install-mcp.sh" >/tmp/mcp-install.log 2>&1; then
+  chown -R diego: "$MCP_HOME"
+  chmod -R a+rX "$MCP_HOME"
+  log "✅ MCP registrado para o agente (diego) em $MCP_HOME"
+else
+  log "⚠ install-mcp.sh falhou — o agente sobe sem MCP (log em /tmp/mcp-install.log)"
+  tail -5 /tmp/mcp-install.log 2>/dev/null || true
+fi
+
 : > /tmp/worker.log
 tmux kill-session -t sessionflow-worker 2>/dev/null || true
 tmux new-session -d -s sessionflow-worker \

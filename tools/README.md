@@ -362,6 +362,16 @@ Testes: `tools/test_mcp_server.py` (26 casos, mock de rede; rode com
 e `tools/test_update_mcp.py` (10 casos, sandbox de filesystem; `python3 -m
 unittest test_update_mcp`).
 
+### Colab: MCP tem que viver fora do `/root`
+
+No Colab o worker roda como **root**, mas o agente (`claude`) roda como
+**diego** e `/root` é `drwx------`. Um venv em `/root/sessionflow/tools/.venv-mcp`
+fica registrado no `.claude.json` e **não executa** — o sintoma é "as tools do
+MCP não aparecem", sem erro. Por isso o `tools/colab-selfboot.sh` instala em
+`/opt/sessionflow-mcp` e roda o installer com `HOME=/home/diego`. Como a VM é
+efêmera, isso acontece a cada boot. `tools/test_colab_selfboot.py` (4 casos,
+`python3 -m unittest test_colab_selfboot`) trava esse contrato lendo o script.
+
 ---
 
 ## `watchdog/` — Auto-recuperação (Auto-Healing) do `sessionflow-api`
