@@ -52,6 +52,15 @@ def _consumer(stop) -> CommandConsumer:
     return c
 
 
+def _emit_captor():
+    """`_emit` de teste: devolve o evento que o consumer publicaria."""
+
+    async def _emit(command_id, ctype, **kwargs):
+        return {"command_id": command_id, "type": ctype, **kwargs}
+
+    return _emit
+
+
 @pytest.mark.asyncio
 async def test_shutdown_seta_o_evento_do_runner() -> None:
     stop = _StopFake()
@@ -76,6 +85,33 @@ async def test_shutdown_esta_no_dispatch() -> None:
     out = await c._dispatch("shutdown", {})
     assert stop.setado is True
     assert out.get("status") == "shutting_down"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_passa_pelo_handle_real() -> None:
+    """O caminho REAL é ``handle()``, não ``_dispatch`` — e é lá que mora o guard.
+
+    Regressão de campo (2026-11-06): ``handle()`` valida ``ctype`` contra
+    ``_VALID_TYPES`` ANTES de chamar ``_dispatch``. ``shutdown`` estava no
+    dispatcher mas fora do set, então todo ``sf stop`` de um host Kaggle
+    morria em "tipo de comando desconhecido: 'shutdown'" mesmo com o handler
+    correto. Testar só ``_dispatch`` escondeu o bug.
+    """
+    stop = _StopFake()
+    c = _consumer(stop)
+    c._processed = set()
+    c._emit = _emit_captor()
+    out = await c.handle({"type": "shutdown", "command_id": "cmd-1", "payload": {}})
+    assert out.get("ok") is True, f"guard rejeitou antes do dispatch: {out}"
+    assert "error" not in out, f"erro inesperado: {out.get('error')}"
+    assert stop.setado is True, "worker não seria encerrado"
+
+
+def test_shutdown_esta_em_valid_types() -> None:
+    """O set fechado do guard precisa conter o tipo (checagem direta e barata)."""
+    from sessionflow_worker.command_consumer import _VALID_TYPES
+
+    assert "shutdown" in _VALID_TYPES
 
 
 def test_runner_liga_o_evento_no_consumer() -> None:

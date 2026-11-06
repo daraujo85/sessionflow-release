@@ -151,6 +151,11 @@ _VALID_TYPES = frozenset(
         # Arquivos por SESSÃO (list/read/write/copy/mkdir/delete) — a API
         # resolve a sessão pro host dela e publica aqui.
         "fs_op",
+        # Encerramento do próprio worker (botão Desligar de host sandbox).
+        # Precisa estar AQUI além do `_dispatch`: `handle()` valida o tipo
+        # contra este set ANTES de despachar, e sem isto o comando morria em
+        # "tipo desconhecido" no Kaggle (sem SSH pra matar por fora).
+        "shutdown",
     }
 )
 
