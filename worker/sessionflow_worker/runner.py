@@ -726,6 +726,11 @@ async def _build_and_run(stop: asyncio.Event) -> None:
 
     discovery = Discovery(runtime, db, host_id, channel=channel)
     consumer = CommandConsumer(channel, db, host_id, runtime=runtime)
+    # `shutdown` (botão Desligar de host sandbox, ex.: Kaggle sem SSH) encerra
+    # o daemon pelo evento de parada do runner — caminho gracioso que já
+    # cancela as tasks e fecha conexões. Sem ligar isto o comando responderia
+    # ok sem efeito nenhum.
+    consumer._shutdown_event = stop
     capture = OutputCapture(runtime, db, channel=channel)
     logger.info("Componentes montados: Discovery, CommandConsumer, OutputCapture")
 

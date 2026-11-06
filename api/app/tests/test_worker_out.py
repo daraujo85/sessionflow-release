@@ -6,8 +6,10 @@ from datetime import UTC, datetime, timedelta
 
 from app.routers.worker import (
     DEFAULT_COLAB_NOTEBOOK_ID,
+    DEFAULT_KAGGLE_NOTEBOOK_URL,
     _to_worker_out,
     build_colab_url,
+    build_sandbox_url,
 )
 
 
@@ -135,3 +137,57 @@ def test_build_colab_url_both_custom() -> None:
         "https://colab.research.google.com/drive/1XYZ_my_colab2_nb?authuser=1"
     )
 
+
+# --- build_sandbox_url (Colab + Kaggle) --------------------------------------
+# O botão Ligar/Desligar do Perfil não pode depender de "colab" no nome: o
+# Kaggle é sandbox igual (VM efêmera, worker registra no 1º heartbeat) mas a
+# URL é o notebook do kaggle.com, não /drive/<id>. Sem isso o card do Kaggle
+# nunca ganha botão — foi o pedido explícito ("o kaggle com o colab precisa
+# de botao para dar play e stop").
+
+def test_build_sandbox_url_kaggle_por_nome() -> None:
+    """Host Kaggle recebe a URL do notebook do Kaggle, não a do Colab."""
+    doc = {"display_name": "Kaggle GPU"}
+    url = build_sandbox_url(doc, "558846ca-3973-40d1-ab7c-9dff20b97d5c")
+    assert url == f"{DEFAULT_KAGGLE_NOTEBOOK_URL}/edit"
+
+def test_build_sandbox_url_kaggle_por_host_id() -> None:
+    """host_id conhecido do Kaggle basta — display_name pode ser o hash do
+    container (mesma armadilha do Colab, que casa por '02151543')."""
+    doc = {"display_name": "fc1027582ecb", "hostname": "fc1027582ecb"}
+    url = build_sandbox_url(doc, "558846ca-3973-40d1-ab7c-9dff20b97d5c")
+    assert url == f"{DEFAULT_KAGGLE_NOTEBOOK_URL}/edit"
+
+def test_build_sandbox_url_kaggle_nao_usa_heuristica_de_authuser() -> None:
+    """Kaggle não tem `authuser` — só uma conta por navegador. A URL não pode
+    carregar `?authuser=` (parâmetro do Colab) nem apontar pro Drive."""
+    doc = {"display_name": "Kaggle CPU", "colab_authuser": "1"}
+    url = build_sandbox_url(doc, "d060d384-ca72-427c-b559-fddaafb0c9ca")
+    assert url is not None
+    assert "colab.research.google.com" not in url
+    assert "authuser" not in url
+
+def test_build_sandbox_url_kaggle_custom() -> None:
+    """`kaggle_notebook_url` próprio sobrescreve o default (notebook novo)."""
+    doc = {
+        "display_name": "Kaggle",
+        "kaggle_notebook_url": "https://www.kaggle.com/code/outro/meu-notebook",
+    }
+    assert build_sandbox_url(doc, "h_kaggle") == (
+        "https://www.kaggle.com/code/outro/meu-notebook/edit"
+    )
+
+def test_build_sandbox_url_kaggle_nao_duplica_edit() -> None:
+    """URL já terminando em /edit não vira /edit/edit."""
+    doc = {"kaggle_notebook_url": "https://www.kaggle.com/code/x/y/edit"}
+    assert build_sandbox_url(doc, "h_kaggle").endswith("/edit")
+    assert "/edit/edit" not in build_sandbox_url(doc, "h_kaggle")
+
+def test_build_sandbox_url_colab_delega_pro_colab() -> None:
+    """Colab continua resolvendo pelo build_colab_url (sem regressão)."""
+    doc = {"display_name": "Colab 2 Pro (GPU T4)"}
+    assert build_sandbox_url(doc, "h_colab2") == build_colab_url(doc, "h_colab2")
+
+def test_build_sandbox_url_host_comum_e_none() -> None:
+    """Mac/Duck/Hetzner não são sandbox: nenhum botão de ligar/desligar."""
+    assert build_sandbox_url({"display_name": "Macbook Air"}, "h_mac") is None

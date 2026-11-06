@@ -20,6 +20,11 @@ import { EventCuesService, CueMode } from '../../core/event-cues.service';
 import { JarvisAudioService } from '../../core/jarvis-audio.service';
 import { WorkersStore } from '../../core/workers-store';
 import {
+  sandboxKind,
+  sandboxLabel as sandboxLabelOf,
+  sandboxNotebookUrl as sandboxNotebookUrlOf,
+} from '../../core/sandbox';
+import {
   Session,
   UsageInfo,
   WorkerStatus,
@@ -210,15 +215,15 @@ const BAND_COLORS: Record<LoadBand, string> = {
                     title="Renomear/trocar emoji deste host"
                   >✎</button>
                 }
-                @if (isColab(w) && w.host_id) {
+                @if (isSandbox(w) && w.host_id) {
                   <span class="sf-colab-actions">
                     @if (!w.online) {
                       <button
                         type="button"
                         class="sf-colab-btn sf-colab-play"
                         [disabled]="actionLoadingHostId() === w.host_id"
-                        (click)="startColab(w, $event)"
-                        [title]="w.starting ? 'Ligando: aguardando o 1º heartbeat do worker (clique p/ reabrir o notebook)' : 'Ligar máquina no Google Colab'"
+                        (click)="startSandbox(w, $event)"
+                        [title]="w.starting ? 'Ligando: aguardando o 1º heartbeat do worker (clique p/ reabrir o notebook)' : 'Ligar máquina no ' + sandboxLabel(w)"
                       >
                         {{ actionLoadingHostId() === w.host_id ? '⏳' : w.starting ? '🟡' : '▶' }} {{ w.starting ? 'Ligando…' : 'Ligar' }}
                       </button>
@@ -227,20 +232,20 @@ const BAND_COLORS: Record<LoadBand, string> = {
                         type="button"
                         class="sf-colab-btn sf-colab-stop"
                         [disabled]="actionLoadingHostId() === w.host_id"
-                        (click)="stopColab(w, $event)"
-                        title="Desligar máquina Google Colab"
+                        (click)="stopSandbox(w, $event)"
+                        [title]="'Desligar máquina no ' + sandboxLabel(w)"
                       >
                         {{ actionLoadingHostId() === w.host_id ? '⏳' : '⏹' }} Desligar
                       </button>
                     }
                     <a
                       class="sf-colab-link"
-                      [href]="colabNotebookUrl(w)"
+                      [href]="sandboxNotebookUrl(w)"
                       target="_blank"
                       rel="noopener noreferrer"
                       (click)="$event.stopPropagation()"
-                      title="Abrir notebook no Google Colab"
-                    >↗ Colab</a>
+                      [title]="'Abrir notebook no ' + sandboxLabel(w)"
+                    >↗ {{ sandboxLabel(w) }}</a>
                   </span>
                 }
               </div>
@@ -2089,36 +2094,39 @@ export class PerfilComponent implements OnInit, OnDestroy {
   // ── Controle de Máquinas Colab (Play / Stop) ─────────────────────────────
   protected readonly actionLoadingHostId = signal<string | null>(null);
 
-  protected isColab(w: WorkerStatus): boolean {
-    const s = `${w.display_name ?? ''} ${w.hostname ?? ''} ${w.host_id ?? ''}`.toLowerCase();
-    return s.includes('colab');
+  /**
+   * Host tem botão Ligar/Desligar? Colab **e** Kaggle são sandbox (VM
+   * efêmera, worker que se registra no 1º heartbeat) — o mesmo par de botões
+   * serve pros dois. Antes isto era `s.includes('colab')`, e o card do
+   * Kaggle (display_name = hash do container) ficava sem botão nenhum.
+   */
+  protected isSandbox(w: WorkerStatus): boolean {
+    return sandboxKind(w) !== null;
+  }
+
+  /** Plataforma pro texto do link ("↗ Colab" / "↗ Kaggle"). */
+  protected sandboxLabel(w: WorkerStatus): string {
+    return sandboxLabelOf(w) ?? 'Notebook';
   }
 
   /**
-   * Fallback do link "↗ Colab" no card do host. Em 99% dos casos o backend
-   * já resolve a URL certa e abre ela via `startColab()` → `res.colab_url`.
-   * Esse método só é usado pra pré-popular o href do link "↗ Colab"
-   * exibido ao lado do botão Ligar/Desligar — e cai na heurística
-   * legada (notebook padrão + 0/1 conforme "colab 2"/"02151543") quando o
-   * `worker_status` não tem `colab_notebook_id` nem `colab_authuser`.
+   * Fallback do link "↗ <plataforma>" no card do host. Em 99% dos casos o
+   * backend resolve a URL certa e abre via `startSandbox()` →
+   * `res.colab_url`. Este método só pré-popula o href, cobrindo Colab
+   * (Drive + authuser) e Kaggle (página do notebook + /edit) — ver
+   * `core/sandbox.ts`.
    */
-  protected colabNotebookUrl(w: WorkerStatus): string {
-    const notebookId = w.colab_notebook_id ?? '1MLzqvoeSg_JeMywj4HzvyRKTmssieZH5';
-    let authuser = w.colab_authuser ?? null;
-    if (!authuser) {
-      const s = `${w.display_name ?? ''} ${w.hostname ?? ''} ${w.host_id ?? ''}`.toLowerCase();
-      authuser = s.includes('colab 2') || s.includes('colab2') || s.includes('02151543') ? '1' : '0';
-    }
-    return `https://colab.research.google.com/drive/${notebookId}?authuser=${authuser}`;
+  protected sandboxNotebookUrl(w: WorkerStatus): string | null {
+    return sandboxNotebookUrlOf(w);
   }
 
-  protected startColab(w: WorkerStatus, ev: Event): void {
+  protected startSandbox(w: WorkerStatus, ev: Event): void {
     ev.stopPropagation();
     if (!w.host_id) return;
     this.actionLoadingHostId.set(w.host_id);
-    // Backend resolve a URL do Colab (notebook_id + authuser configuráveis
-    // via worker_status). Se vier `colab_url` válida, abre; senão, só
-    // marca o host como online no Mongo (e.g. ligar worker não-Colab).
+    // Backend resolve a URL do notebook (Colab ou Kaggle, pela heurística de
+    // build_sandbox_url). Se vier `colab_url` válida, abre; senão, só marca
+    // o host como "ligando" no Mongo (e.g. ligar worker não-sandbox).
     this.api.startWorker(w.host_id).subscribe({
       next: (res) => {
         if (res.colab_url) {
@@ -2136,7 +2144,7 @@ export class PerfilComponent implements OnInit, OnDestroy {
     });
   }
 
-  protected stopColab(w: WorkerStatus, ev: Event): void {
+  protected stopSandbox(w: WorkerStatus, ev: Event): void {
     ev.stopPropagation();
     if (!w.host_id) return;
     this.actionLoadingHostId.set(w.host_id);

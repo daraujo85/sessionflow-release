@@ -396,6 +396,10 @@ export interface WorkerStatus {
   /** Qual conta Google selecionar na URL do Colab quando há múltiplas
    * logadas ("0"/"1"/...). `null` = heurística do backend. */
   colab_authuser?: string | null;
+  /** URL da página do notebook Kaggle deste host (`https://www.kaggle.com/
+   * code/<user>/<slug>`). `null` = usar o default do backend. Só hosts
+   * Kaggle usam — Colab resolve por `colab_notebook_id`. */
+  kaggle_notebook_url?: string | null;
 }
 
 /** Um modelo Ollama instalado num host (ver WorkerStatus.ollama_models). */

@@ -424,6 +424,10 @@ class CommandConsumer:
         self._server = server if server is not None else self._runtime.server
         # Dedupe simples em memória por command_id já processado.
         self._processed: set[str] = set()
+        # Evento de encerramento do runner (injetado por quem roda o daemon).
+        # ``shutdown`` seta isto pra encerrar graciosamente — necessário em
+        # host sem SSH (Kaggle), onde não há como matar o processo de fora.
+        self._shutdown_event: asyncio.Event | None = None
 
     @property
     def _sessions(self):
@@ -741,9 +745,29 @@ class CommandConsumer:
             return await self._handle_gpu_service(payload, command_id)
         if ctype == "fs_op":
             return await self._handle_fs_op(payload, command_id)
+        if ctype == "shutdown":
+            return await self._handle_shutdown(payload)
         raise CommandError(f"tipo de comando desconhecido: {ctype!r}")
 
     # -- handlers ---------------------------------------------------------
+
+    async def _handle_shutdown(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Encerra ESTE worker (botão Desligar de host sandbox — Kaggle).
+
+        Não mata o processo à força: seta o evento de parada do runner, que
+        já cancela as tasks e fecha as conexões no ``finally``. É o único
+        caminho em host sem SSH, onde não existe como matar de fora — sem
+        isto o worker seguiria mandando heartbeat e o host voltaria a 🟢 em
+        ~90s, tornando o botão decorativo.
+
+        Idempotente e tolerante: sem evento injetado (runner sem ``stop``,
+        testes), responde ok em vez de explodir.
+        """
+        logger.info("shutdown recebido (host %s) — encerrando worker", self._host_id)
+        evento = getattr(self, "_shutdown_event", None)
+        if evento is not None:
+            evento.set()
+        return {"status": "shutting_down", "host_id": self._host_id}
 
     async def _handle_create(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not payload.get("name"):

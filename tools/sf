@@ -1525,7 +1525,12 @@ def _colab_info(w):
             "is_colab": False,
             "authuser": None,
             "is_gpu": "gpu" in label or bool((w.get("hardware") or {}).get("gpu")),
-            "alias": "kaggle",
+            # NÃO existe `ssh kaggle` (~/.ssh/config) nem túnel bore no
+            # selfboot. Um alias aqui faria o `sf stop` rodar `ssh kaggle
+            # pkill ...`, falhar em silêncio (rc ignorado) e o worker seguir
+            # vivo — o host voltaria a 🟢 em ~90s. O desligamento real no
+            # Kaggle é o comando `shutdown` publicado pela API.
+            "alias": None,
             "url": os.environ.get(
                 "SF_KAGGLE_URL",
                 "https://www.kaggle.com/code/diegoaraujo85/notebooke5f51f72d8",
@@ -1604,11 +1609,16 @@ def cmd_stop(args):
     # Notifica a API para marcar offline imediatamente
     _request("POST", f"{base}/workers/{host_id}/stop", token=token)
 
-    # Mata processos remotos e túneis locais se SSH estiver configurado
+    # Mata processos remotos e túneis locais se SSH estiver configurado.
+    # Kaggle tem `alias=None` de propósito (não existe SSH lá): quem encerra
+    # o worker é o comando `shutdown` publicado pelo POST /stop acima.
     if alias:
         subprocess.run(["ssh", "-o", "ConnectTimeout=3", alias, "pkill -9 -f bore; pkill -9 -f sessionflow_worker"], capture_output=True, check=False)
         subprocess.run(["pkill", "-f", f"ssh.*{alias}"], capture_output=True, check=False)
         subprocess.run(["pkill", "-f", "ssh.*colab-worker"], capture_output=True, check=False)
+    elif info.get("is_kaggle"):
+        print("   (Kaggle: sem SSH — o worker recebe 'shutdown' e encerra sozinho;")
+        print("    a sessão do notebook continua aberta no navegador)")
 
     print(f"🛑 {label} desligado com sucesso.")
 

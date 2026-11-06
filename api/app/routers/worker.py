@@ -9,12 +9,15 @@ endpoints expõem esses dados REAIS para o Perfil — nada é fabricado.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.publishers.command_publisher import publish_command
+
+logger = logging.getLogger(__name__)
 
 # Motores de síntese suportados pelo worker (ver worker/sessionflow_worker/jarvis.py).
 _TTS_MODES = {"say", "xtts", "piper", "api"}
@@ -38,6 +41,25 @@ START_GRACE_SECONDS = 600.0
 # {colab_notebook_id: "1ABC..."}})`. Mesmo raciocínio pro `colab_authuser`
 # (qual conta Google selecionar quando há múltiplas logadas).
 DEFAULT_COLAB_NOTEBOOK_ID = "1WRlvNXyQGyYZ9xURL5gN-7ZmmdHRBi7A"
+
+# Notebook Kaggle padrão — o Kaggle não tem "/drive/<id>": a URL é a página do
+# notebook, e "/edit" abre o editor (onde o "Run All" roda as células). Cada
+# notebook novo sobrescreve no Mongo via
+# `{$set: {kaggle_notebook_url: "https://www.kaggle.com/code/<user>/<slug>"}}`.
+DEFAULT_KAGGLE_NOTEBOOK_URL = (
+    "https://www.kaggle.com/code/diegoaraujo85/notebooke5f51f72d8"
+)
+
+# host_ids de Kaggle já observados em campo. O display_name de um host Kaggle
+# é o hash do container (ex.: "fc1027582ecb"), às vezes nem contém "kaggle" —
+# então o nome sozinho não identifica. Mesma armadilha que o Colab resolve
+# casando "02151543".
+KAGGLE_HOST_IDS = frozenset(
+    {
+        "558846ca-3973-40d1-ab7c-9dff20b97d5c",  # runtime GPU (T4 x2)
+        "d060d384-ca72-427c-b559-fddaafb0c9ca",  # runtime CPU
+    }
+)
 
 
 class WorkerOut(BaseModel):
@@ -207,6 +229,44 @@ def build_colab_url(doc: dict, host_id: str) -> str | None:
     )
 
 
+def _is_kaggle_host(doc: dict, host_id: str) -> bool:
+    """Heurística: é um runtime Kaggle?
+
+    Três sinais, do mais forte ao mais fraco: (1) host_id conhecido (o
+    display_name de um host Kaggle é o hash do container e pode não conter
+    "kaggle"); (2) "kaggle" no nome/hostname/host_id; (3) o host declara ter
+    um notebook Kaggle próprio (``kaggle_notebook_url`` no doc)."""
+    if host_id in KAGGLE_HOST_IDS:
+        return True
+    if doc.get("kaggle_notebook_url"):
+        return True
+    nome = f"{doc.get('display_name') or ''} {doc.get('hostname') or ''}".lower()
+    return "kaggle" in nome or "kaggle" in host_id.lower()
+
+
+def build_kaggle_url(doc: dict, host_id: str) -> str | None:
+    """URL do notebook Kaggle deste host (com ``/edit``), ou None se não for
+    Kaggle. Diferente do Colab: não existe ``authuser`` (uma conta Google por
+    navegador) e não existe ``/drive/<id>`` — é a página do notebook."""
+    if not _is_kaggle_host(doc, host_id):
+        return None
+    base = (doc.get("kaggle_notebook_url") or DEFAULT_KAGGLE_NOTEBOOK_URL).rstrip("/")
+    # Idempotente: URL que já termina em /edit não vira /edit/edit.
+    return base if base.endswith("/edit") else f"{base}/edit"
+
+
+def build_sandbox_url(doc: dict, host_id: str) -> str | None:
+    """URL que o botão Ligar do Perfil abre — Colab OU Kaggle.
+
+    Os dois são sandbox efêmero (VM que morre sozinha, worker que se
+    registra no 1º heartbeat), então o mesmo par Ligar/Desligar serve pros
+    dois; o que muda é só pra onde a URL aponta. Host comum (Mac, Duck,
+    Hetzner) devolve None: não há o que "ligar" remotamente."""
+    if _is_kaggle_host(doc, host_id):
+        return build_kaggle_url(doc, host_id)
+    return build_colab_url(doc, host_id)
+
+
 @router.get("/worker", response_model=WorkerOut)
 async def get_worker(request: Request) -> WorkerOut:
     """Status de UM worker — retrocompat (telas que ainda não sabem de
@@ -288,7 +348,21 @@ async def set_worker_audio_settings(
 
 @router.post("/workers/{host_id}/stop", response_model=WorkerOut)
 async def stop_worker(request: Request, host_id: str) -> WorkerOut:
-    """Marca um worker/host como desligado (offline) no MongoDB."""
+    """Desliga um worker/host.
+
+    Marca offline no Mongo **e** pede o encerramento real do worker quando é
+    um host sandbox (Colab/Kaggle), publicando o comando ``shutdown`` — que o
+    worker consome e trata setando o evento de parada do runner.
+
+    Por que os dois: só marcar offline é cosmético — o worker segue vivo,
+    manda heartbeat 30s depois e o host volta a 🟢. Em Colab/Deepin/Duck isso
+    passava despercebido porque o ``sf stop`` também matava por SSH; no Kaggle
+    não existe SSH, então sem o comando o botão não desliga nada.
+
+    Host comum (Mac, Duck, Hetzner) não recebe o comando: derrubar o worker
+    da máquina de alguém por um clique em outra tela não é o que o botão
+    promete (lá o worker é serviço, reiniciado pelo systemd/launchd).
+    """
     db = request.app.state.mongo_db
     coll = db[WORKER_STATUS_COLLECTION]
     epoch_zero = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -299,12 +373,27 @@ async def stop_worker(request: Request, host_id: str) -> WorkerOut:
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Host not found")
+
+    if build_sandbox_url(doc, host_id) is not None:
+        # Best-effort: fila fora do ar não pode impedir o card de ir offline
+        # (o efeito visual já aconteceu; o shutdown é o passo seguinte).
+        try:
+            await publish_command(
+                request.app.state.settings,
+                type="shutdown",
+                payload={},
+                host_id=host_id,
+            )
+        except Exception:  # noqa: BLE001 - ver comentário acima
+            logger.warning("stop: falha ao publicar shutdown para %s", host_id,
+                           exc_info=True)
+
     return _to_worker_out(doc)
 
 
 @router.post("/workers/{host_id}/start")
 async def start_worker(request: Request, host_id: str) -> dict:
-    """Retorna os dados e URL do notebook Google Colab para inicialização da máquina."""
+    """Retorna os dados e a URL do notebook (Colab ou Kaggle) pra abrir a máquina."""
     db = request.app.state.mongo_db
     coll = db[WORKER_STATUS_COLLECTION]
     now = datetime.now(timezone.utc)
@@ -316,12 +405,16 @@ async def start_worker(request: Request, host_id: str) -> dict:
     if not doc:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    # `colab_url` mantém o nome por retrocompat (frontend/CLI já consomem) —
+    # agora vale também pro Kaggle, que é sandbox igual mas abre o notebook
+    # do kaggle.com. `sandbox_url` é o nome honesto pros novos consumidores.
+    sandbox_url = build_sandbox_url(doc, host_id)
     return {
         "status": "starting",
         "host_id": host_id,
-        # None quando não é Colab (heurística em build_colab_url). Frontend
-        # usa `res.colab_url` direto — sem reconstruir a URL do lado dele.
-        "colab_url": build_colab_url(doc, host_id),
+        "colab_url": sandbox_url,
+        "sandbox_url": sandbox_url,
+        "is_kaggle": _is_kaggle_host(doc, host_id),
         "display_name": doc.get("display_name") or host_id,
     }
 

@@ -1556,5 +1556,26 @@ class SandboxInfoTests(unittest.TestCase):
         self.assertEqual(info["alias"], "colab2-pro")
 
 
+class KaggleStopTests(unittest.TestCase):
+    """`sf stop` num host Kaggle não pode tentar SSH.
+
+    Não existe alias `kaggle` no `~/.ssh/config` (nem túnel bore no
+    selfboot): o `stop` antigo rodava `ssh kaggle pkill ...`, falhava
+    silencioso (returncode ignorado) e o worker seguia vivo mandando
+    heartbeat — o host "desligado" voltava a 🟢 em ~90s.
+    """
+
+    def test_kaggle_nao_tem_alias_ssh(self):
+        info = sf._colab_info({"host_id": "558846ca-3973-40d1-ab7c-9dff20b97d5c",
+                               "display_name": "Kaggle GPU"})
+        self.assertTrue(info["is_kaggle"])
+        self.assertIsNone(info["alias"], "Kaggle não tem SSH — alias aqui vira comando no vazio")
+
+    def test_colab_mantem_alias_ssh(self):
+        info = sf._colab_info({"host_id": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
+                               "display_name": "Colab 1 (CPU)"})
+        self.assertEqual(info["alias"], "colab1-cpu")
+
+
 if __name__ == "__main__":
     unittest.main()
