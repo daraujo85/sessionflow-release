@@ -506,6 +506,49 @@ Três cenários verificados no bloco, com `set -euo pipefail` ativo:
 | secret inválido (403 do MinIO) | avisa, segue, `rc=0` |
 | secret válido | baixa 4 objetos, 5780 nós |
 
+### Kaggle
+
+Mesmo problema do Colab (VM efêmera, `root`, tmux/cloudflared/uv, agente como
+`diego`, grafo consumido do MinIO). A diferença real é o **root do sandbox**:
+`/kaggle/working` em vez de `/content`. Por isso **não existe fork**: o
+`colab-selfboot.sh` lê `SF_SANDBOX_ROOT` (default `/content`, autodetecta
+`KAGGLE_KERNEL_RUN_TYPE`) e o `kaggle-selfboot.sh` só exporta o root e delega.
+
+Forkar criaria duas cópias divergindo em silêncio — a classe de bug que o
+`graph-fetch.py` já sofreu entre Mac e Deepin.
+
+```bash
+tools/sf start kaggle     # abre o notebook no Chrome; imprime o passo a passo
+```
+
+No notebook, como **1ª célula de código** (baixa e roda o selfboot):
+
+```python
+import os, subprocess
+from kaggle_secrets import UserSecretClient
+env = dict(os.environ)
+c = UserSecretClient()
+for k in ("SF_ENV_B64","SF_HOST_ID","SF_HOST_ID_GPU","ANTHROPIC_AUTH_TOKEN","GRAPHIFY_S3_SECRET_KEY"):
+    try: env[k] = c.get_secret(k)
+    except Exception: pass
+subprocess.run("curl -fsSL https://raw.githubusercontent.com/daraujo85/"
+               "sessionflow-release/main/tools/kaggle-selfboot.sh | bash",
+               shell=True, check=True, env=env)
+```
+
+Ou, sem reescrever nada, cole o conteúdo de `tools/kaggle-selfboot-cell.py`
+(versão com validação dos obrigatórios e mensagem de erro decente).
+
+Pegadinhas do Kaggle que o script **não** resolve sozinho:
+
+| item | detalhe |
+|---|---|
+| internet | vem **desligada**; ligar em Settings ▸ Internet **antes** de rodar (ligar reinicia o kernel) |
+| secrets | `kaggle_secrets.UserSecretClient`, não `google.colab.userdata` |
+| `/kaggle/input` | read-only |
+| sessão | cai em ~12h (GPU) / ~9h (CPU) |
+| visibilidade | notebook público **não** pode receber secret — deixar privado |
+
 ### Host de deploy: o caso do Deepin
 
 Nem todo host é clone completo. O Deepin é uma instalação **deployada** (sem
