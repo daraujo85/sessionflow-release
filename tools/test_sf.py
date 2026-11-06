@@ -1518,5 +1518,43 @@ class CommandVerbTests(SfApiTestCase):
         self.assertEqual(from_parser, set(sf._CMD_VALUE_OPTS))
 
 
+class SandboxInfoTests(unittest.TestCase):
+    """`_colab_info` escolhe a URL de "ligar" a máquina.
+
+    Kaggle e Colab são sandbox efêmero com o mesmo fluxo (rodar a célula do
+    worker), mas a URL é diferente: notebook do Kaggle vs. Drive do Colab.
+    Errar aqui abre a máquina errada no navegador — silencioso e confuso.
+    """
+
+    def test_kaggle_reconhecido_pelo_host_id_conhecido(self):
+        info = sf._colab_info({"host_id": "d060d384-ca72-427c-b559-fddaafb0c9ca"})
+        self.assertTrue(info["is_kaggle"])
+        self.assertFalse(info["is_colab"])
+        self.assertIn("kaggle.com", info["url"])
+        self.assertNotIn("colab.research.google.com", info["url"])
+
+    def test_kaggle_reconhecido_pelo_nome(self):
+        info = sf._colab_info({"host_id": "x", "display_name": "Kaggle GPU"})
+        self.assertTrue(info["is_kaggle"])
+        self.assertIn("kaggle.com", info["url"])
+
+    def test_colab_nao_regride(self):
+        info = sf._colab_info({"host_id": "c775ad00-58bb-44ae-9781-7e7e23b5404d",
+                               "display_name": "Colab 1 (CPU)"})
+        self.assertFalse(info["is_kaggle"])
+        self.assertTrue(info["is_colab"])
+        self.assertEqual(info["alias"], "colab1-cpu")
+        self.assertIn("colab.research.google.com", info["url"])
+
+    def test_colab_pro_usa_authuser_1(self):
+        # Nome real do host: "⚡ Colab 2 Pro (GPU T4)". Sem o "Pro" como sinal,
+        # um host GPU só é reconhecido por `hardware.gpu` — que o heartbeat
+        # pode não ter (runtime CPU ligado na conta Pro).
+        info = sf._colab_info({"host_id": "02151543-4ff8-44c2-b607-b1dfc8625067",
+                               "display_name": "⚡ Colab 2 Pro (GPU T4)"})
+        self.assertEqual(info["authuser"], "1")
+        self.assertEqual(info["alias"], "colab2-pro")
+
+
 if __name__ == "__main__":
     unittest.main()

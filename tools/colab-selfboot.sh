@@ -19,7 +19,19 @@ set -euo pipefail
 : "${SF_HOST_ID:?defina o Colab Secret SF_HOST_ID}"
 RELEASE_URL="${SF_RELEASE_URL:-https://github.com/daraujo85/sessionflow-release.git}"
 SF=/root/sessionflow
-WORK=/content/sessionflow   # clone de trabalho → `--dir sessionflow` acha aqui
+
+# Root do sandbox: /content no Colab, /kaggle/working no Kaggle. É o que a
+# pessoa vê como pasta de trabalho e o que sobrevive entre execuções — por isso
+# tudo que é montado (clone, work, clones de sessão) nasce embaixo dele. O
+# default preserva o comportamento histórico do Colab.
+SF_SANDBOX_ROOT="${SF_SANDBOX_ROOT:-/content}"
+# Kaggle expõe KAGGLE_KERNEL_RUN_TYPE; se o root não foi informado, usa o dele.
+if [ -z "${SF_SANDBOX_ROOT_EXPLICITO:-}" ] && [ -n "${KAGGLE_KERNEL_RUN_TYPE:-}" ]; then
+  SF_SANDBOX_ROOT=/kaggle/working
+fi
+mkdir -p "$SF_SANDBOX_ROOT"
+
+WORK="$SF_SANDBOX_ROOT/sessionflow"   # clone de trabalho → `--dir sessionflow` acha aqui
 log() { echo "[selfboot] $*"; }
 
 HOST_ID="$SF_HOST_ID"
@@ -52,7 +64,7 @@ log ".env + host_id"
 mkdir -p /root/.claude
 (umask 077; printf '%s' "$SF_ENV_B64" | base64 -d > "$SF/.env")
 grep -q '^API_BASE_URL=' "$SF/.env" || echo 'API_BASE_URL=https://api-sessionflow.boletoazap.dev.br' >> "$SF/.env"
-grep -q '^SESSIONFLOW_SCAN_ROOTS=' "$SF/.env" || echo 'SESSIONFLOW_SCAN_ROOTS=/content' >> "$SF/.env"
+grep -q '^SESSIONFLOW_SCAN_ROOTS=' "$SF/.env" || echo "SESSIONFLOW_SCAN_ROOTS=$SF_SANDBOX_ROOT" >> "$SF/.env"
 printf '%s' "$HOST_ID" > /root/.claude/.sessionflow-host-id
 
 log "proxies cloudflared (mongo/rabbit em 127.0.0.1, igual ao .env do Mac)"
@@ -99,9 +111,9 @@ CJ=/home/diego/.claude.json
 [ -s "$CJ" ] || echo '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true,"projects":{}}' > "$CJ"
 chown diego: "$CJ"
 ln -sf /home/diego/.claude.json /root/.claude.json
-mkdir -p /content/sessionflow-clones /content/work
-setfacl -R -m u:diego:rwX -d -m u:diego:rwX /content/sessionflow-clones /content/work "$WORK" 2>/dev/null \
-  || chown -R diego: /content/sessionflow-clones /content/work "$WORK"
+mkdir -p "$SF_SANDBOX_ROOT/sessionflow-clones" "$SF_SANDBOX_ROOT/work"
+setfacl -R -m u:diego:rwX -d -m u:diego:rwX "$SF_SANDBOX_ROOT/sessionflow-clones" "$SF_SANDBOX_ROOT/work" "$WORK" 2>/dev/null \
+  || chown -R diego: "$SF_SANDBOX_ROOT/sessionflow-clones" "$SF_SANDBOX_ROOT/work" "$WORK"
 git config --system --add safe.directory '*'
 
 log "worker"

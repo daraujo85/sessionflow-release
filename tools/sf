@@ -355,6 +355,10 @@ def resolve_host(workers, alias, allow_offline=False):
         "deepin": "83f9a08a-8f6a-4445-bb17-704b0f7baa2b",
         "hetzner": "9e29a449-4f77-4915-b50c-4b5c3c722565",
         "heztner": "9e29a449-4f77-4915-b50c-4b5c3c722565",
+        # Kaggle: worker registra sozinho no 1º heartbeat; o alias existe antes
+        # disso para `start` achar a máquina mesmo com ela offline.
+        "kaggle": "d060d384-ca72-427c-b559-fddaafb0c9ca",
+        "kaggle-gpu": "d060d384-ca72-427c-b559-fddaafb0c9ca",
     }
     if local_id:
         alias_map["local"] = local_id
@@ -1512,12 +1516,29 @@ def cmd_hosts(args):
 # --------------------------------------------------------------------------- #
 def _colab_info(w):
     label = f"{w.get('display_name') or ''} {w.get('hostname') or ''} {w.get('host_id') or ''}".lower()
+    # Kaggle: sandbox efêmero igual ao Colab, mas a "URL de ligar" é o notebook
+    # do usuário, não /drive/<id>. Sem isso `sf start kaggle` abriria Colab.
+    if "kaggle" in label or "d060d384" in label:
+        return {
+            "is_sandbox": True,
+            "is_kaggle": True,
+            "is_colab": False,
+            "authuser": None,
+            "is_gpu": "gpu" in label or bool((w.get("hardware") or {}).get("gpu")),
+            "alias": "kaggle",
+            "url": os.environ.get(
+                "SF_KAGGLE_URL",
+                "https://www.kaggle.com/code/diegoaraujo85/notebooke5f51f72d8",
+            ) + "/edit",
+        }
     is_colab2 = "colab 2" in label or "colab2" in label or "02151543" in label
     authuser = "1" if is_colab2 else "0"
     is_gpu = "gpu" in label or "t4" in label or (w.get("hardware") or {}).get("gpu")
     alias = "colab2-pro" if (is_colab2 and is_gpu) else ("colab2-cpu" if is_colab2 else ("colab1-pro" if is_gpu else "colab1-cpu"))
     url = f"https://colab.research.google.com/drive/1MLzqvoeSg_JeMywj4HzvyRKTmssieZH5?authuser={authuser}"
     return {
+        "is_sandbox": True,
+        "is_kaggle": False,
         "is_colab": is_colab(w),
         "authuser": authuser,
         "is_gpu": bool(is_gpu),
@@ -1547,14 +1568,21 @@ def cmd_start(args):
 
     # Abre a URL no navegador se estiver no macOS
     if sys.platform == "darwin" and colab_url:
-        print(f"🔗 Abrindo notebook no Google Colab: {colab_url}")
+        onde = "Kaggle" if info.get("is_kaggle") else "Google Colab"
+        print(f"🔗 Abrindo notebook no {onde}: {colab_url}")
         subprocess.run(["open", colab_url], check=False)
-        print("💡 No Google Colab:")
-        print("   1. Verifique se o Tipo de Ambiente é " + ("GPU T4" if info["is_gpu"] else "CPU Padrão"))
-        print("   2. Clique em 'Conectar' e execute as células do Worker.")
-        print("   3. Assim que o túnel bore subir, a máquina ficará 🟢 online no 'sf hosts'.")
+        print(f"💡 No {onde}:")
+        if info.get("is_kaggle"):
+            print("   1. Settings ▸ Internet ▸ ligar (o kernel reinicia depois disso)")
+            print("   2. Secrets: SF_ENV_B64, SF_HOST_ID[, SF_HOST_ID_GPU] anexados ao notebook")
+            print("   3. Rode a célula do worker: tools/kaggle-selfboot.sh")
+            print("   4. Com o worker no ar, a máquina fica 🟢 online no 'sf hosts'.")
+        else:
+            print("   1. Verifique se o Tipo de Ambiente é " + ("GPU T4" if info["is_gpu"] else "CPU Padrão"))
+            print("   2. Clique em 'Conectar' e execute as células do Worker.")
+            print("   3. Com o worker no ar, a máquina fica 🟢 online no 'sf hosts'.")
     else:
-        print(f"🔗 URL do Colab: {colab_url}")
+        print(f"🔗 URL: {colab_url}")
 
 
 def cmd_stop(args):

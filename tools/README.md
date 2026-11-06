@@ -458,6 +458,32 @@ S3 de mentira em thread local.
 dele — não-fatal: se o MinIO estiver fora, o consumidor segue com a cópia
 anterior.
 
+#### Pull antes de indexar
+
+Antes do gate de mtime, a rotina roda `git-pull-safe.sh` em cada projeto. Sem
+isso o grafo indexava código parado: um repo intocado localmente há uma semana
+nunca entrava na fila, mesmo com 50 commits novos no remoto. O pull vem
+**antes** do gate justamente porque é ele que decide se o gate deve ser
+ignorado (HEAD avançou ⇒ `pulled=1` ⇒ reindexa mesmo sem mtime novo).
+
+Política: **árvore limpa + fast-forward**, a mesma do `tools/self-update.sh`.
+Nada de `reset`, `rebase` ou descarte automático.
+
+| saída | significado |
+|---|---|
+| `0` | já em dia |
+| `10` | atualizou — a rotina reindexa |
+| `20` | pulado (não-git, sem upstream, árvore suja, divergido) ou falhou (rede) |
+
+Levantamento de 2026-11-05 nos 39 projetos indexados: vários ficam de fora por
+motivo legítimo — `devsync` (24 arquivos sujos), `garagemdocodigo` (166),
+`harvey` (2 commits locais divergidos), `boltcontext`/`doom`/`solidfy` (sem
+upstream). Todos seguem intocados; resolver é decisão humana.
+
+`git-pull-safe.sh` + `test_git_pull_safe.py` (11 casos, sem rede: remoto bare
+local) ficam em `~/.claude/skills/atualizar-grafos/` — a skill é local por
+design, não versionada no repo.
+
 ### Colab
 
 A VM do Colab é efêmera, então o `colab-selfboot.sh` baixa o grafo a cada boot
