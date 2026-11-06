@@ -29,6 +29,23 @@ class CelulaKaggleTests(unittest.TestCase):
             if not linha.lstrip().startswith("#")
         )
 
+    def test_propaga_url_do_notebook_ao_selfboot(self):
+        """SF_KAGGLE_URL precisa chegar ao subprocess — é a identidade do host.
+
+        A célula copia os secrets para ``env`` e passa ``env=env`` no
+        ``subprocess.run``. Se a URL ficar de fora das listas (OBRIGATORIOS/
+        OPCIONAIS), o selfboot sobe sem ela, o worker não declara
+        ``sandbox_kind``, e o host cai na lista chumbada de host_ids — que
+        nunca alcança a 2ª conta.
+        """
+        self.assertIn("SF_KAGGLE_URL", self.code)
+        # Tem que estar numa das listas que alimentam o `env`.
+        listas = re.search(r"OBRIGATORIOS\s*=\s*\((.*?)\)", self.code, re.S)
+        opcionais = re.search(r"OPCIONAIS\s*=\s*\((.*?)\)", self.code, re.S)
+        juntas = (listas.group(1) if listas else "") + (opcionais.group(1) if opcionais else "")
+        self.assertIn("SF_KAGGLE_URL", juntas, "a URL não seria copiada pro env")
+        self.assertIn("env=env", self.code, "o env não chegaria ao selfboot")
+
     def test_usa_o_cliente_de_secrets_do_kaggle(self):
         """O nome da classe é ``UserSecretsClient`` — com "s" no plural.
 

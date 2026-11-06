@@ -23,7 +23,13 @@ import os, subprocess
 from kaggle_secrets import UserSecretsClient
 
 OBRIGATORIOS = ("SF_ENV_B64", "SF_HOST_ID")
-OPCIONAIS = ("SF_HOST_ID_GPU", "ANTHROPIC_AUTH_TOKEN", "GRAPHIFY_S3_SECRET_KEY")
+# SF_KAGGLE_URL é o que faz o host se identificar como Kaggle e QUAL notebook
+# o botão Ligar abre. Sem ela, cada notebook/conta nova dependeria de uma
+# lista chumbada de host_ids na API — que nunca alcança a 2ª conta.
+OPCIONAIS = (
+    "SF_HOST_ID_GPU", "SF_KAGGLE_URL", "ANTHROPIC_AUTH_TOKEN",
+    "GRAPHIFY_S3_SECRET_KEY",
+)
 
 cliente = UserSecretsClient()
 env = dict(os.environ)
