@@ -30,9 +30,20 @@ class CelulaKaggleTests(unittest.TestCase):
         )
 
     def test_usa_o_cliente_de_secrets_do_kaggle(self):
+        """O nome da classe é ``UserSecretsClient`` — com "s" no plural.
+
+        A primeira versão desta célula usava ``UserSecretClient`` (singular):
+        um ``ImportError`` em runtime, no notebook real, porque a célula nem
+        chega a rodar. O erro passou pela suíte porque o teste assertava a
+        mesma grafia errada que o código — teste que espelha o bug não é
+        teste. Aqui a grafia vem da execução no Kaggle (Python 3.13), não da
+        memória de quem escreveu.
+        """
         self.assertIn("kaggle_secrets", self.code)
-        self.assertIn("UserSecretClient", self.code,
-                      "é a única API de secret disponível no Kaggle")
+        self.assertIn("UserSecretsClient", self.code,
+                      "grafia errada quebra no import, antes de qualquer uso")
+        self.assertNotIn("UserSecretClient\n", self.code.replace("UserSecretsClient", ""),
+                         "a grafia singular não existe no módulo")
 
     def test_nao_importa_google_colab(self):
         self.assertNotIn("google.colab", self.code,

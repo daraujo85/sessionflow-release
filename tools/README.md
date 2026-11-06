@@ -531,9 +531,9 @@ No notebook, como **1ª célula de código** (baixa e roda o selfboot):
 
 ```python
 import os, subprocess
-from kaggle_secrets import UserSecretClient
+from kaggle_secrets import UserSecretsClient
 env = dict(os.environ)
-c = UserSecretClient()
+c = UserSecretsClient()
 for k in ("SF_ENV_B64","SF_HOST_ID","SF_HOST_ID_GPU","ANTHROPIC_AUTH_TOKEN","GRAPHIFY_S3_SECRET_KEY"):
     try: env[k] = c.get_secret(k)
     except Exception: pass
@@ -550,7 +550,7 @@ Pegadinhas do Kaggle que o script **não** resolve sozinho:
 | item | detalhe |
 |---|---|
 | internet | vem **desligada**; ligar em Settings ▸ Internet **antes** de rodar (ligar reinicia o kernel) |
-| secrets | `kaggle_secrets.UserSecretClient`, não `google.colab.userdata` |
+| secrets | `kaggle_secrets.UserSecretsClient` (**plural**), não `google.colab.userdata` |
 | `/kaggle/input` | read-only |
 | sessão | cai em ~12h (GPU) / ~9h (CPU) |
 | visibilidade | notebook público **não** pode receber secret — deixar privado |

@@ -13,17 +13,19 @@
 # internet, então ligue PRIMEIRO e só depois execute esta célula.
 #
 # Diferenças em relação ao Colab (por isso a célula é separada):
-#   - secrets: `kaggle_secrets.UserSecretClient`, não `google.colab.userdata`;
+#   - secrets: `kaggle_secrets.UserSecretsClient` (plural!), não
+#     `google.colab.userdata`. A grafia singular não existe no módulo e
+#     quebra no import, antes de qualquer coisa rodar;
 #   - sandbox root: /kaggle/working, não /content (o wrapper resolve isso);
 #   - a sessão cai sozinha (~12h GPU / ~9h CPU).
 import os, subprocess
 
-from kaggle_secrets import UserSecretClient
+from kaggle_secrets import UserSecretsClient
 
 OBRIGATORIOS = ("SF_ENV_B64", "SF_HOST_ID")
 OPCIONAIS = ("SF_HOST_ID_GPU", "ANTHROPIC_AUTH_TOKEN", "GRAPHIFY_S3_SECRET_KEY")
 
-cliente = UserSecretClient()
+cliente = UserSecretsClient()
 env = dict(os.environ)
 faltando = []
 
