@@ -480,9 +480,15 @@ motivo legítimo — `devsync` (24 arquivos sujos), `garagemdocodigo` (166),
 `harvey` (2 commits locais divergidos), `boltcontext`/`doom`/`solidfy` (sem
 upstream). Todos seguem intocados; resolver é decisão humana.
 
-`git-pull-safe.sh` + `test_git_pull_safe.py` (11 casos, sem rede: remoto bare
+`git-pull-safe.sh` + `test_git_pull_safe.py` (13 casos, sem rede: remoto bare
 local) ficam em `~/.claude/skills/atualizar-grafos/` — a skill é local por
 design, não versionada no repo.
+
+Armadilha que o teste `test_upstream_literal_e_recusado_como_rev` trava:
+`git rev-parse '@{u}'` imprime a **string literal** `@{u}` no stdout quando o
+ref não existe (com `rc=128`). Validar só `-n` aceita lixo como revisão e o
+erro aparece lá na frente como `fatal: Needed a single revision` no log da
+rotina. A checagem tem que ser de SHA (`^[0-9a-f]{40}$`).
 
 ### Colab
 
