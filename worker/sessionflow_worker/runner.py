@@ -560,6 +560,45 @@ async def _backfill_legacy_host_id(db: AsyncIOMotorDatabase, host_id: str) -> No
         )
 
 
+def sandbox_identity() -> dict[str, str]:
+    """Identidade de HOST SANDBOX lida do ambiente do selfboot.
+
+    Devolve ``{}`` em host comum (Mac/Deepin/Duck/Hetzner) — nada inventado.
+    Para notebook efêmero devolve a plataforma e a URL/ID do notebook, que
+    são o que o app precisa para (a) saber que o card tem play/stop e (b)
+    abrir a página certa no botão Ligar.
+
+    Por que isto vem do ambiente e não de uma lista fixa de host_ids: cada
+    conta/notebook novo gera host_ids novos, e o ``display_name`` de um
+    runtime Kaggle é o hash do container (``fc1027582ecb``), sem a palavra
+    "kaggle". Lista chumbada nunca alcança a segunda conta nem um notebook
+    recriado; o selfboot sabe exatamente onde está e declara isso aqui.
+
+    Env (preparada pelo `colab-selfboot.sh` / `kaggle-selfboot.sh`):
+      SF_KAGGLE_URL        URL do notebook Kaggle (sem /edit)
+      SF_COLAB_NOTEBOOK_ID id do notebook no Drive (Colab)
+      SF_COLAB_AUTHUSER    índice da conta Google no navegador (0/1)
+
+    Kaggle tem precedência: se os dois vazarem, a plataforma mais específica
+    (a que exige URL completa) ganha.
+    """
+    kaggle = (os.environ.get("SF_KAGGLE_URL") or "").strip().rstrip("/")
+    if kaggle:
+        if kaggle.endswith("/edit"):
+            kaggle = kaggle[: -len("/edit")].rstrip("/")
+        return {"sandbox_kind": "kaggle", "kaggle_notebook_url": kaggle}
+
+    colab_id = (os.environ.get("SF_COLAB_NOTEBOOK_ID") or "").strip()
+    if colab_id:
+        ident = {"sandbox_kind": "colab", "colab_notebook_id": colab_id}
+        authuser = (os.environ.get("SF_COLAB_AUTHUSER") or "").strip()
+        if authuser:
+            ident["colab_authuser"] = authuser
+        return ident
+
+    return {}
+
+
 async def heartbeat_loop(
     db: AsyncIOMotorDatabase,
     host_id: str,
@@ -584,6 +623,11 @@ async def heartbeat_loop(
     # 1x aqui (alguns probes, tipo system_profiler no Mac, são lentos demais
     # pra rodar a cada heartbeat) e reenviado no $set de cada ciclo.
     hw = hardware_info(platform)
+    # Identidade sandbox: {} em host comum, {sandbox_kind, kaggle_notebook_url}
+    # ou {sandbox_kind, colab_notebook_id, colab_authuser} em notebook. Calculada
+    # 1x: vem do ambiente do selfboot e não muda em runtime (diferente de
+    # `HOST_ID`, que o selfboot já resolveu antes de subir o processo).
+    sandbox = sandbox_identity()
     while True:
         # tts_engines: recalculado a cada ciclo (não 1x como hardware) — muda
         # assim que uma instalação (ex.: Piper) terminar, sem precisar
@@ -617,6 +661,7 @@ async def heartbeat_loop(
                     "metrics": metrics,
                     "agents": agents,
                     "gpu_services": gpu_state,
+                    **sandbox,
                 }
             },
             upsert=True,

@@ -400,6 +400,11 @@ export interface WorkerStatus {
    * code/<user>/<slug>`). `null` = usar o default do backend. Só hosts
    * Kaggle usam — Colab resolve por `colab_notebook_id`. */
   kaggle_notebook_url?: string | null;
+  /** Plataforma sandbox DECLARADA pelo worker ("kaggle" | "colab"). Sinal
+   * primário: sobrevive a host_id novo (cada conta/notebook recriado gera um)
+   * e a display_name que é o hash do container. `undef`/null = worker antigo,
+   * cai na heurística por nome/host_id. */
+  sandbox_kind?: 'kaggle' | 'colab' | null;
 }
 
 /** Um modelo Ollama instalado num host (ver WorkerStatus.ollama_models). */

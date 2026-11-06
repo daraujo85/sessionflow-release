@@ -27,6 +27,13 @@ set -uo pipefail
 export SF_SANDBOX_ROOT="${SF_SANDBOX_ROOT:-/kaggle/working}"
 export SF_SANDBOX_ROOT_EXPLICITO=1   # não deixa a autodetecção sobrescrever
 
+# URL do notebook → identidade do host. O worker publica isso no heartbeat e a
+# API passa a saber que este host é um sandbox Kaggle e QUAL notebook abrir no
+# botão Ligar. Aceita dois nomes de secret porque o Kaggle também expõe
+# KAGGLE_URL do próprio ambiente em algumas versões; SF_KAGGLE_URL tem
+# precedência (permite apontar um notebook para a URL canônica, sem /edit).
+export SF_KAGGLE_URL="${SF_KAGGLE_URL:-${KAGGLE_URL:-}}"
+
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALVO="$AQUI/colab-selfboot.sh"
 

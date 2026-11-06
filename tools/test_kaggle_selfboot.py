@@ -77,6 +77,24 @@ class WrapperKaggleTests(unittest.TestCase):
         self.assertIn("colab-selfboot.sh", code,
                       "o wrapper tem que chamar o MESMO selfboot, não duplicar")
 
+    def test_wrapper_exporta_url_do_notebook(self):
+        """A URL do notebook identifica o host — e o card ganha play/stop.
+
+        Sem esta env o worker sobe sem ``sandbox_kind``; a API então cai numa
+        lista chumbada de host_ids que nunca alcança uma segunda conta
+        (ex.: engdiegoaraujo) nem um notebook recriado.
+        """
+        txt = KAGGLE.read_text(encoding="utf-8")
+        code = "\n".join(
+            linha for linha in txt.splitlines()
+            if not linha.lstrip().startswith("#")
+        )
+        self.assertIn("SF_KAGGLE_URL", code)
+        self.assertRegex(
+            code, r"SF_KAGGLE_URL=.*KAGGLE_URL",
+            "o selfboot deve aceitar a URL do ambiente (secret do notebook)",
+        )
+
     def test_wrapper_nao_duplica_logica_de_worker(self):
         txt = KAGGLE.read_text(encoding="utf-8")
         # Sinais de fork: recriar tmux do worker / uv sync por conta própria.

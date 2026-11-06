@@ -46,6 +46,13 @@ function identity(w: WorkerStatus): string {
 /** 'colab' | 'kaggle' | null. Kaggle tem precedência: um notebook Kaggle não
  * pode ser confundido com Colab (a URL é totalmente diferente). */
 export function sandboxKind(w: WorkerStatus): SandboxKind | null {
+  // Sinal PRIMÁRIO: o próprio worker declara a plataforma (vem do selfboot no
+  // heartbeat). É o único que sobrevive a host_id novo — cada conta/notebook
+  // recriado gera um — e a display_name que é o hash do container. Os sinais
+  // abaixo são fallback pra worker antigo, que ainda não publica o campo.
+  const declarado = (w.sandbox_kind ?? '').toLowerCase();
+  if (declarado === 'kaggle' || declarado === 'colab') return declarado;
+
   const id = (w.host_id ?? '').toLowerCase();
   const texto = identity(w);
   if (

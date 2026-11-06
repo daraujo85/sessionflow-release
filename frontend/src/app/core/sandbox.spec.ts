@@ -25,6 +25,33 @@ function host(extra: Partial<WorkerStatus> = {}): WorkerStatus {
 // Resultado: o card do Kaggle ficava sem botão nenhum.
 
 describe('sandboxKind', () => {
+  // Cada conta/notebook novo no Kaggle gera host_id novo, e o display_name é o
+  // hash do container. Lista chumbada nunca alcança a 2ª conta (engdiegoaraujo)
+  // nem notebook recriado — por isso o worker passou a declarar a plataforma.
+  describe('identidade declarada pelo worker (sandbox_kind)', () => {
+    it('host_id nunca visto + nome hash: sandbox_kind resolve', () => {
+      const w = host({
+        host_id: '9f3ab21c0d77',
+        display_name: '9f3ab21c0d77',
+        hostname: '9f3ab21c0d77',
+        sandbox_kind: 'kaggle',
+        kaggle_notebook_url:
+          'https://www.kaggle.com/code/engdiegoaraujo/notebookbe7faf1c38',
+      });
+      expect(sandboxKind(w)).toBe('kaggle');
+      expect(sandboxLabel(w)).toBe('Kaggle');
+    });
+
+    it('colab declarado não vira kaggle', () => {
+      const w = host({ host_id: 'h_x', sandbox_kind: 'colab', colab_notebook_id: 'abc123' });
+      expect(sandboxKind(w)).toBe('colab');
+    });
+
+    it('host comum sem sandbox_kind continua null', () => {
+      expect(sandboxKind(host({ host_id: 'f5efcc44', display_name: 'Macbook Air' }))).toBeNull();
+    });
+  });
+
   it('reconhece Colab pelo nome', () => {
     expect(sandboxKind(host({ display_name: 'Colab 1 (CPU)' }))).toBe('colab');
     expect(sandboxKind(host({ host_id: '02151543' }))).toBe('colab');
@@ -86,6 +113,18 @@ describe('sandboxNotebookUrl', () => {
     const url = sandboxNotebookUrl(w)!;
     expect(url).toBe('https://www.kaggle.com/code/outro/notebook/edit');
     expect(url).not.toContain('/edit/edit');
+  });
+
+  it('2ª conta abre o PRÓPRIO notebook, não o default', () => {
+    const w = host({
+      host_id: 'h_conta2',
+      sandbox_kind: 'kaggle',
+      kaggle_notebook_url: 'https://www.kaggle.com/code/engdiegoaraujo/notebookbe7faf1c38',
+    });
+    const url = sandboxNotebookUrl(w)!;
+    expect(url).toContain('engdiegoaraujo');
+    expect(url).not.toContain('diegoaraujo85');
+    expect(url.endsWith('/edit')).toBe(true);
   });
 
   it('Colab mantém a URL do Drive com authuser', () => {

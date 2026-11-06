@@ -111,6 +111,15 @@ class WorkerOut(BaseModel):
     # Google selecionar (None = heurística: "colab 2"/"02151543" → 1, resto → 0).
     colab_notebook_id: str | None = None
     colab_authuser: str | None = None
+    # Plataforma sandbox DECLARADA pelo worker ("kaggle" | "colab" | None).
+    # Sinal primário: sobrevive a host_id novo (cada conta/notebook recriado
+    # gera um) e a display_name que é o hash do container. A heurística por
+    # nome/host_id chumbado continua como fallback de worker antigo.
+    sandbox_kind: str | None = None
+    # URL do notebook Kaggle deste host (sem /edit). Preenchida pelo worker a
+    # partir do secret SF_KAGGLE_URL do notebook — é o que permite a 2ª conta
+    # (engdiegoaraujo) abrir o PRÓPRIO notebook em vez do default.
+    kaggle_notebook_url: str | None = None
     # Serviços de GPU sob demanda deste host: {nome: {active, last_used_at,
     # unit, port}} (ver worker/sessionflow_worker/gpu_services.py).
     # None = worker antigo (sem catálogo de GPU).
@@ -190,6 +199,8 @@ def _to_worker_out(doc: dict) -> WorkerOut:
         agents=doc.get("agents"),
         colab_notebook_id=doc.get("colab_notebook_id"),
         colab_authuser=doc.get("colab_authuser"),
+        sandbox_kind=doc.get("sandbox_kind"),
+        kaggle_notebook_url=doc.get("kaggle_notebook_url"),
         gpu_services=doc.get("gpu_services"),
     )
 
@@ -232,10 +243,14 @@ def build_colab_url(doc: dict, host_id: str) -> str | None:
 def _is_kaggle_host(doc: dict, host_id: str) -> bool:
     """Heurística: é um runtime Kaggle?
 
-    Três sinais, do mais forte ao mais fraco: (1) host_id conhecido (o
-    display_name de um host Kaggle é o hash do container e pode não conter
-    "kaggle"); (2) "kaggle" no nome/hostname/host_id; (3) o host declara ter
+    Três sinais, do mais forte ao mais fraco: (1) o próprio worker declara
+    ``sandbox_kind == "kaggle"`` — é o único que sobrevive a host_id novo
+    (cada conta/notebook recriado gera um) e a display_name que é o hash do
+    container (``fc1027582ecb``); (2) host_id conhecido ou "kaggle" no
+    nome/hostname/host_id (fallback p/ worker antigo); (3) o host declara ter
     um notebook Kaggle próprio (``kaggle_notebook_url`` no doc)."""
+    if (doc.get("sandbox_kind") or "").lower() == "kaggle":
+        return True
     if host_id in KAGGLE_HOST_IDS:
         return True
     if doc.get("kaggle_notebook_url"):
