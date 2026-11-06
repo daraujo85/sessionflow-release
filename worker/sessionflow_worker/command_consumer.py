@@ -118,8 +118,14 @@ HOST_UPLOADS_DIR = Path(
     )
 )
 
-_VALID_TYPES = frozenset(
-    {
+# Sentinela do "Desligar" de sandbox. O selfboot sobe o worker dentro de
+# `while true; do worker; sleep 5; done` (resiliente a crash). Encerrar só o
+# processo filho não basta: o supervisor relança em 5s e o host volta a 🟢.
+# O handler de `shutdown` grava este arquivo; o laço do selfboot checa antes
+# de reiniciar e sai. Fica em /tmp (efêmero junto com a VM, como deve ser).
+SHUTDOWN_SENTINEL = Path("/tmp/sessionflow-shutdown")
+
+_VALID_TYPES = frozenset({
         "create",
         "clone",
         "kill",
@@ -757,18 +763,31 @@ class CommandConsumer:
     # -- handlers ---------------------------------------------------------
 
     async def _handle_shutdown(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Encerra ESTE worker (botão Desligar de host sandbox — Kaggle).
+        """Encerra ESTE worker (botão Desligar de host sandbox — Kaggle/Colab).
 
-        Não mata o processo à força: seta o evento de parada do runner, que
-        já cancela as tasks e fecha as conexões no ``finally``. É o único
-        caminho em host sem SSH, onde não existe como matar de fora — sem
-        isto o worker seguiria mandando heartbeat e o host voltaria a 🟢 em
-        ~90s, tornando o botão decorativo.
+        Dois efeitos, e os dois são necessários:
 
-        Idempotente e tolerante: sem evento injetado (runner sem ``stop``,
-        testes), responde ok em vez de explodir.
+        1. seta o evento de parada do runner → ele cancela as tasks e fecha
+           as conexões no ``finally`` (sem isso o processo continua vivo);
+        2. grava a SENTINELA que o laço do selfboot consulta antes de
+           relançar. O selfboot roda
+           ``while true; do worker; sleep 5; done`` — resiliente a crash, mas
+           fatal para este botão: encerrar só o processo filho faz o
+           supervisor ressuscitá-lo em 5s e o host volta a 🟢. Em host com
+           SSH (Colab) o ``sf stop`` matava o tmux inteiro e mascarava isso;
+           no Kaggle não há SSH, então o supervisor precisa saber sair.
+
+        Idempotente e tolerante: sem evento injetado (testes), responde ok.
         """
         logger.info("shutdown recebido (host %s) — encerrando worker", self._host_id)
+        try:
+            SHUTDOWN_SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+            SHUTDOWN_SENTINEL.write_text(
+                f"{datetime.now(timezone.utc).isoformat()} {self._host_id}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.warning("shutdown: não consegui gravar a sentinela", exc_info=True)
         evento = getattr(self, "_shutdown_event", None)
         if evento is not None:
             evento.set()

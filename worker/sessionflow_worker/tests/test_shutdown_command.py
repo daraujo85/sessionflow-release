@@ -114,6 +114,49 @@ def test_shutdown_esta_em_valid_types() -> None:
     assert "shutdown" in _VALID_TYPES
 
 
+def test_shutdown_cria_sentinela_pro_supervisor() -> None:
+    """Sem SSH (Kaggle), o selfboot roda `while true; do worker; sleep 5; done`.
+
+    Um ``shutdown`` que só encerra o processo FILHO é inútil: o supervisor o
+    relança em 5s e o host volta a 🟢. O handler precisa criar a sentinela que
+    o laço consulta antes de reiniciar.
+    """
+    from pathlib import Path
+
+    fonte = (Path(__file__).resolve().parents[1] / "command_consumer.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SHUTDOWN_SENTINEL" in fonte, "handler precisa gravar a sentinela"
+    assert "sentinel" in fonte.lower()
+
+
+def test_selfboot_respeita_sentinela() -> None:
+    """O laço do selfboot tem que SAIR quando a sentinela existe.
+
+    Sem isto, o fix no worker é inócuo: o supervisor nunca olha o arquivo.
+    Asserção de COMPORTAMENTO (o laço consulta o arquivo e quebra), não de
+    sintaxe — a forma exata do `while` é detalhe de implementação.
+    """
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parents[3]
+    script = (raiz / "tools" / "colab-selfboot.sh").read_text(encoding="utf-8")
+    assert "sessionflow-shutdown" in script, "selfboot não conhece a sentinela"
+
+    # A linha que inicia o worker precisa estar guardada pela sentinela:
+    # ou o `while` testa o arquivo, ou há um `break` logo após o worker sair.
+    linhas = [l for l in script.splitlines() if "sessionflow_worker" in l and "tmux" in script]
+    inicio = script.find("tmux new-session -d -s sessionflow-worker")
+    assert inicio > 0, "mudou a forma do selfboot — revise este teste"
+    trecho = script[inicio:inicio + 400]
+    assert "sessionflow-shutdown" in trecho, (
+        "o laço do worker não consulta a sentinela:\n" + trecho
+    )
+    assert "break" in trecho or "while [ ! -f" in trecho, (
+        "o laço não sai quando a sentinela aparece"
+    )
+
+
 def test_runner_liga_o_evento_no_consumer() -> None:
     """O runner precisa injetar o evento — sem isso o handler é inerte.
 

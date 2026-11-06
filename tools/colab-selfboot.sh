@@ -177,8 +177,14 @@ fi
 
 : > /tmp/worker.log
 tmux kill-session -t sessionflow-worker 2>/dev/null || true
+# O laço relança o worker se ele cair (robustez a crash), MAS precisa parar
+# quando o desligamento foi PEDIDO. Sem esta checagem, o botão Desligar de um
+# host sem SSH (Kaggle) encerra o processo e o supervisor o ressuscita em 5s —
+# o host volta a 🟢 e o botão vira decorativo. O worker grava a sentinela em
+# /tmp/sessionflow-shutdown ao receber `shutdown`.
+rm -f /tmp/sessionflow-shutdown
 tmux new-session -d -s sessionflow-worker \
-  "cd $SF/worker && while true; do uv run python -m sessionflow_worker 2>&1 | tee -a /tmp/worker.log; sleep 5; done"
+  "while [ ! -f /tmp/sessionflow-shutdown ]; do cd $SF/worker && uv run python -m sessionflow_worker 2>&1 | tee -a /tmp/worker.log; [ -f /tmp/sessionflow-shutdown ] && break; sleep 5; done"
 for _ in $(seq 1 30); do
   grep -q 'Worker no ar' /tmp/worker.log && { log "✅ worker no ar (host_id $HOST_ID)"; exit 0; }
   sleep 2
