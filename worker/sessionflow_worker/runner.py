@@ -49,38 +49,48 @@ from dotenv import load_dotenv
 from libtmux.exc import LibTmuxException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from sessionflow_worker import dir_scanner, gpu_services, jarvis
-from sessionflow_worker.command_consumer import CommandConsumer
-from sessionflow_worker.discovery import Discovery
-from sessionflow_worker.events import emit_event
-from sessionflow_worker.push_sender import send_to_all
-from sessionflow_worker.handoff_notify import handoff_notify_loop
-from sessionflow_worker.idle_watchdog import idle_watchdog_loop
-from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id
-from sessionflow_worker.host_metrics import fetch_ollama_models, installed_agents, sample_load
-from sessionflow_worker.model_discovery import (
+# Carrega o `.env` ANTES dos imports que leem env no import-time: o
+# `jarvis.py` captura `SESSIONFLOW_JARVIS_*` em constantes de modulo (no
+# import). Sem isso, elas ficam nos DEFAULTS — o modelo local default
+# (qwen3:8b) que nao existe no host, e o backend 9router nunca e ativado.
+# Bug real: o JARVIS falava "coisa sem sentido" (classificador caia no 1B
+# inexistente / dava 404 no resumo).
+_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+if _ROOT_ENV.exists():
+    load_dotenv(_ROOT_ENV, override=False)
+
+# noqa E402: o load_dotenv ACIMA precisa vir antes destes imports — o
+# jarvis.py captura SESSIONFLOW_JARVIS_* em constantes de módulo (no
+# import). Sem o .env carregado antes, elas ficam nos DEFAULTS (modelo
+# local inexistente no host) e o backend 9router nunca é ativado.
+from sessionflow_worker import dir_scanner, gpu_services, jarvis  # noqa: E402
+from sessionflow_worker.command_consumer import CommandConsumer  # noqa: E402
+from sessionflow_worker.discovery import Discovery  # noqa: E402
+from sessionflow_worker.events import emit_event  # noqa: E402
+from sessionflow_worker.push_sender import send_to_all  # noqa: E402
+from sessionflow_worker.handoff_notify import handoff_notify_loop  # noqa: E402
+from sessionflow_worker.idle_watchdog import idle_watchdog_loop  # noqa: E402
+from sessionflow_worker.host_identity import capabilities_for, detect_platform, hardware_info, get_host_id  # noqa: E402
+from sessionflow_worker.host_metrics import fetch_ollama_models, installed_agents, sample_load  # noqa: E402
+from sessionflow_worker.model_discovery import (  # noqa: E402
     cache_is_fresh,
     discover_all_data,
     persist_models,
 )
-from sessionflow_worker.mongo import (
+from sessionflow_worker.mongo import (  # noqa: E402
     ACTIVE_STATUSES,
     SESSIONS_COLLECTION,
     ensure_indexes,
     get_db,
 )
-from sessionflow_worker.state import SessionState
-from sessionflow_worker.milestones import sync_session
-from sessionflow_worker.output_capture import OutputCapture
-from sessionflow_worker.rabbit import connect, commands_queue_name, declare_topology, publish
-from sessionflow_worker.tmux_runtime import TmuxRuntime
-from sessionflow_worker.usage import persist_usage, scrape_usage
+from sessionflow_worker.state import SessionState  # noqa: E402
+from sessionflow_worker.milestones import sync_session  # noqa: E402
+from sessionflow_worker.output_capture import OutputCapture  # noqa: E402
+from sessionflow_worker.rabbit import connect, commands_queue_name, declare_topology, publish  # noqa: E402
+from sessionflow_worker.tmux_runtime import TmuxRuntime  # noqa: E402
+from sessionflow_worker.usage import persist_usage, scrape_usage  # noqa: E402
 
 logger = logging.getLogger("sessionflow_worker.runner")
-
-# `.env` da raiz do repo: worker/sessionflow_worker/runner.py -> ../../../.env
-_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
-
 
 def _resolve_scan_roots() -> list[Path]:
     """Raízes do scan de diretórios (autocomplete) — configurável por host.

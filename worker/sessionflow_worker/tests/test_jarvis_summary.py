@@ -23,7 +23,7 @@ async def test_summary_pane_vazio_usa_fallback_sem_chamar_ollama(
     def fail(*a, **kw):  # noqa: ANN001, ANN002, ANN003
         raise AssertionError("não deveria chamar Ollama com pane vazio")
 
-    monkeypatch.setattr(jarvis_mod, "_ollama_sync", fail)
+    monkeypatch.setattr(jarvis_mod, "_llm_sync", fail)
     out = await _summary("   ", title="Sessão X aguarda você", desc="")
     assert out == "Sessão X aguarda você"
 
@@ -33,7 +33,7 @@ async def test_summary_pane_normal_chama_ollama_e_usa_resposta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        jarvis_mod, "_ollama_sync", lambda system, prompt, **kw: "Resumo curto da tela."
+        jarvis_mod, "_llm_sync", lambda system, prompt, **kw: "Resumo curto da tela."
     )
     out = await _summary("$ npm test\nPASS 12 suites", title="build", desc="build ocioso")
     assert out == "Resumo curto da tela."
@@ -46,7 +46,7 @@ async def test_summary_ollama_offline_cai_pro_evento_sem_levantar(
     def boom(*a, **kw):  # noqa: ANN001, ANN002, ANN003
         raise urllib.error.URLError("connection refused")
 
-    monkeypatch.setattr(jarvis_mod, "_ollama_sync", boom)
+    monkeypatch.setattr(jarvis_mod, "_llm_sync", boom)
     out = await _summary("algum conteudo de tela", title="Sessão Y aguarda você", desc="")
     assert out == "Sessão Y aguarda você"
 
@@ -60,7 +60,7 @@ async def test_summary_ollama_404_modelo_ausente_cai_pro_evento(
     def not_found(*a, **kw):  # noqa: ANN001, ANN002, ANN003
         raise urllib.error.HTTPError("http://x/api/generate", 404, "Not Found", {}, None)
 
-    monkeypatch.setattr(jarvis_mod, "_ollama_sync", not_found)
+    monkeypatch.setattr(jarvis_mod, "_llm_sync", not_found)
     out = await _summary("algum conteudo de tela", title="build", desc="build ocioso")
     assert out == "build ocioso"
 

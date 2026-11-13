@@ -100,6 +100,25 @@ OLLAMA_BASE = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA", "http://localhost:1143
 # (qwen3:8b) — `llama3.1:8b` NÃO está instalado nos hosts atuais, o que fazia
 # todo resumo cair em 404 silencioso (fallback pro texto fixo do evento).
 OLLAMA_MODEL = os.environ.get("SESSIONFLOW_JARVIS_OLLAMA_MODEL", "qwen3:8b")
+
+# --- Backend 9router (OpenAI-compatible) --------------------------------------
+# O modelo local (Ollama) do host nem sempre existe: no Deepin há só
+# gemma3:4b, e o default qwen3:8b dava 404 — o resumo caía no texto fixo e o
+# classificador de escolha (llama3.2:1b) nem existia, então o JARVIS
+# "falava coisas sem sentido" (ou não entendia a resposta).
+#
+# Quando ``SESSIONFLOW_JARVIS_9ROUTER_BASE`` está setado, o JARVIS usa o
+# 9router (OpenAI-compatible) como backend PRIMÁRIO e cai pro Ollama local
+# só se o 9router falhar. O 9router NÃO expõe a API do Ollama (/api/generate
+# devolve 401) — é /v1/chat/completions.
+NINEROUTER_BASE = os.environ.get("SESSIONFLOW_JARVIS_9ROUTER_BASE", "").rstrip("/")
+NINEROUTER_TOKEN = os.environ.get("SESSIONFLOW_JARVIS_9ROUTER_TOKEN", "")
+NINEROUTER_MODEL = os.environ.get("SESSIONFLOW_JARVIS_9ROUTER_MODEL", "claude-hawtor")
+# Timeout do 9router: LLM de verdade (MiniMax no 9router) é mais lento que
+# um 1B local — 40s do Ollama dá margem curta pro primeiro token.
+NINEROUTER_TIMEOUT_S = int(os.environ.get("SESSIONFLOW_JARVIS_9ROUTER_TIMEOUT", "60"))
+#: Tamanho do resumo falado: "curto" (1-2 frases) | "longo" (3-5 frases).
+SUMMARY_LENGTH = os.environ.get("SESSIONFLOW_JARVIS_SUMMARY_LENGTH", "curto").lower()
 # Modelo p/ CLASSIFICAR a resposta falada de um picker (modo JARVIS completo)
 # contra a lista de opções — tarefa bem mais restrita que o resumo, por isso um
 # modelo BEM menor basta (baixa latência) e o parser determinístico (ver
@@ -141,11 +160,32 @@ def _summary_sys(owner: str) -> str:
     PESSOA ("eu terminei X"), e quando sobra algo pro dono da sessao fazer,
     usa um "voce" generico, sem nomear ninguem.
     """
+    # Tamanho do resumo falado: "curto" (1-2 frases, ~6s de audio) ou "longo"
+    # (3-5 frases, ~15-20s) — o dono escolhe. O prompt muda junto: LLM de
+    # verdade (MiniMax no 9router) respeita "N frases"; modelo pequeno
+    # ignorava e dava textão.
+    if SUMMARY_LENGTH == "longo":
+        size_rule = (
+            "Seja DETALHADO: de tres a cinco frases curtas e diretas, contando o "
+            "que ACONTECEU (o que foi feito, o que deu certo, o que deu errado, o "
+            "que ficou pendente). "
+        )
+    else:
+        size_rule = (
+            "Seja BEM curto: uma ou no maximo duas frases curtas e diretas. "
+        )
     return (
-        "Voce gera um texto curto que sera LIDO EM VOZ ALTA por um sintetizador de "
-        "voz (TTS) em portugues do Brasil. Escreva como fala humana natural, do "
-        "jeito que uma pessoa contaria rapidinho o que aconteceu. Seja BEM curto: "
-        "uma ou no maximo duas frases curtas e diretas. "
+        "Voce gera um texto que sera LIDO EM VOZ ALTA por um sintetizador de "
+        "voz (TTS) em portugues do Brasil. Responda SEMPRE em portugues do "
+        "Brasil, nunca em ingles ou outro idioma. Escreva como fala humana "
+        "natural, do jeito que uma pessoa contaria o que acabou de acontecer, "
+        "olhando a tela. "
+        + size_rule +
+        # O MiniMax (9router) narrava o PROPRIO raciocinio como se fosse fala
+        # ("eu preciso repetir os dois testes...") — o ouvinte nao quer saber o
+        # que voce PENSOU, quer o que OCORREU.
+        "Fale do que ACONTECEU. NAO narrue seus planos, raciocinio ou proximos "
+        "passos internos. "
         "Voce E o agente (a IA rodando na sessao) contando o que VOCE MESMO fez, "
         "entao fale em PRIMEIRA PESSOA ('eu terminei X', 'eu fiz Y', 'estou "
         "esperando Z'), NUNCA em terceira pessoa ('o agente fez'). Se sobrar "
@@ -176,6 +216,29 @@ _DROP_RE = re.compile(
 )
 
 
+# Bloco de RAZONAMENTO dos modelos que pensam antes de responder (MiniMax no
+# 9router). Vem envelopado em <think>...</think> e NÃO deve ser lido no TTS
+# nem usado p/ extrair a resposta.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove o bloco <think>...</think> e apara o texto.
+
+    Sem isso, o classificador de escolha pegava dígitos do RAZONAMENTO
+    ("<think>We need answer only number option") e devolvia a opção errada —
+    exatamente o "JARVIS falando coisa sem sentido".
+    """
+    t = _THINK_RE.sub(" ", text or "")
+    # Modelo pode deixar o <think> aberto (cortado por max_tokens): descarta
+    # tudo a partir dele.
+    low = t.lower()
+    idx = low.find("<think>")
+    if idx != -1:
+        t = t[:idx]
+    return t.strip()
+
+
 def _clean_for_speech(text: str) -> str:
     """Tira símbolos/marcação que o TTS leria em voz alta (ex.: ``●``, ``*``).
 
@@ -183,7 +246,10 @@ def _clean_for_speech(text: str) -> str:
     remove marcação, box-drawing, URLs e pontuação solta nas pontas — assim o
     sintetizador não fala "ponto"/"asterisco" do nada.
     """
-    t = _URL_RE.sub("", text or "")
+    # Raciocínio do modelo (<think>...</think>) NUNCA vai p/ o TTS — seria
+    # lido em voz alta ("we need answer only number option").
+    t = _strip_reasoning(text or "")
+    t = _URL_RE.sub("", t)
     t = _EMOJI_RE.sub(" ", t)
     # Reticências UNICODE (… ‥) viram um ponto ANTES do colapso — o caractere
     # único escapava do tratamento de "..." e o XTTS lia "ponto ponto (ponto)".
@@ -239,7 +305,39 @@ def _post_form(path: str, fields: dict[str, str], timeout: int = _HTTP_TIMEOUT) 
     req = urllib.request.Request(
         f"{TTS_BASE_URL}{path}",
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            # UA explícito: o padrão do urllib ("Python-urllib/3.x") é
+            # bloqueado pelo Cloudflare na frente dos hosts públicos (403).
+            "User-Agent": "sessionflow-worker/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+def _post_json_auth(
+    url: str,
+    payload: dict[str, Any],
+    token: str,
+    timeout: int = _HTTP_TIMEOUT,
+) -> dict[str, Any]:
+    """POST JSON com header de autorização (Bearer).
+
+    O User-Agent é EXPLÍCITO: o padrão do urllib ("Python-urllib/3.x") é
+    bloqueado pelo Cloudflare na frente do 9router (HTTP 403) — o header
+    some atrás do proxy do mesh público.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "sessionflow-worker/1.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -249,6 +347,81 @@ def _post_form(path: str, fields: dict[str, str], timeout: int = _HTTP_TIMEOUT) 
 # --- Resumo ------------------------------------------------------------------
 
 
+def _ninerouter_sync(
+    system: str,
+    prompt: str,
+    num_predict: int = 70,
+    temperature: float = 0.3,
+    model: str | None = None,
+) -> str:
+    """Gera texto via 9router (OpenAI-compatible: /v1/chat/completions).
+
+    Modelo default ``claude-hawtor`` (MiniMax no 9router) — LLM de verdade,
+    bem melhor que o 1B local p/ classificar resposta falada. O 9router não
+    expõe a API do Ollama, então é outro dialeto (system como 1ª mensagem).
+    """
+    out = _post_json_auth(
+        f"{NINEROUTER_BASE}/v1/chat/completions",
+        {
+            "model": model or NINEROUTER_MODEL,
+            "messages": [
+                # O system do JARVIS ja e' em pt-BR; reforca o idioma no
+                # envelope tambem (o modelo responde no idioma do system).
+                {
+                    "role": "system",
+                    "content": (
+                        "Responda SEMPRE em portugues do Brasil.\n\n" + system
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            # O budget precisa sobrar pra RESPOSTA: modelo de raciocinio
+            # (MiniMax) gasta tokens pensando ANTES de responder — com
+            # max_tokens apertado a resposta sai truncada/vazia (o resumo
+            # virava string vazia). Folga generosa + limpeza do <think>.
+            "max_tokens": max(256, num_predict * 8),
+            "temperature": temperature,
+            "stream": False,
+        },
+        NINEROUTER_TOKEN,
+        timeout=NINEROUTER_TIMEOUT_S,
+    )
+    choices = out.get("choices") or []
+    if not choices:
+        return ""
+    return (choices[0].get("message") or {}).get("content") or ""
+
+def _llm_sync(
+    system: str,
+    prompt: str,
+    num_predict: int = 70,
+    temperature: float = 0.3,
+    model: str | None = None,
+) -> str:
+    """Gera texto: 9router (se configurado) com fallback pro Ollama local.
+
+    O fallback existe porque o 9router pode estar fora do ar (host sem rede
+    até a LAN) — nesse caso o Ollama do host ainda salva o resumo.
+    """
+    if NINEROUTER_BASE:
+        try:
+            return _ninerouter_sync(system, prompt, num_predict, temperature, model)
+        except Exception:  # noqa: BLE001 - 9router fora do ar → Ollama local
+            logger.warning("jarvis: 9router falhou; usando Ollama local", exc_info=True)
+    out = _post_json(
+        f"{OLLAMA_BASE}/api/generate",
+        {
+            "model": model or OLLAMA_MODEL,
+            "system": system,
+            "prompt": prompt,
+            "stream": False,
+            # num_predict baixo força brevidade (resumo curto = fala xtts rápida).
+            "options": {"temperature": temperature, "num_predict": num_predict},
+        },
+        timeout=40,
+    )
+    return (out.get("response") or "").strip()
+
 def _ollama_sync(
     system: str,
     prompt: str,
@@ -256,6 +429,7 @@ def _ollama_sync(
     temperature: float = 0.3,
     model: str | None = None,
 ) -> str:
+    """Gera texto pelo Ollama LOCAL (sem 9router) — kept p/ fallback explícito."""
     out = _post_json(
         f"{OLLAMA_BASE}/api/generate",
         {
@@ -272,7 +446,14 @@ def _ollama_sync(
 
 
 def _summary_ollama_sync(prompt: str, owner: str) -> str:
-    return _ollama_sync(_summary_sys(owner), prompt)
+    # 9router quando configurado (LLM de verdade); senão Ollama local.
+    # Limpa o <think>: o texto de raciocinio nao e resumo (e nao vai p/ o TTS).
+    # num_predict acompanha o tamanho pedido: 70 tokens (~1 frase) no curto,
+    # 320 no longo (~4 frases). O default (70) cortava o resumo pela metade.
+    num_predict = 320 if SUMMARY_LENGTH == "longo" else 70
+    return _strip_reasoning(
+        _llm_sync(_summary_sys(owner), prompt, num_predict=num_predict)
+    )
 
 
 # Intervalo do keep-alive: mais curto que o `keep_alive` default do Ollama (5m)
@@ -326,8 +507,8 @@ def _dedup_sync(text: str, model: str) -> tuple[str, dict[str, int] | None]:
     if not stripped:
         return text, None
     try:
-        deduped = _ollama_sync(
-            _DEDUP_SYS, stripped, num_predict=800, temperature=0.1, model=model
+        deduped = _llm_sync(
+            _DEDUP_SYS, stripped, num_predict=800, temperature=0.1
         )
     except Exception:  # noqa: BLE001 - fallback silencioso, ver docstring
         return text, None
@@ -343,7 +524,11 @@ def _dedup_sync(text: str, model: str) -> tuple[str, dict[str, int] | None]:
 
 
 def dedup_voice_text(text: str, model: str = OLLAMA_MODEL) -> tuple[str, dict[str, int] | None]:
-    """Dedup pós-transcrição de voz. Ver :func:`_dedup_sync`."""
+    """Dedup pós-transcrição de voz. Ver :func:`_dedup_sync`.
+
+    ``model`` é o modelo do Ollama local — usado só quando NÃO há 9router
+    configurado (com 9router, o modelo é o do catálogo dele).
+    """
     return _dedup_sync(text, model)
 
 
@@ -423,7 +608,7 @@ def _speakable_name_sync(name: str) -> str:
         return base
     try:
         raw = _clean_for_speech(
-            _ollama_sync(_NAME_SYS, name, num_predict=24, temperature=0.0)
+            _llm_sync(_NAME_SYS, name, num_predict=24, temperature=0.0)
         )
         # Aceita SÓ se for o mesmo nome com espaços (não traduziu/inventou).
         if _is_spacing_only(name, raw) and len(raw.split()) <= 6:
@@ -1050,7 +1235,7 @@ _QUICK_REPLIES_SYS = (
 
 
 def _quick_replies_sync(screen_tail: str) -> list[str]:
-    raw = _ollama_sync(_QUICK_REPLIES_SYS, screen_tail, num_predict=80, temperature=0.4)
+    raw = _llm_sync(_QUICK_REPLIES_SYS, screen_tail, num_predict=80, temperature=0.4)
     out: list[str] = []
     for ln in raw.splitlines():
         ln = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", ln).strip().strip('"')
@@ -1244,7 +1429,10 @@ _CHOICE_CLASSIFY_SYS = (
     "Voce recebe uma pergunta com opcoes numeradas e uma frase falada por uma "
     "pessoa respondendo. Responda APENAS o numero da opcao escolhida, sem mais "
     "nada (sem pontuacao, sem palavras). Se a frase nao deixar claro qual "
-    "opcao, responda exatamente 'nenhuma'."
+    "opcao, responda exatamente 'nenhuma'. "
+    # Resposta em portugues: o numero e o mesmo, mas o modelo pode divagar
+    # ("a opcao 2") se a instrucao nao fixar o formato/idioma.
+    "Responda SEMPRE em portugues do Brasil e com o numero apenas, sem texto."
 )
 
 
@@ -1253,8 +1441,8 @@ def _classify_choice_llm_sync(spoken_text: str, options: list[dict[str, str]]) -
     prompt = f"Opções:\n{options_txt}\n\nResposta falada: \"{spoken_text}\"\n\nNúmero:"
     valid_keys = {o["key"] for o in options}
     try:
-        raw = _ollama_sync(
-            _CHOICE_CLASSIFY_SYS, prompt, num_predict=6, temperature=0.0, model=CHOICE_MODEL
+        raw = _llm_sync(
+            _CHOICE_CLASSIFY_SYS, prompt, num_predict=6, temperature=0.0
         )
     except Exception:  # noqa: BLE001 - fallback gracioso
         logger.debug("jarvis: classify_choice (llm) falhou", exc_info=True)
@@ -1262,6 +1450,12 @@ def _classify_choice_llm_sync(spoken_text: str, options: list[dict[str, str]]) -
     # Validação estrita: só aceita se a saída for EXATAMENTE uma key válida
     # (às vezes o modelo devolve "2." ou "Opção 2" mesmo pedindo só o número —
     # extrai o primeiro dígito da saída e valida contra as keys).
+    #
+    # Modelos de raciocínio (MiniMax no 9router) envelopam a resposta em
+    # <think>...</think> — o texto de RAZONAMENTO pode conter dígitos
+    # ("<think>We need answer only number option") que fariam o regex
+    # casar o número errado. Descarta o bloco antes de extrair.
+    raw = _strip_reasoning(raw)
     m = re.search(r"\d+", raw)
     if not m:
         return None
