@@ -217,9 +217,15 @@ _DROP_RE = re.compile(
 
 
 # Bloco de RAZONAMENTO dos modelos que pensam antes de responder (MiniMax no
-# 9router). Vem envelopado em <think>...</think> e NÃO deve ser lido no TTS
-# nem usado p/ extrair a resposta.
-_THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
+# 9router). Vem envelopado em <think>...</think> — e o MiniMax às vezes fecha
+# com tag变 (, </thinking>). NÃO deve ser lido no TTS nem usado
+# p/ extrair a resposta.
+# Zero-width chars (U+200B..U+200F, U+FEFF): invisíveis, mas quebram o
+# match de tags — o MiniMax emite "<\u200bmm:think>".
+_ZW_RE = re.compile("[\u200b-\u200f\ufeff]")
+_THINK_RE = re.compile(
+    r"<(think|thinking|mm:think|reasoning)\b[^>]*>.*?</\1\s*>", re.S | re.I
+)
 
 
 def _strip_reasoning(text: str) -> str:
@@ -229,13 +235,28 @@ def _strip_reasoning(text: str) -> str:
     ("<think>We need answer only number option") e devolvia a opção errada —
     exatamente o "JARVIS falando coisa sem sentido".
     """
-    t = _THINK_RE.sub(" ", text or "")
-    # Modelo pode deixar o <think> aberto (cortado por max_tokens): descarta
-    # tudo a partir dele.
+    # Normaliza隐形 caracteres: o MiniMax emite tags com ZERO-WIDTH SPACE
+    # dentro do "<" (ex.: "<mm:think>"), o que quebra o match da regex.
+    t = _ZW_RE.sub("", text or "")
+    t = _THINK_RE.sub(" ", t)
+    # Fecha-raciocínio ÓRFÃO: o MiniMax às vezes emite só a tag de
+    # fechamento ("") sem a de abertura, e a de abertura vem
+    # com prefixo de ferramenta ("<tool_call>"). Sem isso o
+    # bloco de raciocínio vaza pro resumo/TTS. Recorta da tag órfã até
+    # a próxima quebra de linha (o texto bom vem depois).
+    orphan = re.search(r"<\s*/\s*(?:mm:think|think|thinking|reasoning)\s*>", t, re.I)
+    if orphan:
+        tail = t[orphan.end():]
+        nl = tail.find("\n")
+        t = tail[nl + 1:] if nl != -1 else tail
+    # Modelo pode deixar a tag de raciocínio ABERTA (cortado por max_tokens,
+    # ou fechando com tag diferente): descarta tudo a partir dela.
     low = t.lower()
-    idx = low.find("<think>")
-    if idx != -1:
-        t = t[:idx]
+    for tag in ("<think>", "<thinking", "<mm:think", "<reasoning"):
+        idx = low.find(tag)
+        if idx != -1:
+            t = t[:idx]
+            low = t.lower()
     return t.strip()
 
 
