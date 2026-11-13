@@ -35,6 +35,10 @@ from sessionflow_worker.agent_launcher import AgentType
 from sessionflow_worker.codex_metrics import codex_metrics_for
 from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
 from sessionflow_worker.handoff_notify import find_handoff, read_status
+from sessionflow_worker.infra_sessions import (
+    INFRA_SESSION_NAMES,
+    is_infra_or_internal_session,
+)
 from sessionflow_worker.metrics import claude_metrics_for
 from sessionflow_worker.output_capture import (
     DEFAULT_SCREEN_COLLECTION,
@@ -136,24 +140,10 @@ _AUTOCONT_STABLE_S = 6.0
 
 # Sessões tmux de INFRAESTRUTURA do próprio SessionFlow (não são conversas de
 # agente) — nunca descobertas/upsertadas, então NUNCA aparecem na tela de
-# Sessões nem podem ser apagadas por engano por lá. Incidente real: alguém
-# encerrou a sessão tmux "cloudflared-tunnel" pela tela de Sessões pensando
-# ser uma sessão de trabalho velha, derrubando o acesso externo até o próximo
-# restart manual. ``sessionflow-worker``/``cloudflared-tunnel`` são os nomes
-# usados pelo próprio setup (ver tools/ e o script de startup do host).
-INFRA_SESSION_NAMES = frozenset(
-    {"sessionflow-worker", "cloudflared-tunnel", "sessionflow-autoupdate"}
-)
-INTERNAL_SESSION_PREFIXES = ("sfusage-", "sfmodel-")
-
-
-def is_infra_or_internal_session(name: str) -> bool:
-    """True se o nome pertence a sessões de infraestrutura ou scrapers efêmeros."""
-    if not name:
-        return True
-    if name in INFRA_SESSION_NAMES:
-        return True
-    return name.startswith(INTERNAL_SESSION_PREFIXES)
+# Sessões nem podem ser apagadas por engano por lá. A lista canônica mora em
+# ``infra_sessions`` (importada acima) porque o ``command_consumer`` precisa
+# da MESMA (pra recusar matar o túnel), e buscá-la aqui criaria ciclo de
+# import.
 
 
 def _screen_has_api_error(text: str) -> bool:

@@ -23,6 +23,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from pydantic import BaseModel, Field
 
 from app import share
+from app.infra_sessions import is_infra_session
 from app.publishers.command_publisher import publish_command
 from app.repositories.sessions_repo import SessionsRepository
 from app.repositories.uploads_repo import UploadsRepository
@@ -588,12 +589,23 @@ async def _require_route(request: Request, session_id: str) -> tuple[str, str | 
     roteia o comando — vem do doc da sessão; ``None`` em sessões antigas sem
     o campo ainda (``publish_command`` cai no fallback legado nesse caso, o
     que só deveria acontecer antes do 1º boot do worker pós-migração).
+
+    Recusa sessão de INFRAESTRUTURA (túnel ``cf``, worker): não são conversas
+    e matá-las tira o host do ar. O 409 evita publicar um comando que o
+    worker acabaria recusando (ou que, num worker antigo, derrubava o túnel
+    de vez — incidente de nov/2026).
     """
     repo = _get_repo(request)
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return doc["tmux_name"], doc.get("host_id")
+    tmux_name = doc["tmux_name"]
+    if is_infra_session(tmux_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{tmux_name}' is an infrastructure session and cannot be modified",
+        )
+    return tmux_name, doc.get("host_id")
 
 
 async def _is_host_online(request: Request, host_id: str | None) -> bool:

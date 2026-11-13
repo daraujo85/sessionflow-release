@@ -68,8 +68,13 @@ grep -q '^SESSIONFLOW_SCAN_ROOTS=' "$SF/.env" || echo "SESSIONFLOW_SCAN_ROOTS=$S
 printf '%s' "$HOST_ID" > /root/.claude/.sessionflow-host-id
 
 log "proxies cloudflared (mongo/rabbit em 127.0.0.1, igual ao .env do Mac)"
+# A sessão do túnel se chama "cloudflared-tunnel" — nome em INFRA_SESSION_NAMES
+# (worker/sessionflow_worker/infra_sessions.py), então o app nunca a mostra como
+# sessão de trabalho nem permite matá-la. O nome antigo ("cf") é removido junto
+# por compatibilidade com notebooks que subiram com a versão anterior.
 tmux kill-session -t cf 2>/dev/null || true
-tmux new-session -d -s cf "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
+tmux kill-session -t cloudflared-tunnel 2>/dev/null || true
+tmux new-session -d -s cloudflared-tunnel "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
 
 log "CLIs de agente"
 command -v node >/dev/null || {

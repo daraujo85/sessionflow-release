@@ -1192,6 +1192,14 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
 
       <!-- Barra do terminal: alterna entre espelho AO VIVO e HISTÓRICO rolável -->
       <div class="term-bar">
+        <!-- Indicador do estado atual: ponto verde pulsando = grudado no fim
+             (stickToBottom); cinza parado = você rolou e saiu do modo ao vivo
+             (a pill "↓ ao vivo" já cobre voltar; isto só confirma o estado). -->
+        <span class="term-live-badge" [class.is-live]="liveMode()"
+              [attr.title]="liveMode() ? 'Ao vivo: acompanhando o fim do terminal' : 'Pausado: você rolou pra cima'">
+          <span class="term-live-dot" aria-hidden="true"></span>
+          {{ liveMode() ? 'ao vivo' : 'pausado' }}
+        </span>
         <!-- Último artifact visto na sessão: o rodapé "⧉ <nome>" do Claude Code
              NÃO é OSC 8 (o clique é tratado pelo próprio TUI no Mac) — aqui
              oferecemos a URL real capturada da conversa, clicável no celular. -->
@@ -3262,10 +3270,46 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
         flex: none;
         display: flex;
         align-items: center;
-        justify-content: flex-end;
+        justify-content: space-between;
         gap: 8px;
         padding: 8px 16px 0;
         background: #0b0e0f;
+      }
+      /* Indicador "● ao vivo" / "○ pausado" — confirma se o terminal está
+         grudado no fim (stickToBottom) sem precisar esperar a pill aparecer
+         (que só mostra quando você JÁ saiu do modo ao vivo). */
+      .term-live-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        color: #7a8090;
+        white-space: nowrap;
+      }
+      .term-live-badge.is-live {
+        color: #34d399;
+      }
+      .term-live-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #5a6072;
+        flex: none;
+      }
+      .term-live-badge.is-live .term-live-dot {
+        background: #34d399;
+        animation: term-live-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes term-live-pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+        50% { opacity: 0.75; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .term-live-badge.is-live .term-live-dot {
+          animation: none;
+        }
       }
       .term-scroll {
         display: inline-flex;
@@ -4996,6 +5040,14 @@ export class DetalheComponent implements AfterViewChecked {
   /** Pill "↓ ao vivo": visível quando o usuário rolou o agente p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
 
+  /**
+   * Espelho PÚBLICO (signal) de ``stickToBottom``, só pro indicador "● AO
+   * VIVO" na term-bar — ``stickToBottom`` continua sendo o campo privado que
+   * a lógica de scroll usa; este signal é atualizado em todo ponto que
+   * atualiza aquele, nunca lido pela lógica (evita duas fontes de verdade).
+   */
+  protected readonly liveMode = signal<boolean>(true);
+
   /** Último artifact visto no espelho ENQUANTO esta tela está aberta. */
   private readonly seenArtifactUrl = signal<string | null>(null);
   /**
@@ -5188,6 +5240,17 @@ export class DetalheComponent implements AfterViewChecked {
    */
   private stickToBottom = true;
 
+  /**
+   * Suprime o recálculo de ``stickToBottom`` via ``isAtBottom()`` no próximo
+   * disparo do effect do SSE (abaixo). Sem isso, trocar de sessão dispara o
+   * effect (``session()`` mudou) e ele sobrescreve o ``stickToBottom = true``
+   * recém-setado por ``isAtBottom()`` lido do ``<div #term>`` REAPROVEITADO —
+   * ainda com o scroll da sessão anterior (se você tinha rolado pra cima lá),
+   * fazendo o "ao vivo" não descer sozinho de forma intermitente (corrida
+   * entre loadSession()/refreshScreen() resolverem antes ou depois do effect).
+   */
+  private suppressStickRecalc = false;
+
   constructor() {
     // MODO CONVIDADO: pega o token do link (?k=) e registra ANTES de conectar o
     // SSE/chamar a API — assim toda chamada já vai escopada por ele. (Fora do
@@ -5254,6 +5317,14 @@ export class DetalheComponent implements AfterViewChecked {
         this.tasks.set([]);
         this.seenArtifactUrl.set(null);
         this.lastScreenPushAt = ''; // sessão nova → não herda o gate do push anterior
+        // Modo "ao vivo" sempre começa LIGADO ao entrar numa sessão — mesmo se
+        // o usuário tinha saído dele rolando pra cima na sessão anterior (o
+        // componente é reaproveitado ao navegar entre sessões, então sem isso
+        // o estado "vazava" de uma sessão pra outra).
+        this.stickToBottom = true;
+        this.liveMode.set(true);
+        this.suppressStickRecalc = true;
+        this.showLivePill.set(false);
         // Chip de erro (actionHintKind === 'error') sobrevive à troca de sessão
         // se não for limpo aqui — o guard de clearHint() só deixa dispensar via
         // dismissHint(), então sem isso o chip da sessão A "vaza" pra sessão B.
@@ -5270,7 +5341,12 @@ export class DetalheComponent implements AfterViewChecked {
         this.termFont.set(prefs.termFont ?? readTermFont());
         this.draft.set(this.drafts.get(sid));
         this.loadSession();
-        this.refreshScreen();
+        // forceBottom=true: sem isso, refreshScreen() recalcula stickToBottom
+        // via isAtBottom(), que lê o scroll do <div #term> REAPROVEITADO da
+        // sessão anterior (ainda não repintado com o conteúdo novo) — se você
+        // tinha rolado pra cima lá, esse estado "vaza" e sobrescreve o
+        // stickToBottom=true acima, deixando o "ao vivo" sem descer sozinho.
+        this.refreshScreen(true);
         // Ao abrir a sessão, foca o campo de mensagem (pronto pra digitar). Em
         // celular o teclado só abre com gesto — aqui é best-effort e não incomoda.
         this.focusMessageInput();
@@ -5321,7 +5397,12 @@ export class DetalheComponent implements AfterViewChecked {
       if (scr && at !== this.lastScreenPushAt) {
         this.lastScreenPushAt = at;
         if (scr.text !== this.screen()) {
-          this.stickToBottom = this.isAtBottom();
+          if (this.suppressStickRecalc) {
+            this.suppressStickRecalc = false;
+          } else {
+            this.stickToBottom = this.isAtBottom();
+            this.liveMode.set(this.stickToBottom);
+          }
           this.screen.set(scr.text);
           // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
           this.clearHint();
@@ -5391,7 +5472,12 @@ export class DetalheComponent implements AfterViewChecked {
       // Só desce se o usuário estava no fim (capturado antes do update em
       // refreshScreen); caso contrário preserva a posição de leitura.
       if (this.stickToBottom) {
-        this.scrollToBottom();
+        // requestAnimationFrame: espera o browser PINTAR o [innerHTML] novo
+        // antes de ler scrollHeight — queueMicrotask roda cedo demais (antes
+        // do paint), então lia a altura ANTIGA e o "ao vivo" rolava pro fim
+        // do conteúdo velho (scroll mexe, texto exibido não muda). Mesmo
+        // padrão já usado em session-panel.component.ts (painel secundário).
+        requestAnimationFrame(() => this.scrollToBottom());
       }
     }
   }
@@ -5601,9 +5687,16 @@ export class DetalheComponent implements AfterViewChecked {
   }
 
   protected goBack(): void {
-    // Volta para a tela de origem (Início ou Sessões), não um destino fixo.
-    // navigationId > 1 ⇒ há histórico in-app; senão (deep-link/notificação)
-    // cai para o Início para não sair do app.
+    this.navigateBackToOrigin();
+  }
+
+  /**
+   * Volta para a tela de origem (Início ou Sessões), não um destino fixo.
+   * navigationId > 1 ⇒ há histórico in-app; senão (deep-link/notificação)
+   * cai para o Início para não sair do app. Compartilhado pelo botão "voltar"
+   * e pelos fluxos de encerrar/eliminar sessão (que saem desta tela).
+   */
+  private navigateBackToOrigin(): void {
     const navId = (history.state && history.state.navigationId) || 1;
     if (navId > 1) {
       this.location.back();
@@ -5778,6 +5871,7 @@ export class DetalheComponent implements AfterViewChecked {
         next: () => {
           this.acting.set(false);
           this.stickToBottom = true;
+          this.liveMode.set(true);
           this.refreshScreen(true);
           // A sessão volta em background (recreate + agente subir): re-sincroniza
           // status/métricas e a tela em 2 tempos, sem precisar sair da tela.
@@ -5906,13 +6000,13 @@ export class DetalheComponent implements AfterViewChecked {
         next: () => {
           this.acting.set(false);
           if (!this.guest()) {
-            void this.router.navigate(['/sessoes']);
+            this.navigateBackToOrigin();
           }
         },
         error: () => {
           this.acting.set(false);
           if (!this.guest()) {
-            void this.router.navigate(['/sessoes']);
+            this.navigateBackToOrigin();
           }
         },
       });
@@ -5935,7 +6029,7 @@ export class DetalheComponent implements AfterViewChecked {
         next: () => {
           this.acting.set(false);
           if (!this.guest()) {
-            void this.router.navigate(['/sessoes']);
+            this.navigateBackToOrigin();
           }
         },
         error: () => this.acting.set(false),
@@ -6791,9 +6885,12 @@ export class DetalheComponent implements AfterViewChecked {
             this.clearHint(); // conteúdo chegou via poll → some o aviso
           }
           this.stickToBottom = forceBottom || this.isAtBottom();
+          this.liveMode.set(this.stickToBottom);
           this.screen.set(next);
           if (forceBottom) {
-            queueMicrotask(() => this.scrollToBottom());
+            // requestAnimationFrame: mesmo motivo do ngAfterViewChecked acima —
+            // espera o paint do [innerHTML] antes de medir scrollHeight.
+            requestAnimationFrame(() => this.scrollToBottom());
           }
         },
         error: () => {
@@ -6978,6 +7075,7 @@ export class DetalheComponent implements AfterViewChecked {
   /** Snap pro fim e retoma o "grudar no fim" do modo ao vivo (pill ↓). */
   protected snapToLive(): void {
     this.stickToBottom = true;
+    this.liveMode.set(true);
     this.scrollToBottom();
     this.showLivePill.set(false);
   }
@@ -6986,6 +7084,7 @@ export class DetalheComponent implements AfterViewChecked {
   protected onTermScroll(): void {
     const atBottom = this.isAtBottom();
     this.stickToBottom = atBottom;
+    this.liveMode.set(atBottom);
     this.showLivePill.set(!atBottom);
   }
 

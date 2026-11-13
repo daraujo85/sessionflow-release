@@ -66,7 +66,7 @@ class WorkerOut(BaseModel):
     """Status de UM Worker/host para o card do Perfil."""
 
     online: bool = False
-    # Ligando (POST /start recente) sem heartbeat ainda — 🟡, não recebe sessão.
+    # Iniciando (POST /start recente) sem heartbeat ainda — 🟡, não recebe sessão.
     starting: bool = False
     hostname: str | None = None
     # Nome de EXIBIÇÃO do host (editável via PUT /workers/{host_id}/display-name),

@@ -14,6 +14,8 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.infra_sessions import INFRA_SESSION_NAMES
+
 _INTERNAL_PREFIXES_RE = re.compile(r"^(sfusage-|sfmodel-|sftest-)")
 
 
@@ -24,8 +26,19 @@ class SessionsRepository:
         self._collection = db[collection_name]
 
     async def list_sessions(self, status: str | None = None) -> list[dict[str, Any]]:
-        """Return all sessions, optionally filtered by exact ``status``."""
-        query: dict[str, Any] = {"tmux_name": {"$not": _INTERNAL_PREFIXES_RE}}
+        """Return all sessions, optionally filtered by exact ``status``.
+
+        Sessões de INFRAESTRUTURA (túnel ``cf``, worker) nunca são listadas:
+        não são conversas e matá-las pela tela derrubava o host (incidente de
+        nov/2026). O filtro é por nome exato — o regex de prefixos não cobre
+        ``cf``.
+        """
+        query: dict[str, Any] = {
+            "tmux_name": {
+                "$not": _INTERNAL_PREFIXES_RE,
+                "$nin": list(INFRA_SESSION_NAMES),
+            }
+        }
         if status is not None:
             query["status"] = status
 

@@ -565,7 +565,27 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         <div class="sf-card-item" (mouseenter)="quickReplyEnabled() && openQuickReply(s.id, $event)" (mouseleave)="closeQuickReply()">
         <button
           type="button"
+          class="sf-session-delete"
+          [class.is-open]="sessionOffset(s.id) <= -72"
+          tabindex="-1"
+          [attr.aria-hidden]="sessionOffset(s.id) > -72"
+          (click)="confirmEliminateSession(s)"
+          aria-label="Eliminar sessão"
+        >
+          <span class="sf-session-delete__inner">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+              <path d="M10 11v6M14 11v6" />
+            </svg>
+            <span class="sf-session-delete__label">Eliminar</span>
+          </span>
+        </button>
+        <button
+          type="button"
           class="sf-card sf-enter"
+          [class.is-dragging]="sessionDragId() === s.id"
           [class.is-waiting]="statusIcon(s) === 'wait'"
           [class.is-running]="isWorkingIcon(statusIcon(s))"
           [class.is-external]="s.status === 'waiting_external'"
@@ -574,7 +594,12 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           [class.sf-flash]="taskFlash(s)"
           [class.sf-quick-reply-open]="quickReplySession() === s.id"
           [style.animation-delay]="enterDelay(i)"
-          (click)="openSession(s.id)"
+          [style.transform]="'translateX(' + sessionOffset(s.id) + 'px)'"
+          (click)="onSessionCardClick(s, $event)"
+          (pointerdown)="onSessionPointerDown(s, $event)"
+          (pointermove)="onSessionPointerMove(s, $event)"
+          (pointerup)="onSessionPointerUp(s, $event)"
+          (pointercancel)="onSessionPointerUp(s, $event)"
         >
           <span
             class="sf-stat-icon"
@@ -731,7 +756,12 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
           type="button"
           class="sf-card-clone"
           aria-label="Clonar sessão"
+          [style.transform]="'translateX(' + sessionOffset(s.id) + 'px)'"
           (click)="cloneSession($event, s.id)"
+          (pointerdown)="onSessionPointerDown(s, $event)"
+          (pointermove)="onSessionPointerMove(s, $event)"
+          (pointerup)="onSessionPointerUp(s, $event)"
+          (pointercancel)="onSessionPointerUp(s, $event)"
         >
           ⧉
         </button>
@@ -1190,6 +1220,56 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
       }
       .sf-card-item {
         position: relative;
+        /* overflow:hidden + radius casado com .sf-card revela o botão de
+           Eliminar (posicionado atrás) só quando o card desliza por cima. */
+        overflow: hidden;
+        border-radius: 18px;
+      }
+      /* Swipe-to-delete na sessão (iOS style, espelha SessoesComponent). */
+      .sf-session-delete {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 0;
+        width: 104px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        appearance: none;
+        border: none;
+        background: linear-gradient(135deg, #7f1d1d, #b91c1c);
+        box-shadow: inset 1px 0 0 rgba(0, 0, 0, 0.25),
+          inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        color: #fecaca;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .sf-session-delete__inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        opacity: 0;
+        transform: scale(0.85);
+        transition: opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: opacity, transform;
+      }
+      .sf-session-delete.is-open .sf-session-delete__inner {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .sf-session-delete__label {
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sf-session-delete__inner {
+          transition: none;
+        }
       }
       /* Toggle Agrupado | Lista */
       .sf-view-toggle {
@@ -1345,6 +1425,8 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         }
       }
       .sf-card {
+        position: relative;
+        z-index: 1;
         background: var(--surface-card);
         border: 1px solid var(--border-default);
         border-radius: 18px;
@@ -1355,12 +1437,19 @@ const ACTIVE_STATUSES: readonly SessionStatus[] = ['running', 'waiting_input'];
         cursor: pointer;
         text-align: left;
         width: 100%;
+        touch-action: pan-y;
         -webkit-tap-highlight-color: transparent;
         transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
           border-color 0.15s;
+        will-change: transform;
       }
-      /* Press feedback (no swipe here, so scale goes on the card directly). */
-      .sf-card:active {
+      /* Enquanto o dedo/mouse arrasta (swipe-to-delete), sem animação de
+         transform — o translateX deve seguir o ponteiro 1:1. */
+      .sf-card.is-dragging {
+        transition: border-color 0.15s;
+      }
+      /* Press feedback — só quando não há swipe em andamento (sem offset). */
+      .sf-card:active:not(.is-dragging) {
         transform: scale(0.97);
       }
       /* Aguardando AÇÃO do usuário: fundo âmbar + brilho neon pulsante. */
@@ -3035,6 +3124,16 @@ export class InicioComponent implements OnInit {
   }
   protected cloneSession(event: Event, sessionId: string): void {
     event.stopPropagation();
+    // Guarda contra swipe-then-release-on-clone: o botão compartilha o
+    // translateX e o gesto de arrastar com o card (mesmo handler de
+    // pointerdown/move/up), então soltar o dedo em cima do ⧉ depois de um
+    // swipe ainda dispara o `click` nativo do browser. Sem isso, deslizar o
+    // card pra esquerda e soltar por cima do ícone clonava a sessão à toa —
+    // mesmo guard que onSessionCardClick usa pro tap no card.
+    if (this.lastSessionWasSwipe || this.sessionOffset(sessionId) !== 0) {
+      this.lastSessionWasSwipe = false;
+      return;
+    }
     this.sessionClone.clone(sessionId);
   }
   /** Resolve o tmux_name da tarefa para o _id real da sessão. */
@@ -3217,6 +3316,172 @@ export class InicioComponent implements OnInit {
         this.reloadTasks();
       },
     });
+  }
+
+  // ── Swipe-to-delete nas sessões da Home (espelha o bloco de tarefas acima
+  //    e SessoesComponent) ───────────────────────────────────────────────
+  /** translateX por sessão (px). 0 = fechado. */
+  private readonly sessionOffsets = signal<Map<string, number>>(new Map());
+  /** Id da sessão em arrasto ativo (desabilita a transição CSS). */
+  protected readonly sessionDragId = signal<string | null>(null);
+  /** Sinaliza que o último gesto foi swipe (suprime o tap seguinte). */
+  private lastSessionWasSwipe = false;
+
+  private sessionGesture: {
+    id: string;
+    startX: number;
+    startY: number;
+    baseOffset: number;
+    locked: boolean;
+    moved: boolean;
+    cancelled: boolean;
+  } | null = null;
+
+  protected sessionOffset(id: string): number {
+    return this.sessionOffsets().get(id) ?? 0;
+  }
+
+  private setSessionOffset(id: string, value: number): void {
+    this.sessionOffsets.update((m) => {
+      const next = new Map(m);
+      if (value === 0) {
+        next.delete(id);
+      } else {
+        next.set(id, value);
+      }
+      return next;
+    });
+  }
+
+  private closeAllSessions(except?: string): void {
+    this.sessionOffsets.update((m) => {
+      if (m.size === 0) {
+        return m;
+      }
+      const next = new Map<string, number>();
+      if (except && m.has(except)) {
+        next.set(except, m.get(except)!);
+      }
+      return next;
+    });
+  }
+
+  protected onSessionPointerDown(s: Session, ev: PointerEvent): void {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) {
+      return;
+    }
+    this.sessionGesture = {
+      id: s.id,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      baseOffset: this.sessionOffset(s.id),
+      locked: false,
+      moved: false,
+      cancelled: false,
+    };
+  }
+
+  protected onSessionPointerMove(s: Session, ev: PointerEvent): void {
+    const g = this.sessionGesture;
+    if (!g || g.id !== s.id || g.cancelled) {
+      return;
+    }
+    const dx = ev.clientX - g.startX;
+    const dy = ev.clientY - g.startY;
+
+    if (!g.locked) {
+      if (Math.abs(dx) < 4 && Math.abs(dy) < 4) {
+        return;
+      }
+      // Scroll vertical vence → deixa rolar, aborta o swipe.
+      if (Math.abs(dy) > Math.abs(dx)) {
+        g.cancelled = true;
+        return;
+      }
+      g.locked = true;
+      this.sessionDragId.set(s.id);
+      this.closeAllSessions(s.id);
+      (ev.target as Element).setPointerCapture?.(ev.pointerId);
+    }
+
+    if (Math.abs(dx) > InicioComponent.TAP_THRESHOLD) {
+      g.moved = true;
+    }
+
+    let next = g.baseOffset + dx;
+    if (next > 0) {
+      next = next * 0.25;
+    } else if (next < InicioComponent.CLAMP) {
+      const over = next - InicioComponent.CLAMP;
+      next = InicioComponent.CLAMP + over * 0.25;
+    }
+    this.setSessionOffset(s.id, next);
+  }
+
+  protected onSessionPointerUp(s: Session, ev: PointerEvent): void {
+    const g = this.sessionGesture;
+    if (!g || g.id !== s.id) {
+      return;
+    }
+    this.sessionGesture = null;
+    this.sessionDragId.set(null);
+    if (g.cancelled || !g.locked) {
+      return;
+    }
+    (ev.target as Element).releasePointerCapture?.(ev.pointerId);
+    if (g.moved) {
+      this.lastSessionWasSwipe = true;
+    }
+    const cur = this.sessionOffset(s.id);
+    this.setSessionOffset(
+      s.id,
+      cur <= InicioComponent.SNAP ? InicioComponent.OPEN : 0,
+    );
+  }
+
+  /** Tap no card: abre a sessão; suprime quando houve swipe / está aberta. */
+  protected onSessionCardClick(s: Session, ev: MouseEvent): void {
+    const moved = this.sessionOffset(s.id) !== 0;
+    if (this.lastSessionWasSwipe || moved) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (moved) {
+        this.setSessionOffset(s.id, 0);
+      }
+      this.lastSessionWasSwipe = false;
+      return;
+    }
+    this.openSession(s.id);
+  }
+
+  /** Tap no botão vermelho: confirma, remove otimista e chama purgeSession. */
+  protected confirmEliminateSession(s: Session): void {
+    const name = this.displayName(s);
+    const ok = confirm(
+      'Eliminar a sessão "' +
+        name +
+        '"? Mata no host e remove daqui — não dá pra desfazer.',
+    );
+    if (!ok) {
+      this.setSessionOffset(s.id, 0); // snap back
+      return;
+    }
+
+    // Remoção otimista (guarda p/ rollback).
+    const prev = this.sessions();
+    this.setSessionOffset(s.id, 0);
+    this.sessions.update((list) => list.filter((x) => x.id !== s.id));
+
+    this.api
+      .purgeSession(s.id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        error: () => {
+          // Rollback: restaura o estado anterior e recarrega do servidor.
+          this.sessions.set(prev);
+          this.reloadSessions();
+        },
+      });
   }
 
   /** Botão ▶ em tarefas 'todo' → manda a sessão começar a trabalhar nela. */

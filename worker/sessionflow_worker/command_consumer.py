@@ -69,6 +69,7 @@ from pymongo import ReturnDocument
 from sessionflow_worker import git_info, gpu_services, jarvis, milestones, session_move, transcriber
 from sessionflow_worker.events import emit_event
 from sessionflow_worker.agent_launcher import AgentType, build_launch_cmd
+from sessionflow_worker.infra_sessions import is_infra_session
 from sessionflow_worker.rabbit import EVENTS_QUEUE, commands_queue_name, publish
 from sessionflow_worker.state import SessionState
 from sessionflow_worker.tmux_runtime import SESSION_ENV, TmuxRuntime, TmuxRuntimeError
@@ -1082,6 +1083,16 @@ class CommandConsumer:
         if not name:
             raise CommandError("kill requer 'name'")
 
+        # Sessão de INFRAESTRUTURA (túnel cloudflared "cf", worker, etc.) NUNCA
+        # pode ser morta por comando: o túnel carrega o proxy de Mongo+RabbitMQ
+        # do próprio host. Matá-lo derruba o heartbeat e o host vira "Ligando"
+        # eterno (incidente de nov/2026 — ver infra_sessions).
+        if is_infra_session(name):
+            raise CommandError(
+                f"kill: {name!r} é sessão de infraestrutura — recuseado "
+                "(derrubar o túnel deixa o host sem heartbeat)"
+            )
+
         # Mata o tmux se ainda existir (idempotente; ignora se já morreu).
         try:
             self._runtime.kill_session(name)
@@ -1112,6 +1123,14 @@ class CommandConsumer:
         name = payload.get("name")
         if not name:
             raise CommandError("delete requer 'name'")
+
+        # Mesma proteção do ``kill``: sessão de INFRAESTRUTURA (túnel "cf",
+        # worker) nunca é deletada por comando — matar o túnel tira o host do
+        # ar (sem Mongo, sem heartbeat).
+        if is_infra_session(name):
+            raise CommandError(
+                f"delete: {name!r} é sessão de infraestrutura — recuseado"
+            )
 
         # A API já apaga o doc do Mongo ANTES de publicar este comando (evita
         # flicker na lista) — então `worktree_path`/`worktree_repo` viajam no

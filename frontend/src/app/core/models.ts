@@ -355,7 +355,7 @@ export interface WorkerCapabilities {
  * de `GET /workers` (todos os hosts conhecidos). */
 export interface WorkerStatus {
   online: boolean;
-  /** Ligando: POST /start recente sem heartbeat ainda. Não é online (não recebe sessão). */
+  /** Iniciando: POST /start recente sem heartbeat ainda. Não é online (não recebe sessão). */
   starting?: boolean;
   hostname: string | null;
   /** Nome de exibição editável (Perfil) — `null` usa o `hostname` técnico. */
