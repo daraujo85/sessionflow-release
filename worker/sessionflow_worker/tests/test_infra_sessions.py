@@ -133,6 +133,60 @@ async def test_kill_normal_session_still_works() -> None:
     assert db.sessions.calls, "o doc da sessão deve ser marcado como stopped"
 
 
+@pytest.mark.asyncio
+async def test_create_rejects_infra_name() -> None:
+    """``create`` NÃO pode abrir sessão com nome de infraestrutura.
+
+    Fechar a allowlist só no kill não basta: se o create aceitasse "cf", o
+    app listaria uma sessão de trabalho com o nome do túnel e o guard de kill
+    (que recusa infra) bloquearia encerrá-la. A reserva é na ATRIBUIÇÃO.
+    """
+    runtime = _FakeRuntime()
+    consumer, _db = _consumer(runtime)
+
+    for name in ("cf", "CF", "sfinfra-tunnel", "sessionflow-worker"):
+        with pytest.raises(CommandError) as exc:
+            await consumer._handle_create({"name": name, "work_dir": "/tmp"})
+        assert "reservado" in str(exc.value) or "infraestrutura" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_move_rejects_infra_name() -> None:
+    """``move_out``/``move_in`` recusam sessão de infraestrutura."""
+    runtime = _FakeRuntime()
+    consumer, _db = _consumer(runtime)
+
+    with pytest.raises(CommandError):
+        await consumer._handle_move_out(
+            {
+                "name": "cf",
+                "target_host_id": "h2",
+                "target_work_dir": "/tmp",
+                "session_id": "x",
+            }
+        )
+    with pytest.raises(CommandError):
+        await consumer._handle_move_in(
+            {
+                "name": "cf",
+                "transfer_id": "t1",
+                "target_work_dir": "/tmp",
+                "session_id": "x",
+            }
+        )
+    assert runtime.killed == []
+
+
+def test_kill_quietly_never_kills_infra() -> None:
+    """O rollback interno (``_kill_quietly``) também poupa a infra."""
+    runtime = _FakeRuntime()
+    consumer, _db = _consumer(runtime)
+
+    consumer._kill_quietly("cf")
+    consumer._kill_quietly("sfinfra-tunnel")
+    assert runtime.killed == []
+
+
 def test_tmux_runtime_error_still_typed() -> None:
     """Sanidade: TmuxRuntimeError continua sendo o erro de kill."""
     assert issubclass(TmuxRuntimeError, Exception)

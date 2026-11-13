@@ -74,7 +74,8 @@ log "proxies cloudflared (mongo/rabbit em 127.0.0.1, igual ao .env do Mac)"
 # por compatibilidade com notebooks que subiram com a versão anterior.
 tmux kill-session -t cf 2>/dev/null || true
 tmux kill-session -t cloudflared-tunnel 2>/dev/null || true
-tmux new-session -d -s cloudflared-tunnel "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
+tmux kill-session -t sfinfra-tunnel 2>/dev/null || true
+tmux new-session -d -s sfinfra-tunnel "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
 
 log "CLIs de agente"
 command -v node >/dev/null || {

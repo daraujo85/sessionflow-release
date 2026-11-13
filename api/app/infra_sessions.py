@@ -20,11 +20,26 @@ INFRA_SESSION_NAMES = frozenset(
         "sessionflow-worker",
         "cloudflared-tunnel",
         "sessionflow-autoupdate",
+        # Nome histórico do túnel no selfboot de Colab/Kaggle. Mantido na
+        # allowlist porque notebooks já no ar têm a sessão com esse nome.
         "cf",
     }
 )
 
+#: Prefixo RESERVADO para infraestrutura criada pelo SessionFlow.
+INFRA_SESSION_PREFIX = "sfinfra-"
+
 
 def is_infra_session(name: str | None) -> bool:
-    """True se ``name`` é uma sessão de INFRAESTRUTURA (túnel/worker/etc.)."""
-    return bool(name) and name in INFRA_SESSION_NAMES
+    """True se ``name`` é uma sessão de INFRAESTRUTURA (túnel/worker/etc.).
+
+    Cobre o prefixo reservado ``sfinfra-`` E os nomes literais (incluindo
+    o histórico "cf"). Espelha ``worker/sessionflow_worker/infra_sessions.py``
+    — API e worker são processos separados; o teste de sincronia
+    (``test_infra_sessions.py``) trava que as duas listas não divergem.
+    """
+    if not name:
+        return False
+    if name in INFRA_SESSION_NAMES:
+        return True
+    return name.startswith(INFRA_SESSION_PREFIX)

@@ -14,9 +14,15 @@ Dois comportamentos precisam ficar travados aqui:
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
-from app.infra_sessions import INFRA_SESSION_NAMES, is_infra_session
+from app.infra_sessions import (
+    INFRA_SESSION_NAMES,
+    INFRA_SESSION_PREFIX,
+    is_infra_session,
+)
 from app.repositories.sessions_repo import SessionsRepository
 
 
@@ -26,6 +32,49 @@ def test_cf_is_infra() -> None:
     assert is_infra_session("sessionflow-worker")
     assert is_infra_session("cloudflared-tunnel")
     assert not is_infra_session("meu-projeto")
+
+
+def test_reserved_prefix_is_infra() -> None:
+    """O prefixo reservado cobre toda infra nova (``sfinfra-*``)."""
+    assert is_infra_session(f"{INFRA_SESSION_PREFIX}tunnel")
+    assert is_infra_session(f"{INFRA_SESSION_PREFIX}worker")
+    assert not is_infra_session("sfusage-abc")  # scraper, não infra
+
+
+def test_api_and_worker_lists_are_in_sync() -> None:
+    """As duas listas de infra (API e worker) NÃO podem divergir.
+
+    API e worker são processos separados (a API não importa o pacote do
+    worker), então a lista é duplicada — este teste trava a sincronia.
+    Divergir = a API protege um nome que o worker não protege (ou vice-versa)
+    = a camada que devia segurar deixa passar.
+    """
+    worker_src = (
+        Path(__file__).resolve().parents[3]
+        / "worker"
+        / "sessionflow_worker"
+        / "infra_sessions.py"
+    )
+    assert worker_src.exists(), f"fonte do worker não encontrada: {worker_src}"
+    text = worker_src.read_text()
+
+    block = re.search(
+        r"INFRA_SESSION_NAMES\s*=\s*frozenset\(\s*\{(.*?)\}", text, re.S
+    )
+    assert block, "não achei INFRA_SESSION_NAMES no worker"
+    worker_names = set(re.findall(r'"([^"]+)"', block.group(1)))
+
+    assert worker_names == set(INFRA_SESSION_NAMES), (
+        "listas de infra divergem entre API e worker: "
+        f"só na API={set(INFRA_SESSION_NAMES) - worker_names} "
+        f"só no worker={worker_names - set(INFRA_SESSION_NAMES)}"
+    )
+
+    prefix_block = re.search(
+        r'INFRA_SESSION_PREFIX\s*=\s*"([^"]+)"', text
+    )
+    assert prefix_block, "não achei INFRA_SESSION_PREFIX no worker"
+    assert prefix_block.group(1) == INFRA_SESSION_PREFIX
 
 
 class _FakeCursor:
@@ -82,3 +131,8 @@ async def test_list_sessions_query_excludes_infra_names() -> None:
     assert "cf" in tmux_filter["$nin"]
     assert "sessionflow-worker" in tmux_filter["$nin"]
     assert "cloudflared-tunnel" in tmux_filter["$nin"]
+    # O prefixo reservado entra pelo regex (um "$not" só — o Mongo não
+    # aceita dois no mesmo campo).
+    assert "$not" in tmux_filter
+    assert tmux_filter["$not"].search(f"{INFRA_SESSION_PREFIX}tunnel")
+    assert not tmux_filter["$not"].search("meu-projeto")

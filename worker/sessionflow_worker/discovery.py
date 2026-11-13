@@ -37,6 +37,7 @@ from sessionflow_worker.events import EVENTS_COLLECTION, emit_event
 from sessionflow_worker.handoff_notify import find_handoff, read_status
 from sessionflow_worker.infra_sessions import (
     INFRA_SESSION_NAMES,
+    INFRA_SESSION_PREFIX,
     is_infra_or_internal_session,
 )
 from sessionflow_worker.metrics import claude_metrics_for
@@ -848,7 +849,10 @@ class Discovery:
             # entram em present_names nem devem ser alteradas por este ciclo).
             "tmux_name": {
                 "$nin": list(present_names | INFRA_SESSION_NAMES),
-                "$not": re.compile(r"^(sfusage-|sfmodel-)"),
+                # Um único "$not": o Mongo não aceita dois no mesmo campo.
+                "$not": re.compile(
+                    rf"^(sfusage-|sfmodel-|{re.escape(INFRA_SESSION_PREFIX)})"
+                ),
             },
             "host_id": self._host_id,
         }

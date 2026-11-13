@@ -803,6 +803,12 @@ class CommandConsumer:
         name = _slugify(payload.get("name") or "")
         if not name:
             raise CommandError("nome inválido (vazio após slug)")
+        # Nome de INFRAESTRUTURA é RESERVADO: se o create aceitasse "cf", o
+        # app listaria uma sessão de trabalho com o nome do túnel — e o
+        # guard de kill (que recusa infra) bloquearia encerrá-la. Reserva o
+        # nome na ATRIBUIÇÃO, não só no kill.
+        if is_infra_session(name):
+            raise CommandError(f"create: {name!r} é nome reservado (infraestrutura)")
         # Sessão EFÊMERA (UI "Rápida"): work_dir pode vir vazio — o worker
         # gera uma pasta scratch no host escolhido e marca ``origin="ephemeral"``
         # no doc (scheduler apaga após 24h sem atividade).
@@ -1517,6 +1523,10 @@ class CommandConsumer:
         target_work_dir = payload.get("target_work_dir")
         if not name or not target or not target_work_dir:
             raise CommandError("move_out requer 'name', 'target_host_id' e 'target_work_dir'")
+        # Sessão de INFRAESTRUTURA (túnel/worker) não é movível: o move
+        # encerra o agente e mexe na sessão — nunca no túnel.
+        if is_infra_session(name):
+            raise CommandError(f"move_out: {name!r} é sessão de infraestrutura — recuseado")
         oid = self._move_oid(payload, "move_out")
         session_id = str(oid)
 
@@ -1662,6 +1672,9 @@ class CommandConsumer:
         target_work_dir = payload.get("target_work_dir")
         if not name or not transfer_id or not target_work_dir:
             raise CommandError("move_in requer 'name', 'transfer_id' e 'target_work_dir'")
+        # Sessão de INFRAESTRUTURA (túnel/worker) não é movível (ver move_out).
+        if is_infra_session(name):
+            raise CommandError(f"move_in: {name!r} é sessão de infraestrutura — recuseado")
         oid = self._move_oid(payload, "move_in")
         session_id = str(oid)
 
@@ -1789,7 +1802,16 @@ class CommandConsumer:
         }
 
     def _kill_quietly(self, name: str) -> None:
-        """Mata a tmux ``name`` se existir, ignorando erro (rollback)."""
+        """Mata a tmux ``name`` se existir, ignorando erro (rollback).
+
+        NUNCA mata sessão de INFRAESTRUTURA (túnel/worker): um rollback não
+        pode derrubar o proxy de Mongo do host (incidente de nov/2026).
+        """
+        if is_infra_session(name):
+            logger.warning(
+                "_kill_quietly: %r é sessão de infraestrutura — não matada", name
+            )
+            return
         try:
             if self._runtime.has_session(name):
                 self._runtime.kill_session(name)

@@ -14,9 +14,13 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.infra_sessions import INFRA_SESSION_NAMES
+from app.infra_sessions import INFRA_SESSION_NAMES, INFRA_SESSION_PREFIX
 
-_INTERNAL_PREFIXES_RE = re.compile(r"^(sfusage-|sfmodel-|sftest-)")
+# Nomes INTERNOS/efêmeros (scrapers) + prefixo RESERVADO de infraestrutura.
+# Um único regex: o Mongo não aceita dois "$not" no mesmo campo.
+_INTERNAL_PREFIXES_RE = re.compile(
+    rf"^(sfusage-|sfmodel-|sftest-|{re.escape(INFRA_SESSION_PREFIX)})"
+)
 
 
 class SessionsRepository:

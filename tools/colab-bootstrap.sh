@@ -36,7 +36,8 @@ command -v uv >/dev/null || pip install -q uv
 # INFRA_SESSION_NAMES) — nunca aparece como sessao de trabalho no app.
 tmux kill-session -t cf 2>/dev/null || true
 tmux kill-session -t cloudflared-tunnel 2>/dev/null || true
-tmux new-session -d -s cloudflared-tunnel "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
+tmux kill-session -t sfinfra-tunnel 2>/dev/null || true
+tmux new-session -d -s sfinfra-tunnel "cloudflared access tcp --hostname mongo-sessionflow.boletoazap.dev.br --url localhost:27017 & cloudflared access tcp --hostname rabbitmq-sessionflow.boletoazap.dev.br --url localhost:5672 & wait"
 
 # CLIs de agente. claude roda como diego (não aceita root com bypass de permissão).
 command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && apt-get install -y -qq nodejs >/dev/null; }

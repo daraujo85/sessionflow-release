@@ -361,6 +361,14 @@ async def create_session(request: Request, body: SessionCreate) -> SessionCreate
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="name must not be empty")
+    # Nome de INFRAESTRUTURA é RESERVADO: o worker slugifica o nome antes de
+    # abrir a sessão, então "CF"/"cf" viram o slug "cf" — o mesmo da sessão do
+    # túnel. Reserva aqui E no worker (na atribuição, não só no kill).
+    if is_infra_session(_slugify(name)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{name}' is a reserved infrastructure session name",
+        )
     # work_dir é obrigatório, EXCETO quando:
     #  - sessão EFÊMERA (UI "Rápida"): o worker gera a pasta sozinho no host;
     #  - sessão COMANDO (``sf command``): abre no HOME do host (o usuário quer um
@@ -479,6 +487,9 @@ async def clone_session(
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Sessão de infra (túnel/worker) não é clonável — cloná-la publicaria
+    # comandos de create/move sobre o túnel (não passa por _require_route).
+    _reject_infra_session(doc.get("tmux_name") or "")
 
     git_repos = doc.get("git_repos") or []
     if len(git_repos) != 1 or git_repos[0].get("name") != ".":
@@ -582,6 +593,24 @@ async def _require_tmux_name(request: Request, session_id: str) -> str:
     return tmux_name
 
 
+def _reject_infra_session(tmux_name: str) -> None:
+    """409 se ``tmux_name`` for sessão de INFRAESTRUTURA (túnel, worker).
+
+    Não são conversas: matá-las/movê-las tira o host do ar. O 409 evita
+    publicar um comando que o worker acabaria recusando (ou que, num worker
+    antigo, derrubava o túnel de vez — incidente de nov/2026).
+
+    Todo handler que MUTA uma sessão passa por aqui — inclusive os que leem
+    o doc direto (clone/move/milestones), que não passam por
+    ``_require_route``.
+    """
+    if is_infra_session(tmux_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{tmux_name}' is an infrastructure session and cannot be modified",
+        )
+
+
 async def _require_route(request: Request, session_id: str) -> tuple[str, str | None]:
     """Fetch a session by id and return ``(tmux_name, host_id)`` or raise 404.
 
@@ -591,20 +620,14 @@ async def _require_route(request: Request, session_id: str) -> tuple[str, str | 
     que só deveria acontecer antes do 1º boot do worker pós-migração).
 
     Recusa sessão de INFRAESTRUTURA (túnel ``cf``, worker): não são conversas
-    e matá-las tira o host do ar. O 409 evita publicar um comando que o
-    worker acabaria recusando (ou que, num worker antigo, derrubava o túnel
-    de vez — incidente de nov/2026).
+    e matá-las tira o host do ar.
     """
     repo = _get_repo(request)
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
     tmux_name = doc["tmux_name"]
-    if is_infra_session(tmux_name):
-        raise HTTPException(
-            status_code=409,
-            detail=f"'{tmux_name}' is an infrastructure session and cannot be modified",
-        )
+    _reject_infra_session(tmux_name)
     return tmux_name, doc.get("host_id")
 
 
@@ -924,6 +947,9 @@ async def instruct_milestones(request: Request, session_id: str) -> dict:
     doc = await repo.get_session(session_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Sessão de infra (túnel/worker) não recebe instrução (publicaria input
+    # sobre o túnel — não passa por _require_route).
+    _reject_infra_session(doc.get("tmux_name") or "")
     # Sessão "Comando" é só shell: não há agente pra ler a instrução — o texto
     # viraria um comando inválido digitado no terminal.
     if doc.get("agent_type") == AgentType.command:
@@ -1341,6 +1367,9 @@ async def move_session(
     doc = await repo.get_session(session_id)
     if doc is None or not doc.get("host_id"):
         raise HTTPException(status_code=404, detail="Session not found")
+    # Sessão de infra (túnel/worker) não é movível — mover publicaria
+    # move_out/move_in sobre o túnel (não passa por _require_route).
+    _reject_infra_session(doc.get("tmux_name") or "")
     source_host_id = doc["host_id"]
     target_host_id = body.target_host_id.strip()
     tmux_name = doc["tmux_name"]
