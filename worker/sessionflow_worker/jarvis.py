@@ -83,6 +83,13 @@ logger = logging.getLogger(__name__)
 # usuário já roda) | say (nativo do Mac, básico) | api (audio.boletoazap).
 # Default xtts com fallback automático p/ say se o servidor estiver fora.
 TTS_MODE = os.environ.get("SESSIONFLOW_JARVIS_TTS", "xtts").lower()
+# Modo do RESUMO falado: "ollama" (local, default) | "9router" (LLM remoto via
+# 9router) | "api" (backend /ai do SessionFlow) | "none" (sem resumo).
+#
+# "9router" e' EXPLICITO de proposito: o resumo recebe o CONTEUDO DA TELA do
+# agente (que pode ter codigo, caminho, nome de projeto) e manda pra um
+# servico remoto. Isso e' escolha do dono do host, nao um default — por isso
+# NUNCA vira fallback automatico.
 SUMMARY_MODE = os.environ.get("SESSIONFLOW_JARVIS_SUMMARY", "ollama").lower()
 SAY_VOICE = os.environ.get("SESSIONFLOW_JARVIS_VOICE", "Luciana")
 SAY_RATE = os.environ.get("SESSIONFLOW_JARVIS_RATE", "190")
@@ -228,6 +235,39 @@ _THINK_RE = re.compile(
 )
 
 
+# Segredos que NUNCA podem sair do host (vão no payload pro 9router).
+# Regex por PADRÃO de nome de chave + valor que parece segredo.
+_SECRET_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|"
+    r"PRIVATE_KEY|CREDENTIAL)[A-Z0-9_]*)[ \t]*=.*$"
+)
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?i)\b(?:token|secret|password|passwd|api[_-]?key|credential)\b"
+    r"[ \t]*[:=][ \t]*[\"']?[^\s\"']{6,}[\"']?"
+)
+# Bearer/JWT/API keys colados no meio de texto (log, comando, env dump).
+_BEARER_RE = re.compile(r"(?i)\b(?:bearer|authorization:?)[ \t]+[A-Za-z0-9._\-]{12,}")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}")
+_KEYLIKE_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}")
+
+
+def _scrub_secrets(text: str) -> str:
+    """Remove segredos do texto antes de mandar pra um serviço remoto.
+
+    A tela do agente pode conter um `.env` dump, um comando com token no
+    argv ou um log de autenticação. Isso vai pro 9router (servico de TERCEIROS
+    no sentido de "fora da maquina"), então segredos sao mascarados aqui.
+    """
+    t = _SECRET_LINE_RE.sub("[redigido]", text or "")
+    t = _BEARER_RE.sub("Bearer [redigido]", t)
+    t = _JWT_RE.sub("[token redigido]", t)
+    t = _KEYLIKE_RE.sub("[chave redigida]", t)
+    t = _SECRET_ASSIGN_RE.sub(
+        lambda m: f"{m.group(0).split(':')[0].split('=')[0]}=[redigido]", t
+    )
+    return t
+
+
 def _strip_reasoning(text: str) -> str:
     """Remove o bloco <think>...</think> e apara o texto.
 
@@ -238,7 +278,6 @@ def _strip_reasoning(text: str) -> str:
     # Normaliza隐形 caracteres: o MiniMax emite tags com ZERO-WIDTH SPACE
     # dentro do "<" (ex.: "<mm:think>"), o que quebra o match da regex.
     t = _ZW_RE.sub("", text or "")
-    t = _THINK_RE.sub(" ", t)
     # Fecha-raciocínio ÓRFÃO: o MiniMax às vezes emite só a tag de
     # fechamento ("") sem a de abertura, e a de abertura vem
     # com prefixo de ferramenta ("<tool_call>"). Sem isso o
@@ -249,6 +288,25 @@ def _strip_reasoning(text: str) -> str:
         tail = t[orphan.end():]
         nl = tail.find("\n")
         t = tail[nl + 1:] if nl != -1 else tail
+    # Fail-closed: se AINDA houver tag de raciocínio (aberta OU fechando),
+    # descarta TUDO a partir da ÚLTIMA tag de fechamento — o texto bom vem
+    # depois. Cortar no primeiro fechamento deixava o raciocínio no meio.
+    last_close = None
+    for m2 in re.finditer(
+        r"<\s*/\s*(?:mm:think|think|thinking|reasoning)\s*>", t, re.I
+    ):
+        last_close = m2
+    if last_close is not None:
+        t = t[last_close.end():]
+        nl = t.find("\n")
+        t = t[nl + 1:] if nl != -1 else t
+    # Tag de raciocínio ABERTA (cortada por max_tokens): descarta o resto.
+    low2 = t.lower()
+    for tag in ("<think>", "<thinking", "<mm:think", "<reasoning"):
+        idx = low2.find(tag)
+        if idx != -1:
+            t = t[:idx]
+            low2 = t.lower()
     # Modelo pode deixar a tag de raciocínio ABERTA (cortado por max_tokens,
     # ou fechando com tag diferente): descarta tudo a partir dela.
     low = t.lower()
@@ -417,22 +475,34 @@ def _llm_sync(
     prompt: str,
     num_predict: int = 70,
     temperature: float = 0.3,
-    model: str | None = None,
+    ollama_model: str | None = None,
 ) -> str:
-    """Gera texto: 9router (se configurado) com fallback pro Ollama local.
+    """Gera texto: 9router (se o modo permitir) com fallback pro Ollama local.
 
-    O fallback existe porque o 9router pode estar fora do ar (host sem rede
-    até a LAN) — nesse caso o Ollama do host ainda salva o resumo.
+    O 9router so e' usado quando ``SESSIONFLOW_JARVIS_SUMMARY=9router`` (opt-in
+    do dono do host) E ha URL configurada. Fora disso, vai pro Ollama local —
+    o remoto NUNCA e' acionado por acidente, porque o texto carrega a TELA do
+    agente (pode ter código/caminho/segredo) e sairia da máquina.
+
+    Quando o remoto é usado, o texto passa por :func:`_scrub_secrets`.
     """
-    if NINEROUTER_BASE:
+    if NINEROUTER_BASE and SUMMARY_MODE == "9router":
         try:
-            return _ninerouter_sync(system, prompt, num_predict, temperature, model)
+            # O 9router tem o PROPRIO catalogo de modelos — o nome do
+            # modelo local (ollama_model) NAO faz sentido la. O modelo remoto
+            # e' sempre o configurado em NINEROUTER_MODEL.
+            return _ninerouter_sync(
+                system,
+                _scrub_secrets(prompt),
+                num_predict,
+                temperature,
+            )
         except Exception:  # noqa: BLE001 - 9router fora do ar → Ollama local
             logger.warning("jarvis: 9router falhou; usando Ollama local", exc_info=True)
     out = _post_json(
         f"{OLLAMA_BASE}/api/generate",
         {
-            "model": model or OLLAMA_MODEL,
+            "model": ollama_model or OLLAMA_MODEL,
             "system": system,
             "prompt": prompt,
             "stream": False,
@@ -529,7 +599,11 @@ def _dedup_sync(text: str, model: str) -> tuple[str, dict[str, int] | None]:
         return text, None
     try:
         deduped = _llm_sync(
-            _DEDUP_SYS, stripped, num_predict=800, temperature=0.1
+            _DEDUP_SYS,
+            stripped,
+            num_predict=800,
+            temperature=0.1,
+            ollama_model=model,
         )
     except Exception:  # noqa: BLE001 - fallback silencioso, ver docstring
         return text, None
@@ -1463,24 +1537,37 @@ def _classify_choice_llm_sync(spoken_text: str, options: list[dict[str, str]]) -
     valid_keys = {o["key"] for o in options}
     try:
         raw = _llm_sync(
-            _CHOICE_CLASSIFY_SYS, prompt, num_predict=6, temperature=0.0
+            _CHOICE_CLASSIFY_SYS,
+            prompt,
+            num_predict=6,
+            temperature=0.0,
+            ollama_model=CHOICE_MODEL,
         )
     except Exception:  # noqa: BLE001 - fallback gracioso
         logger.debug("jarvis: classify_choice (llm) falhou", exc_info=True)
         return None
-    # Validação estrita: só aceita se a saída for EXATAMENTE uma key válida
-    # (às vezes o modelo devolve "2." ou "Opção 2" mesmo pedindo só o número —
-    # extrai o primeiro dígito da saída e valida contra as keys).
+    # Validação ESTRITA (fail-closed): a saída tem que ser EXATAMENTE um
+    # número válido (ou "nenhuma"). Antes o regex pegava o PRIMEIRO dígito de
+    # texto livre — um modelo que respondesse "a opção 2 é melhor, mas a 1
+    # também serve" escolhia a 1. Agora qualquer prosa na saída é REJEITADA:
+    # na duvida, devolve None (o picker não escolhe errado).
     #
-    # Modelos de raciocínio (MiniMax no 9router) envelopam a resposta em
-    # <think>...</think> — o texto de RAZONAMENTO pode conter dígitos
-    # ("<think>We need answer only number option") que fariam o regex
-    # casar o número errado. Descarta o bloco antes de extrair.
+    # O raciocínio (<think>...) é descartado antes: o texto de raciocínio pode
+    # conter dígitos ("<think>We need answer only number option") que fariam
+    # o match casar o número errado.
     raw = _strip_reasoning(raw)
-    m = re.search(r"\d+", raw)
+    m = re.fullmatch(r"\s*(\d+)\s*\.?\s*", raw)
     if not m:
-        return None
-    key = m.group(0)
+        # Tolerância mínima: ponto final solto ("2."), que o modelo às vezes
+        # emite. Qualquer OUTRO texto -> None (não escolhe por adivinhação).
+        m = re.fullmatch(r"\s*(\d+)\s*[.。]?\s*", raw)
+        if not m:
+            logger.info(
+                "jarvis: classify_choice — saída fora do formato esperado, "
+                "descartando (%r)", raw[:80],
+            )
+            return None
+    key = m.group(1)
     return key if key in valid_keys else None
 
 
