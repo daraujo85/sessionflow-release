@@ -459,6 +459,8 @@ export type TerminalKey =
   | 'shift-tab'
   | 'backspace'
   | 'ctrl-c'
+  | 'ctrl-x'
+  | 'ctrl-s'
   | 'scroll-up'
   | 'scroll-down'
   | 'scroll-bottom';

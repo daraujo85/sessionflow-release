@@ -21,6 +21,11 @@ export function keyToTerminalKey(ev: KeyboardEvent): TerminalKey | null {
   if (ev.key === 'Tab') return ev.shiftKey ? 'shift-tab' : 'tab';
   if (ev.key === 'Backspace') return 'backspace';
   if (ev.ctrlKey && (ev.key === 'c' || ev.key === 'C')) return 'ctrl-c';
+  // Atalhos do Claude Code no prompt: "ctrl+x ctrl+s" = send now. Mapeados
+  // pra poderem ser enviados pelo teclado físico E pelo botão flutuante
+  // (no celular a combinação de 2 teclas é impossível).
+  if (ev.ctrlKey && (ev.key === 'x' || ev.key === 'X')) return 'ctrl-x';
+  if (ev.ctrlKey && (ev.key === 's' || ev.key === 'S')) return 'ctrl-s';
   if (ev.key === 'PageUp') return 'scroll-up';
   if (ev.key === 'PageDown') return 'scroll-down';
   if (ev.key === 'End' && (ev.ctrlKey || ev.metaKey)) return 'scroll-bottom';

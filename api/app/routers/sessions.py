@@ -228,6 +228,9 @@ ALLOWED_KEYS = frozenset(
         "shift-tab",
         "backspace",
         "ctrl-c",
+        # Atalhos do Claude Code no prompt: "ctrl+x ctrl+s" = "send now".
+        "ctrl-x",
+        "ctrl-s",
         "scroll-up",
         "scroll-down",
         "scroll-bottom",

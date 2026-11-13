@@ -21,6 +21,7 @@ import { ApiService } from '../../core/api.service';
 import { SessionCloneService } from '../../core/session-clone.service';
 import { SseService } from '../../core/sse.service';
 import { keyToTerminalKey } from '../../core/terminal-keys';
+import { HapticsService } from '../../core/haptics.service';
 import { WorkersStore } from '../../core/workers-store';
 import { Schedule, Session, ShareLink, SharedFile, Task, TerminalKey } from '../../core/models';
 import { STATUS_META, agentMeta } from '../../shared/status-color';
@@ -293,6 +294,24 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
               <path d="M12 5v14M6 13l6 6 6-6" />
             </svg>
             ao vivo
+          </button>
+        }
+
+        <!-- Botão flutuante "Enviar agora" (equivale a ctrl+x ctrl+s do Claude
+             Code) — no celular a combinação de teclas é impossível. -->
+        @if (hasSendNowPrompt()) {
+          <button
+            type="button"
+            class="send-now-fab"
+            (click)="pressSendNow()"
+            aria-label="Enviar agora (equivale a ctrl+x ctrl+s)"
+            title="Enviar agora — confirma o prompt pendente (ctrl+x ctrl+s)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m5 12 5 5L20 7" />
+            </svg>
+            Enviar agora
           </button>
         }
       </div>
@@ -890,6 +909,35 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
       .live-pill svg {
         flex: none;
       }
+      /* Botão flutuante "Enviar agora" (ctrl+x ctrl+s do Claude Code) —
+         impossivel de fazer no celular, então vira botão. */
+      .send-now-fab {
+        position: sticky;
+        bottom: 12px;
+        float: right;
+        margin-right: 2px;
+        z-index: 6;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 13px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background: linear-gradient(150deg, #f5b942, #d98a1a);
+        color: #241703;
+        font-size: 11.5px;
+        font-weight: 700;
+        font-family: inherit;
+        cursor: pointer;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        -webkit-tap-highlight-color: transparent;
+      }
+      .send-now-fab:active {
+        transform: scale(0.97);
+      }
+      .send-now-fab svg {
+        flex: none;
+      }
       .keypad {
         display: flex;
         gap: 6px;
@@ -1161,6 +1209,7 @@ export class SessionPanelComponent {
   private readonly destroyRef = inject(DestroyRef);
   private readonly workers = inject(WorkersStore);
   private readonly sessionClone = inject(SessionCloneService);
+  private readonly haptics = inject(HapticsService);
 
   /** id da sessão exibida neste painel (muda quando o picker escolhe outra). */
   readonly sessionId = input.required<string>();
@@ -1243,6 +1292,26 @@ export class SessionPanelComponent {
   protected readonly showLivePill = signal<boolean>(false);
   /** Gruda no fim a cada frame novo enquanto o usuário não rolou p/ cima. */
   private stickToBottom = true;
+
+  /**
+   * Tela do Claude Code com prompt de confirmação pendente ("send now",
+   * "Do you want to proceed?"…). No celular não há como mandar ctrl+x ctrl+s
+   * — o botão flutuante faz isso. Mesma regra da tela cheia
+   * (detalhe/detalhe.component.ts).
+   */
+  protected readonly hasSendNowPrompt = computed<boolean>(() => {
+    const text = this.screen();
+    if (!text) {
+      return false;
+    }
+    const tail = text.slice(-1200).toLowerCase();
+    return (
+      tail.includes('send now') ||
+      tail.includes('do you want to proceed') ||
+      tail.includes('ctrl+x ctrl+s') ||
+      tail.includes('yes, and ')
+    );
+  });
 
   protected readonly statusColor = computed(() => {
     const s = this.session();
@@ -1701,11 +1770,40 @@ export class SessionPanelComponent {
     this.copyTimer = setTimeout(() => this.copied.set(false), 1500);
   }
 
+  /**
+   * "Enviar agora": confirma o prompt pendente do Claude Code (ctrl+x ctrl+s
+   * no teclado). No celular a combinação é impossível — este botão envia C-x
+   * e depois C-s ao pane. A ordem importa (C-x abre, C-s confirma), então a
+   * 2ª tecla só sai depois que a 1ª é aceita.
+   */
+  protected pressSendNow(): void {
+    const id = this.sessionId();
+    if (!id) {
+      return;
+    }
+    // Retorno tátil: no celular o olho está na tela do agente, não no dedo.
+    this.haptics.success();
+    this.api
+      .sendKey(id, 'ctrl-x')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.api
+            .sendKey(id, 'ctrl-s')
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe({ error: () => {} });
+        },
+        error: () => {},
+      });
+  }
+
   protected sendKey(key: TerminalKey): void {
     const id = this.sessionId();
     if (!id) {
       return;
     }
+    // Tecla = toque no keypad: vibração curta confirma o pressionamento.
+    this.haptics.tap();
     this.api.sendKey(id, key).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({ error: () => {} });
   }
 
@@ -1749,7 +1847,10 @@ export class SessionPanelComponent {
     this.api
       .sendInput(id, text, true)
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ error: () => {} });
+      .subscribe({
+        next: () => this.haptics.success(), // mensagem enviada: retorno tátil
+        error: () => this.haptics.error(),
+      });
     this.draft.set('');
   }
 

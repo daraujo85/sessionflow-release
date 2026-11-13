@@ -182,6 +182,11 @@ _KEY_MAP: dict[str, str] = {
     "shift-tab": "S-Tab",
     "backspace": "BSpace",
     "ctrl-c": "C-c",
+    # Atalhos do Claude Code no prompt: "ctrl+x ctrl+s" = "send now" (manda a
+    # mensagem pendente). Sem eles, quem digita no celular não tem como
+    # confirmar um prompt de confirmação do agente.
+    "ctrl-x": "C-x",
+    "ctrl-s": "C-s",
 }
 
 

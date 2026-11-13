@@ -742,10 +742,73 @@ def metrics(dir: str | None = None, strict: bool = False) -> dict:
     return {"dir": dir or os.getcwd(), "strict": strict, "output": output}
 
 
+def _frontend_origin(env: dict) -> str:
+    """URL pública do FRONTEND (pra URL de retorno do push).
+
+    O Service Worker (ngsw) só aceita URL ABSOLUTA em ``navigate()`` — uma
+    "/sessao/<id>" crua falha silenciosamente. A origem vem do
+    ``SESSIONFLOW_RP_ORIGIN`` do .env (é a mesma do app web).
+    """
+    origin = (env.get("SESSIONFLOW_RP_ORIGIN") or "").strip().rstrip("/")
+    if origin.startswith("http"):
+        return origin
+    return ""
+
+
 @server.tool()
-def notify(title: str, body: str, url: str | None = None) -> dict:
-    """Manda um web push pro celular (todas as subscrições) — pede um humano."""
-    argv = ["notify", title, body]
+def notify(
+    title: str,
+    body: str,
+    session: str | None = None,
+    url: str | None = None,
+) -> dict:
+    """Manda um web push pro celular (todas as subscrições) — pede um humano.
+
+    Notificação de ATENÇÃO: aparece fora do app (com o app fechado), vibra
+    e, ao tocar, abre a sessão de onde veio. Use quando precisar do Diego
+    no meio de um trabalho: "falta uma decisão", "teste passou", etc.
+
+    Args:
+        title: linha curta (ex.: "Preciso de você").
+        body: texto livre — a mensagem que o Diego vai ler.
+        session: nome ou id da sessão que está chamando (opcional). Quando
+            informado, entra formatado no corpo e o toque abre aquela
+            sessão.
+        url: URL alternativa ao tocar (tem precedência sobre `session`).
+
+    Returns:
+        {"delivered": bool, "sent": int|None, ...} — `sent` = quantos
+        aparelhos receberam.
+    """
+    # Sessão de origem: identifica quem mandou e dá o destino do toque.
+    origin: dict | None = None
+    env, _token, _base = _session()  # 1 login só (reaproveitado na URL)
+    if session:
+        found = _find_session(session)
+        if found is None:
+            raise _ToolError(
+                f"sessão {session!r} não encontrada entre as ativas; "
+                "use list_sessions para ver os nomes"
+            )
+        origin = _session_view(found)
+        if not url:
+            # URL ABSOLUTA: o ngsw (navigateLastFocusedOrOpen) só navega
+            # com URL completa — relativa é ignorada.
+            front = _frontend_origin(env)
+            url = f"{front}/sessao/{origin['id']}" if front else f"/sessao/{origin['id']}"
+
+    # Corpo formatado: título = o que aconteceu; corpo = de onde veio +
+    # a mensagem em texto livre (o texto do agente vai literal).
+    full_title = title.strip() or "SessionFlow"
+    lines: list[str] = []
+    if origin:
+        label = origin.get("display_name") or origin.get("name") or origin["id"]
+        lines.append(f"📍 {label}")
+    if body.strip():
+        lines.append(body.strip())
+    full_body = "\n".join(lines) or full_title
+
+    argv = ["notify", full_title, full_body]
     if url:
         argv += ["--url", url]
     if _remote():
@@ -757,9 +820,10 @@ def notify(title: str, body: str, url: str | None = None) -> dict:
 
     match = re.search(r"->\s*(\d+)\s+dispositivo", output)
     return {
-        "title": title,
-        "body": body,
+        "title": full_title,
+        "body": full_body,
         "url": url,
+        "session": origin,
         "sent": int(match.group(1)) if match else None,
         "delivered": True,
     }

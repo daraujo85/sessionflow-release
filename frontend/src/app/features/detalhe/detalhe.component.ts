@@ -43,6 +43,7 @@ import { AudioRecorderComponent } from '../../shared/audio-recorder/audio-record
 import { SessionPanelComponent } from './session-panel.component';
 import { ansiToHtml, trimBlankEdges } from '../../shared/ansi-html';
 import { keyToTerminalKey } from '../../core/terminal-keys';
+import { HapticsService } from '../../core/haptics.service';
 
 @Component({
   selector: 'sf-detalhe',
@@ -1291,6 +1292,28 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
               <path d="M12 5v14M6 13l6 6 6-6" />
             </svg>
             ao vivo
+          </button>
+        }
+
+        <!-- Botão flutuante "Enviar agora": o atalho ctrl+x ctrl+s do Claude
+             Code (confirma prompt pendente) é IMPOSSÍVEL no celular — não há
+             teclado nem como mandar a combinação. Este botão faz a mesma
+             coisa: envia C-x seguido de C-s ao pane do agente.
+             Só aparece quando há prompt de confirmação na tela (o texto
+             "Do you want to proceed?"/"send now" do Claude Code). -->
+        @if (hasSendNowPrompt()) {
+          <button
+            type="button"
+            class="send-now-fab"
+            (click)="pressSendNow()"
+            aria-label="Enviar agora (equivale a ctrl+x ctrl+s)"
+            title="Enviar agora — confirma o prompt pendente (ctrl+x ctrl+s)"
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m5 12 5 5L20 7" />
+            </svg>
+            Enviar agora
           </button>
         }
       </div>
@@ -3460,6 +3483,36 @@ import { keyToTerminalKey } from '../../core/terminal-keys';
       .live-pill svg {
         flex: none;
       }
+      /* Botão flutuante "Enviar agora" — canto inferior DIREITO, acima do
+         rodapé da tela. Sticky+float como o live-pill (o .term é o
+         container de scroll), mas com z-index pra ficar por cima do texto. */
+      .send-now-fab {
+        position: sticky;
+        bottom: 14px;
+        float: right;
+        margin-right: 2px;
+        z-index: 6;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 15px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background: linear-gradient(150deg, #f5b942, #d98a1a);
+        color: #241703;
+        font-size: 12.5px;
+        font-weight: 700;
+        font-family: inherit;
+        cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+        -webkit-tap-highlight-color: transparent;
+      }
+      .send-now-fab:active {
+        transform: scale(0.97);
+      }
+      .send-now-fab svg {
+        flex: none;
+      }
       .term-msg {
         color: #6b7280;
         font-size: 12px;
@@ -4143,6 +4196,7 @@ export class DetalheComponent implements AfterViewChecked {
   private readonly destroyRef = inject(DestroyRef);
   private readonly sse = inject(SseService);
   private readonly jarvisAudio = inject(JarvisAudioService);
+  private readonly haptics = inject(HapticsService);
   protected readonly jarvisChoice = inject(JarvisChoiceService);
   /** Conversação em tempo real por voz (Voice MVP, WS /ws/voice) — botão
    * mínimo de teste, DISTINTO do envio de áudio gravado (sf-audio-recorder). */
@@ -5039,6 +5093,32 @@ export class DetalheComponent implements AfterViewChecked {
 
   /** Pill "↓ ao vivo": visível quando o usuário rolou o agente p/ cima. */
   protected readonly showLivePill = signal<boolean>(false);
+
+  /**
+   * O Claude Code, no prompt, oferece "ctrl+x ctrl+s" (send now) pra
+   * confirmar a mensagem pendente. No celular não há teclado — e a combinação
+   * de 2 teclas não tem como ser enviada. Este sinal marca a tela como
+   * "tem prompt de confirmação pendente" pra exibir o botão flutuante que
+   * faz o mesmo (envia C-x seguido de C-s).
+   *
+   * Só os marcadores do Claude Code contam: "send now", "Do you want to
+   * proceed?", "Yes, and create"… Textos genéricos como "?" apareceriam em
+   * qualquer output e o botão ficaria pulsando à toa.
+   */
+  protected readonly hasSendNowPrompt = computed<boolean>(() => {
+    const text = this.screen();
+    if (!text) {
+      return false;
+    }
+    // Só o rodapé da tela interessa (o prompt fica embaixo).
+    const tail = text.slice(-1200).toLowerCase();
+    return (
+      tail.includes('send now') ||
+      tail.includes('do you want to proceed') ||
+      tail.includes('ctrl+x ctrl+s') ||
+      tail.includes('yes, and ') // "Yes, and create/edit…"
+    );
+  });
 
   /**
    * Espelho PÚBLICO (signal) de ``stickToBottom``, só pro indicador "● AO
@@ -6152,6 +6232,9 @@ export class DetalheComponent implements AfterViewChecked {
     // em send() do mesmo jeito).
     if (!this.draft().trim() && !this.sending() && !this.attaching()) {
       this.showHint('Enviando…');
+      // Enter com caixa vazia = confirmar prompt pendente → alerta (mais forte
+      // que um toque: a acao pede atencao do agente).
+      this.haptics.alert();
       this.markWorkingLocal();
       this.api
         .sendKey(id, 'enter')
@@ -6178,6 +6261,8 @@ export class DetalheComponent implements AfterViewChecked {
       .subscribe({
         next: () => {
           this.sending.set(false);
+          // Mensagem enviada: retorno tátil curto (confirma que saiu).
+          this.haptics.success();
           this.refreshBurst(); // pega o eco no pane assim que o worker injeta
         },
         error: () => {
@@ -6703,6 +6788,44 @@ export class DetalheComponent implements AfterViewChecked {
     }
   }
 
+  /**
+   * "Enviar agora": confirma o prompt pendente do Claude Code, que no
+   * teclado é ctrl+x ctrl+s. No celular a combinação é impossível — este
+   * botão envia C-x e depois C-s ao pane (mesmo caminho do `sendKey`).
+   *
+   * A ordem importa: C-x abre o menu de edição do prompt e C-s confirma.
+   * São 2 chamadas HTTP; a 2ª só sai depois que a 1ª é aceita (senão o
+   * C-s chega antes do C-x e não confirma nada).
+   */
+  protected pressSendNow(): void {
+    const id = this.id();
+    if (!id) {
+      return;
+    }
+    // Retorno tátil: no celular o olho está na tela do agente, não no dedo.
+    this.haptics.success();
+    this.markWorkingLocal();
+    this.api
+      .sendKey(id, 'ctrl-x')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.api
+            .sendKey(id, 'ctrl-s')
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe({
+              next: () => this.refreshBurst(),
+              error: () => {
+                /* best-effort */
+              },
+            });
+        },
+        error: () => {
+          /* best-effort */
+        },
+      });
+  }
+
   protected pressKey(key: TerminalKey): void {
     const id = this.id();
     if (!id) {
@@ -6717,6 +6840,8 @@ export class DetalheComponent implements AfterViewChecked {
       this.snapToLive();
       return;
     }
+    // Tecla = toque no keypad: vibração curta confirma o pressionamento.
+    this.haptics.tap();
     this.markWorkingLocal();
     // Fire-and-forget: NÃO bloqueia os botões durante o round-trip (no celular
     // ele tem centenas de ms via túnel). Bloquear deixava o keypad "morto" e

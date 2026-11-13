@@ -13,6 +13,7 @@ import { JarvisChoiceService } from './core/jarvis-choice.service';
 import { EventCuesService } from './core/event-cues.service';
 import { SessionCloneService } from './core/session-clone.service';
 import { WorkersStore } from './core/workers-store';
+import { HapticsService } from './core/haptics.service';
 
 /** Uma linha do rodapé de Ollama na sidebar: host + modelo ativo agora. */
 export interface OllamaHostRow {
@@ -93,6 +94,7 @@ export class App {
   private readonly jarvisAudio = inject(JarvisAudioService);
   private readonly jarvisChoice = inject(JarvisChoiceService);
   private readonly eventCues = inject(EventCuesService);
+  private readonly haptics = inject(HapticsService);
 
   constructor() {
     // JARVIS: liga o pipeline de áudio (efeito SSE + desbloqueio de autoplay).
@@ -116,6 +118,16 @@ export class App {
     }
 
     this.setupServiceWorker();
+
+    // Haptics: o Chrome só permite navigator.vibrate depois de um GESTO do
+    // usuário na página (sticky activation). Sem destravar no 1º toque, a
+    // vibração é descartada em silêncio e parece "vibrar quebrado".
+    // Listener de 1º toque, só uma vez, e em capture (não bloqueia nada).
+    const unlock = () => {
+      this.haptics.unlock();
+      window.removeEventListener('pointerdown', unlock, true);
+    };
+    window.addEventListener('pointerdown', unlock, true);
   }
 
   /**
