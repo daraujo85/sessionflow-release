@@ -5320,17 +5320,6 @@ export class DetalheComponent implements AfterViewChecked {
    */
   private stickToBottom = true;
 
-  /**
-   * Suprime o recálculo de ``stickToBottom`` via ``isAtBottom()`` no próximo
-   * disparo do effect do SSE (abaixo). Sem isso, trocar de sessão dispara o
-   * effect (``session()`` mudou) e ele sobrescreve o ``stickToBottom = true``
-   * recém-setado por ``isAtBottom()`` lido do ``<div #term>`` REAPROVEITADO —
-   * ainda com o scroll da sessão anterior (se você tinha rolado pra cima lá),
-   * fazendo o "ao vivo" não descer sozinho de forma intermitente (corrida
-   * entre loadSession()/refreshScreen() resolverem antes ou depois do effect).
-   */
-  private suppressStickRecalc = false;
-
   constructor() {
     // MODO CONVIDADO: pega o token do link (?k=) e registra ANTES de conectar o
     // SSE/chamar a API — assim toda chamada já vai escopada por ele. (Fora do
@@ -5403,7 +5392,6 @@ export class DetalheComponent implements AfterViewChecked {
         // o estado "vazava" de uma sessão pra outra).
         this.stickToBottom = true;
         this.liveMode.set(true);
-        this.suppressStickRecalc = true;
         this.showLivePill.set(false);
         // Chip de erro (actionHintKind === 'error') sobrevive à troca de sessão
         // se não for limpo aqui — o guard de clearHint() só deixa dispensar via
@@ -5477,12 +5465,15 @@ export class DetalheComponent implements AfterViewChecked {
       if (scr && at !== this.lastScreenPushAt) {
         this.lastScreenPushAt = at;
         if (scr.text !== this.screen()) {
-          if (this.suppressStickRecalc) {
-            this.suppressStickRecalc = false;
-          } else {
-            this.stickToBottom = this.isAtBottom();
-            this.liveMode.set(this.stickToBottom);
-          }
+          // NÃO recalcula isAtBottom() aqui: medir o DOM agora pode pegar um
+          // frame INTERMEDIÁRIO se dois pushes de SSE chegarem em sucessão
+          // rápida — o scrollToBottom() do frame anterior ainda não rodou
+          // (está em requestAnimationFrame pendente), então o scrollHeight/
+          // scrollTop lidos ainda refletem o conteúdo ANTIGO, não "o usuário
+          // estava no fim". Isso desligava o "ao vivo" sozinho a cada
+          // mensagem nova (bug real: toda chegada de conteúdo pausava).
+          // stickToBottom já é mantido corretamente pelo scroll REAL do
+          // usuário (onTermScroll) — só confiamos nele aqui.
           this.screen.set(scr.text);
           // A tela mudou → o conteúdo enviado (texto/anexo/áudio) chegou: tira o aviso.
           this.clearHint();
@@ -7001,16 +6992,24 @@ export class DetalheComponent implements AfterViewChecked {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (resp) => {
-          // Captura ANTES do update: o usuário estava colado no fim? (forceBottom
-          // ignora isso — ex.: ao voltar do histórico, sempre desce pro fim.)
           // ``scrollback`` = histórico do tmux + tela (scroll nativo); docs
           // antigos sem ele caem na tela visível.
           const next = resp.scrollback || resp.text || '';
           if (next !== this.screen()) {
             this.clearHint(); // conteúdo chegou via poll → some o aviso
           }
-          this.stickToBottom = forceBottom || this.isAtBottom();
-          this.liveMode.set(this.stickToBottom);
+          // NÃO recalcula isAtBottom() aqui (mesmo motivo do effect do SSE
+          // acima): este poll é só uma rede de segurança (1.5s) caso o push
+          // de SSE falhe ou chegue fora de ordem, e pode colidir com um frame
+          // de SSE recém-aplicado cujo scrollToBottom() ainda não pintou —
+          // medir o DOM agora pegaria o conteúdo ANTIGO e desligaria o "ao
+          // vivo" à toa. stickToBottom já é mantido pelo scroll real do
+          // usuário; forceBottom (ex.: voltar do histórico) é a ÚNICA exceção
+          // que ainda precisa forçar o estado aqui.
+          if (forceBottom) {
+            this.stickToBottom = true;
+            this.liveMode.set(true);
+          }
           this.screen.set(next);
           if (forceBottom) {
             // requestAnimationFrame: mesmo motivo do ngAfterViewChecked acima —
@@ -7205,8 +7204,20 @@ export class DetalheComponent implements AfterViewChecked {
     this.showLivePill.set(false);
   }
 
-  /** Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim. */
+  /**
+   * Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim.
+   *
+   * Ignora o evento quando o scroll foi PROGRAMÁTICO (``scrollToBottom()``
+   * setando ``el.scrollTop``) — esse ``scroll`` é assíncrono e pode disparar
+   * DEPOIS que um frame novo já cresceu o conteúdo, medindo ``isAtBottom()``
+   * num instante intermediário e desligando o "ao vivo" sozinho (bug: toda
+   * mensagem nova pausava o modo ao vivo). Só o scroll do USUÁRIO (roda do
+   * mouse, arrasto, toque) deve recalcular ``stickToBottom`` aqui.
+   */
   protected onTermScroll(): void {
+    if (this.isProgrammaticScroll) {
+      return;
+    }
     const atBottom = this.isAtBottom();
     this.stickToBottom = atBottom;
     this.liveMode.set(atBottom);
@@ -7222,10 +7233,24 @@ export class DetalheComponent implements AfterViewChecked {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   }
 
+  /**
+   * Marca o PRÓXIMO evento ``scroll`` nativo como programático — ver
+   * ``onTermScroll()``. Setado antes de mexer ``scrollTop`` e limpo num
+   * ``setTimeout(0)``: o evento ``scroll`` do browser é assíncrono mas
+   * dispara ainda neste macrotask/no próximo, então o timeout dá folga
+   * suficiente sem deixar a flag "presa" e mascarando um scroll real do
+   * usuário logo em seguida.
+   */
+  private isProgrammaticScroll = false;
+
   private scrollToBottom(): void {
     const el = this.termEl()?.nativeElement;
     if (el) {
+      this.isProgrammaticScroll = true;
       el.scrollTop = el.scrollHeight;
+      setTimeout(() => {
+        this.isProgrammaticScroll = false;
+      }, 0);
     }
   }
 

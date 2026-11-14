@@ -8,6 +8,7 @@ import { ActivatedRoute } from '@angular/router';
 import { BehaviorSubject, of } from 'rxjs';
 import { DetalheComponent } from './detalhe.component';
 import { API_BASE_URL } from '../../core/api.service';
+import { SseService } from '../../core/sse.service';
 
 const BASE = 'http://localhost:8000';
 
@@ -787,5 +788,97 @@ describe('DetalheComponent — sessão de comando', () => {
       fixture.nativeElement.querySelectorAll('.metrics') as NodeListOf<HTMLElement>,
     ).map((el) => el.getAttribute('aria-label'));
     expect(labels).toEqual(['Sessão de comando']);
+  });
+});
+
+describe('DetalheComponent — "ao vivo" não pausa sozinho em pushes seguidos', () => {
+  let fixture: ReturnType<typeof TestBed.createComponent<DetalheComponent>>;
+  let component: DetalheComponent;
+  let httpMock: HttpTestingController;
+  let sse: SseService;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [DetalheComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: API_BASE_URL, useValue: BASE },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            snapshot: {
+              paramMap: { get: () => 'sess-1' },
+              queryParamMap: { get: () => null },
+              data: {},
+            },
+            paramMap: of({ get: () => 'sess-1' }),
+            queryParamMap: of({ get: () => null }),
+          },
+        },
+      ],
+    });
+    fixture = TestBed.createComponent(DetalheComponent);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    sse = TestBed.inject(SseService);
+    fixture.detectChanges();
+    for (const req of httpMock.match(() => true)) {
+      req.flush(req.request.url.endsWith('/workers') ? [] : { text: '', scrollback: '' });
+    }
+    // Sessão carregada — o effect do SSE só aplica push quando tem tmux_name.
+    (component as any).session.set({
+      id: 'sess-1',
+      tmux_name: 'proj-x',
+      status: 'running',
+    });
+  });
+
+  afterEach(() => {
+    for (const req of httpMock.match(() => true)) {
+      req.flush({});
+    }
+    httpMock.verify();
+  });
+
+  it('2 pushes de SSE em sucessão não desligam o "ao vivo" mesmo com o DOM ainda no tamanho antigo', () => {
+    // Usuário está no fim: scrollHeight pequeno, scrollTop = fim.
+    const el = (component as any).termEl()!.nativeElement as HTMLElement;
+    Object.defineProperty(el, 'scrollHeight', { value: 300, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 100, configurable: true });
+    el.scrollTop = 200; // no fim (300 - 200 - 100 = 0 < 48)
+
+    expect((component as any).stickToBottom).toBe(true);
+
+    // 1º push: cresce bastante o conteúdo. O DOM (scrollHeight/scrollTop)
+    // ainda NÃO foi atualizado pelo scrollToBottom() (ele só roda num
+    // requestAnimationFrame pendente) — simula exatamente essa janela.
+    sse.screens.set({ 'proj-x': { text: 'linha1\n'.repeat(50), at: 't1' } });
+    fixture.detectChanges();
+
+    // 2º push chega ANTES do scrollToBottom() do 1º ter mexido no DOM real
+    // (scrollHeight/scrollTop seguem o valor "antigo" setado acima — o
+    // bug media isAtBottom() aqui e achava que o usuário tinha saído do fim).
+    sse.screens.set({ 'proj-x': { text: 'linha1\n'.repeat(80), at: 't2' } });
+    fixture.detectChanges();
+
+    // "ao vivo" continua ligado: o recálculo de isAtBottom() não acontece
+    // mais no caminho de dados (só no scroll real do usuário).
+    expect((component as any).stickToBottom).toBe(true);
+    expect((component as any).liveMode()).toBe(true);
+  });
+
+  it('scroll programático (scrollToBottom) não dispara onTermScroll como se fosse o usuário', () => {
+    const el = (component as any).termEl()!.nativeElement as HTMLElement;
+    Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 100, configurable: true });
+    el.scrollTop = 0; // longe do fim
+
+    (component as any).scrollToBottom();
+    // O próprio scrollTop= dispara 'scroll' de forma síncrona em jsdom —
+    // onTermScroll() roda aqui, mas deve ser ignorado (flag programática).
+    el.dispatchEvent(new Event('scroll'));
+
+    expect((component as any).stickToBottom).toBe(true);
   });
 });

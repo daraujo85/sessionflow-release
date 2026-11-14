@@ -1702,8 +1702,15 @@ export class SessionPanelComponent {
       .subscribe({ next: () => this.closeRequested.emit(), error: () => {} });
   }
 
-  /** Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim. */
+  /**
+   * Scroll nativo: só atualiza a pill "↓ ao vivo" e o grudar-no-fim.
+   * Ignora o evento quando o scroll foi PROGRAMÁTICO (``scrollToBottom()``) —
+   * ver o mesmo guard em detalhe.component.ts.
+   */
   protected onScroll(): void {
+    if (this.isProgrammaticScroll) {
+      return;
+    }
     const atBottom = this.isAtBottom();
     this.stickToBottom = atBottom;
     this.showLivePill.set(!atBottom);
@@ -1735,10 +1742,17 @@ export class SessionPanelComponent {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   }
 
+  /** Marca o próximo ``scroll`` nativo como programático — ver ``onScroll()``. */
+  private isProgrammaticScroll = false;
+
   private scrollToBottom(): void {
     const el = this.termEl()?.nativeElement;
     if (el) {
+      this.isProgrammaticScroll = true;
       el.scrollTop = el.scrollHeight;
+      setTimeout(() => {
+        this.isProgrammaticScroll = false;
+      }, 0);
     }
   }
 
