@@ -42,7 +42,14 @@ fi
 log "pacotes base"
 export DEBIAN_FRONTEND=noninteractive
 command -v tmux >/dev/null && command -v setfacl >/dev/null && command -v rsync >/dev/null \
-  || { apt-get update -qq >/dev/null; apt-get install -y -qq tmux acl rsync >/dev/null; }
+  || {
+    # Kaggle às vezes vem com sources.list de terceiros quebrado (mirror de R,
+    # nada a ver com este script); não deixa isso matar o selfboot inteiro —
+    # os repos Ubuntu principais que interessam (tmux/acl/rsync) geralmente
+    # resolvem mesmo com outro mirror falhando no mesmo `apt-get update`.
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y -qq tmux acl rsync >/dev/null
+  }
 command -v cloudflared >/dev/null || {
   curl -fsSL -o /usr/local/bin/cloudflared \
     https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -79,7 +86,7 @@ tmux new-session -d -s sfinfra-tunnel "cloudflared access tcp --hostname mongo-s
 
 log "CLIs de agente"
 command -v node >/dev/null || {
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 || true
   apt-get install -y -qq nodejs >/dev/null
 }
 [ -e /usr/local/bin/claude.real ] || command -v claude >/dev/null \
